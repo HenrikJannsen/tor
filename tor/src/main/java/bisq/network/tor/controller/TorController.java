@@ -6,6 +6,7 @@ import bisq.network.tor.onionservice.OnionServiceKey;
 import com.google.common.annotations.VisibleForTesting;
 import lombok.extern.slf4j.Slf4j;
 
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
@@ -64,6 +65,22 @@ public class TorController {
 
     public void authenticate(PasswordDigest hashedControlPassword) {
         torControlProtocol.authenticate(hashedControlPassword);
+    }
+
+    /**
+     * Checks that the process on the control port uses the torrc which Bisq wrote for this start. It reports the
+     * salted hash of the control password from that torrc. Another process which listens on the port (for example
+     * after it took the port before Tor could bind it) accepts any password, but cannot know the salted hash,
+     * because the torrc is readable only by the user.
+     */
+    public void verifyHashedControlPassword(PasswordDigest hashedControlPassword) {
+        List<String> values = torControlProtocol.getConf("HashedControlPassword");
+        boolean isExpected = values.size() == 1 &&
+                values.get(0).equalsIgnoreCase(hashedControlPassword.getHashedPassword());
+        if (!isExpected) {
+            throw new TorControlAuthenticationFailed("The process on the Tor control port does not use the torrc of " +
+                    "this start. Another process may listen on the port.");
+        }
     }
 
     public void shutdown() {

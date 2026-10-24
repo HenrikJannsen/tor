@@ -260,6 +260,7 @@ public class TorService {
 
             torController.initialize(controlPort);
             torController.authenticate(hashedControlPassword);
+            torController.verifyHashedControlPassword(hashedControlPassword);
             torController.bootstrap();
             if (!embeddedTorProcess.isAlive()) {
                 throw new TorStartupFailedException("Embedded Tor exited during bootstrap. " +

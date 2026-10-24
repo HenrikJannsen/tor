@@ -22,6 +22,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -194,6 +195,26 @@ public class TorControlProtocol implements AutoCloseable {
         sendCommand(command);
         Stream<String> replyStream = receiveReply();
         return validateReply(replyStream, "GETINFO");
+    }
+
+    /**
+     * @return the values of the configuration option {@code key}
+     */
+    public synchronized List<String> getConf(String key) {
+        String command = "GETCONF " + key + "\r\n";
+        sendCommand(command);
+        List<String> replies = receiveReply().toList();
+        Pattern valuePattern = Pattern.compile("^250[- ]" + Pattern.quote(key) + "=(.*)$", Pattern.CASE_INSENSITIVE);
+        List<String> values = replies.stream()
+                .map(valuePattern::matcher)
+                .filter(Matcher::matches)
+                .map(matcher -> matcher.group(1))
+                .toList();
+        if (values.isEmpty() || !replies.get(replies.size() - 1).startsWith("250 ")) {
+            List<String> loggableReplies = replies.stream().map(TorControlLogFormat::toLoggableReply).collect(Collectors.toList());
+            throw new ControlCommandFailedException("Invalid GETCONF reply: " + loggableReplies);
+        }
+        return values;
     }
 
     public synchronized void hsFetch(String hsAddress) {
