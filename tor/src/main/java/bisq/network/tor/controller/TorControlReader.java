@@ -41,34 +41,7 @@ public class TorControlReader implements AutoCloseable {
 
                     log.info("Received reply from Tor control server: {}", TorControlLogFormat.toLoggableReply(line));
                     if (isEventWithCode_650(line)) {
-                        String[] parts = line.split(" ");
-
-                        boolean parsedEvent = false;
-                        if (parts.length > 2) {
-                            String eventType = parts[1];
-
-                            if (isStatusClientEvent(eventType)) {
-                                Optional<TorBootstrapEvent> bootstrapEventOptional = BootstrapEventParser.tryParse(parts);
-                                if (bootstrapEventOptional.isPresent()) {
-                                    parsedEvent = true;
-                                    TorBootstrapEvent torBootstrapEvent = bootstrapEventOptional.get();
-                                    bootstrapEventListeners.forEach(listener -> listener.onBootstrapStatusEvent(torBootstrapEvent));
-                                }
-
-                            } else if (isHsDescEvent(eventType)) {
-                                Optional<HsDescEvent> hsDescEventOptional = HsDescEventParser.tryParse(parts);
-                                if (hsDescEventOptional.isPresent()) {
-                                    parsedEvent = true;
-                                    HsDescEvent hsDescEvent = hsDescEventOptional.get();
-                                    hsDescEventListeners.forEach(listener -> listener.onHsDescEvent(hsDescEvent));
-                                }
-                            }
-                        }
-
-                        if (!parsedEvent) {
-                            log.info("Unknown Tor event: {}", TorControlLogFormat.toLoggableReply(line));
-                        }
-
+                        handleEvent(line);
                     } else {
                         replies.add(line);
                     }
@@ -85,6 +58,36 @@ public class TorControlReader implements AutoCloseable {
         });
         workerThread = Optional.of(thread);
         thread.start();
+    }
+
+    private void handleEvent(String line) {
+        String[] parts = line.split(" ");
+
+        boolean parsedEvent = false;
+        if (parts.length > 2) {
+            String eventType = parts[1];
+
+            if (isStatusClientEvent(eventType)) {
+                Optional<TorBootstrapEvent> bootstrapEventOptional = BootstrapEventParser.tryParse(parts);
+                if (bootstrapEventOptional.isPresent()) {
+                    parsedEvent = true;
+                    TorBootstrapEvent torBootstrapEvent = bootstrapEventOptional.get();
+                    bootstrapEventListeners.forEach(listener -> listener.onBootstrapStatusEvent(torBootstrapEvent));
+                }
+
+            } else if (isHsDescEvent(eventType)) {
+                Optional<HsDescEvent> hsDescEventOptional = HsDescEventParser.tryParse(parts);
+                if (hsDescEventOptional.isPresent()) {
+                    parsedEvent = true;
+                    HsDescEvent hsDescEvent = hsDescEventOptional.get();
+                    hsDescEventListeners.forEach(listener -> listener.onHsDescEvent(hsDescEvent));
+                }
+            }
+        }
+
+        if (!parsedEvent) {
+            log.info("Unknown Tor event: {}", TorControlLogFormat.toLoggableReply(line));
+        }
     }
 
     @Override
