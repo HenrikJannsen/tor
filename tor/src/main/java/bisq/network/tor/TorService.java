@@ -134,7 +134,12 @@ public class TorService {
             }
         }
 
-        startEmbeddedTor();
+        try {
+            startEmbeddedTor();
+        } catch (RuntimeException e) {
+            isRunning.set(false);
+            throw e;
+        }
         return CompletableFuture.completedFuture(true);
     }
 
@@ -178,32 +183,35 @@ public class TorService {
 
         try {
             waitUntilControlPortFileExists(controlPortFilePath, embeddedTorProcess);
+
+            int controlPort = ControlPortFileParser.parse(controlPortFilePath);
+
+            controlPortFilePath.toFile().deleteOnExit();
+
+            torController.initialize(controlPort);
+            torController.authenticate(hashedControlPassword);
+            torController.bootstrap();
+            if (!embeddedTorProcess.isAlive()) {
+                throw new TorStartupFailedException("Embedded Tor exited during bootstrap. " +
+                        embeddedTorProcess.getStartupDiagnostics());
+            }
+
+            torVersion = torController.getTorVersion();
+            log.info("Tor {} runs with the binary {}", torVersion.orElse("of unknown version"), torBinaryPath);
+
+            int port = torController.getSocksPort();
+            torSocksProxyFactory = Optional.of(new TorSocksProxyFactory(port));
         } catch (InterruptedException e) {
-            embeddedTorProcess.shutdown();
-            torProcess = Optional.empty();
-            isRunning.set(false);
+            stopEmbeddedTor(embeddedTorProcess);
             Thread.currentThread().interrupt();
             throw new RuntimeException("Interrupted while waiting for tor control port file to exist", e);
-        } catch (Exception e) {
-            embeddedTorProcess.shutdown();
-            torProcess = Optional.empty();
-            isRunning.set(false);
+        } catch (IOException e) {
+            stopEmbeddedTor(embeddedTorProcess);
             throw new RuntimeException("Error while waiting for tor control port file to exist", e);
+        } catch (RuntimeException e) {
+            stopEmbeddedTor(embeddedTorProcess);
+            throw e;
         }
-
-        int controlPort = ControlPortFileParser.parse(controlPortFilePath);
-
-        controlPortFilePath.toFile().deleteOnExit();
-
-        torController.initialize(controlPort);
-        torController.authenticate(hashedControlPassword);
-        torController.bootstrap();
-
-        torVersion = torController.getTorVersion();
-        log.info("Tor {} runs with the binary {}", torVersion.orElse("of unknown version"), torBinaryPath);
-
-        int port = torController.getSocksPort();
-        torSocksProxyFactory = Optional.of(new TorSocksProxyFactory(port));
     }
 
     private EmbeddedTorProcess createTorProcess(Path torBinaryPath) {
@@ -221,6 +229,22 @@ public class TorService {
     private List<String> createTorCommand(Path torBinaryPath) {
         String ownerPid = platformServices.getMyPid();
         return EmbeddedTorProcess.torCommand(torBinaryPath, torDirectories.getTorrcPath(), ownerPid);
+    }
+
+    private void stopEmbeddedTor(EmbeddedTorProcess embeddedTorProcess) {
+        if (torController != null) {
+            runQuietly(torController::shutdown, "Shutdown of the Tor controller failed");
+        }
+        embeddedTorProcess.shutdown();
+        torProcess = Optional.empty();
+    }
+
+    private static void runQuietly(Runnable runnable, String errorMessage) {
+        try {
+            runnable.run();
+        } catch (RuntimeException e) {
+            log.warn(errorMessage, e);
+        }
     }
 
     private void createTorControlDirectory() {
@@ -262,11 +286,12 @@ public class TorService {
     public CompletableFuture<Boolean> shutdown() {
         log.info("shutdown");
         return CompletableFuture.supplyAsync(() -> {
+            // Each step runs also when an earlier one fails, so that Tor is stopped in any case.
             if (torController != null) {
-                torController.shutdown();
+                runQuietly(torController::shutdown, "Shutdown of the Tor controller failed");
             }
             torController = null;
-            torProcess.ifPresent(EmbeddedTorProcess::shutdown);
+            torProcess.ifPresent(process -> runQuietly(process::shutdown, "Shutdown of the Tor process failed"));
             torProcess = Optional.empty();
             onionServiceTargets.close();
             torSocksProxyFactory = Optional.empty();
