@@ -25,7 +25,9 @@ import bisq.network.tor.common.torrc.TorrcFileGenerator;
 import bisq.network.tor.controller.TorControlAuthenticationFailed;
 import bisq.network.tor.controller.TorController;
 import bisq.network.tor.installer.TorInstaller;
+import bisq.network.tor.onionservice.DirectOnionServiceTargets;
 import bisq.network.tor.onionservice.OnionServiceKey;
+import bisq.network.tor.onionservice.OnionServiceTargets;
 import bisq.network.tor.process.EmbeddedTorProcess;
 import bisq.network.tor.process.LdPreload;
 import bisq.network.tor.process.TorStartupFailedException;
@@ -64,7 +66,6 @@ import static com.google.common.base.Preconditions.checkArgument;
 
 @Slf4j
 public class TorService {
-    private static final int RANDOM_PORT = 0;
     private static final long CONTROL_PORT_FILE_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(30);
     private static final long CONTROL_PORT_FILE_POLL_INTERVAL_MS = 100;
     // Environment variable to not launch the embedded Tor process
@@ -83,6 +84,7 @@ public class TorService {
 
     private Optional<EmbeddedTorProcess> torProcess = Optional.empty();
     private Optional<TorSocksProxyFactory> torSocksProxyFactory = Optional.empty();
+    private volatile OnionServiceTargets onionServiceTargets = new DirectOnionServiceTargets(getOnionServiceBindAddress());
     private final Map<String, String> externalTorConfigMap = new HashMap<>();
 
     public TorService(TorTransportConfig transportConfig, PlatformServices platformServices) {
@@ -244,6 +246,7 @@ public class TorService {
             torController = null;
             torProcess.ifPresent(EmbeddedTorProcess::shutdown);
             torProcess = Optional.empty();
+            onionServiceTargets.close();
             torSocksProxyFactory = Optional.empty();
             publishedOnionServices.clear();
             externalTorConfigMap.clear();
@@ -257,7 +260,8 @@ public class TorService {
             String onionAddress = onionServiceKey.getOnionAddress();
             log.info("Publish onion service for address {}:{} (localPort={})", onionAddress, onionServicePort, localPort);
             if (!publishedOnionServices.contains(onionAddress)) {
-                torController.publish(onionServiceKey, onionServicePort, localPort);
+                int torTargetPort = onionServiceTargets.targetPortOf(onionAddress, localPort);
+                torController.publish(onionServiceKey, onionServicePort, torTargetPort);
                 publishedOnionServices.add(onionAddress);
             }
 
@@ -268,34 +272,37 @@ public class TorService {
         } catch (InterruptedException e) {
             log.error("Can't create onion service", e);
             return CompletableFuture.failedFuture(e);
+        } catch (IOException e) {
+            log.error("Can't create onion service", e);
+            return CompletableFuture.failedFuture(e);
         }
     }
 
     public CompletableFuture<ServerSocket> publishOnionServiceAndCreateServerSocket(int port, OnionServiceKey onionServiceKey) {
         long ts = System.currentTimeMillis();
+        String onionAddress = onionServiceKey.getOnionAddress();
+        OnionServiceTargets.Target target;
         try {
-            InetAddress bindAddress = !LinuxDistribution.isWhonix() ? Inet4Address.getLoopbackAddress()
-                    : Inet4Address.getByName("0.0.0.0");
-            var localServerSocket = new ServerSocket(RANDOM_PORT, 50, bindAddress);
+            target = onionServiceTargets.bindServerSocket(onionAddress);
+        } catch (IOException e) {
+            log.error("Can't create onion service", e);
+            return CompletableFuture.failedFuture(e);
+        }
 
-            String onionAddress = onionServiceKey.getOnionAddress();
+        try {
             log.info("Publish onion service for onion address {}:{}", onionAddress, port);
             if (!publishedOnionServices.contains(onionAddress)) {
-                int localPort = localServerSocket.getLocalPort();
-                torController.publish(onionServiceKey, port, localPort);
+                torController.publish(onionServiceKey, port, target.torTargetPort());
                 publishedOnionServices.add(onionAddress);
             }
 
             log.info("Tor onion service Ready. Took {} ms. Onion address={}:{}",
                     System.currentTimeMillis() - ts, onionAddress, port);
 
-            return CompletableFuture.completedFuture(localServerSocket);
+            return CompletableFuture.completedFuture(target.serverSocket());
         } catch (InterruptedException e) {
             log.warn("Can't create onion service. Thread got interrupted at publishOnionService method", e);
             Thread.currentThread().interrupt(); // Restore interrupted state
-            return CompletableFuture.failedFuture(e);
-        } catch (IOException e) {
-            log.error("Can't create onion service", e);
             return CompletableFuture.failedFuture(e);
         }
     }
@@ -494,6 +501,17 @@ public class TorService {
                 transportConfig.getDirectoryAuthorities());
         torrcFileGenerator.generate();
         return torrcConfigMap;
+    }
+
+    private static InetAddress getOnionServiceBindAddress() {
+        if (!LinuxDistribution.isWhonix()) {
+            return Inet4Address.getLoopbackAddress();
+        }
+        try {
+            return InetAddress.getByName("0.0.0.0");
+        } catch (IOException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     private record ControlHostAndPort(String host, int port) {
