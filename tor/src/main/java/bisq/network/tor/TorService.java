@@ -119,6 +119,11 @@ public class TorService {
             }
         }
 
+        startEmbeddedTor();
+        return CompletableFuture.completedFuture(true);
+    }
+
+    private void startEmbeddedTor() {
         if (!OS.isLinux()) {
             installTorIfNotUpToDate();
         }
@@ -181,8 +186,6 @@ public class TorService {
 
         int port = torController.getSocksPort();
         torSocksProxyFactory = Optional.of(new TorSocksProxyFactory(port));
-
-        return CompletableFuture.completedFuture(true);
     }
 
     private EmbeddedTorProcess createTorProcess(Path torBinaryPath) {
