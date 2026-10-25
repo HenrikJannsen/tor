@@ -13,7 +13,7 @@ plugins {
     id("bisq.gradle.tor_binary.BisqTorBinaryPlugin")
 }
 
-val properties = readPropertiesFile("../gradle.properties")
+val properties = readPropertiesFile("../../gradle.properties")
 
 val torVersion: String = properties.getProperty("tor.version")
     ?: throw GradleException("Tor version is not defined in gradle.properties")
