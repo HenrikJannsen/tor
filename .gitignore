@@ -1,0 +1,71 @@
+# GITHUB JAVA DEFAULTS
+
+# Compiled class file
+*.class
+
+# Log file
+*.log
+
+# BlueJ files
+*.ctxt
+
+# Mobile Tools for Java (J2ME)
+.mtj.tmp/
+
+# Package Files #
+*.war
+*.nar
+*.ear
+*.zip
+*.tar.gz
+*.rar
+
+# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
+hs_err_pid*
+
+# Intellij
+/.idea
+!/.idea/fileTemplates/internal/AnnotationType.java
+!/.idea/fileTemplates/internal/Class.java
+!/.idea/fileTemplates/internal/Enum.java
+!/.idea/fileTemplates/includes/File Header.java
+!/.idea/fileTemplates/internal/Interface.java
+!/.idea/codeStyles/codeStyleConfig.xml
+!/.idea/codeStyles/Project.xml
+!/.idea/icon.svg
+/.tx/.idea
+
+# Bisq
+*.iml
+*.spvchain
+*.wallet
+*.ser
+*.sh
+.DS_Store
+.gradle
+build
+bin
+out
+
+# Makefile tests / Temp created by some targets, needed by other targets
+# can be removed with `make clean`
+seed1-tor-hostname
+seed2-tor-hostname
+seed1-i2p-destination
+seed2-i2p-destination
+/.run/
+
+# Docker Compose data directories
+docker/data_dirs
+/tx
+/.java-version
+
+# sym links to bisq2-* sub repos (please list each one, e.g. bisq2-umbrel)
+/bisq2-umbrel
+/bisq2-startos
+
+# Directory for temp files
+/temp
+
+# Python bytecode of the scripts and their tests
+__pycache__/
