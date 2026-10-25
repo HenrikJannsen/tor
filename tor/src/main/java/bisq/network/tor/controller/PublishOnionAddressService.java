@@ -79,7 +79,14 @@ public class PublishOnionAddressService extends FilteredHsDescEventListener {
                     torControlProtocol.addHsDescEventListener(this);
 
                     String serviceId = onionServiceKey.getOnionAddress().replace(".onion", "");
-                    torControlProtocol.addOnion(onionServiceKey, onionServicePort, localPort);
+                    Optional<String> reportedServiceId = torControlProtocol.addOnion(onionServiceKey, onionServicePort, localPort);
+                    if (reportedServiceId.isPresent() && !reportedServiceId.get().equals(serviceId)) {
+                        // Tor derives the onion address from the key, so the key of the caller does not belong to
+                        // its onion address. Tor publishes the key under the address it reported.
+                        removeOnionServiceQuietly(reportedServiceId.get());
+                        throw new HsDescUploadFailedException("The key of " + onionServiceKey.getOnionAddress() +
+                                " belongs to the onion address " + reportedServiceId.get() + ".onion");
+                    }
 
                     try {
                         awaitUpload();
