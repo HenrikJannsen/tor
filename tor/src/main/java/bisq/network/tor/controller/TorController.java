@@ -57,6 +57,10 @@ public class TorController {
         torControlProtocol.authenticate(authCookie);
     }
 
+    public void authenticateWithSafeCookie(byte[] authCookie) {
+        torControlProtocol.authenticateWithSafeCookie(authCookie);
+    }
+
     public void authenticate() {
         // No authentication required, but we still need to send an empty
         // AUTHENTICATE call to be able to send control commands

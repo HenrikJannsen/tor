@@ -324,6 +324,28 @@ public class TorService {
         }
     }
 
+    // With CookieAuthentication, Bisq only uses SAFECOOKIE: Tor proves that it knows the cookie before Bisq sends
+    // anything else. A process which listens on the port instead of Tor gets no secret. Bisq never falls back to
+    // another method, because each fallback would send the commands to a process which did not prove anything.
+    private void authenticateToExternalTor(ExternalTorConfig externalTorConfig) {
+        if (!externalTorConfig.isCookieAuthentication()) {
+            // No authentication required, but we still need to send an empty
+            // AUTHENTICATE call to be able to send control commands
+            torController.authenticate();
+            return;
+        }
+        Path authCookiePath = externalTorConfig.getCookieAuthFile()
+                .orElseThrow(() -> new TorControlAuthenticationFailed("CookieAuthentication is 1, but CookieAuthFile " +
+                        "is not set"));
+        byte[] authCookie;
+        try {
+            authCookie = Files.readAllBytes(authCookiePath);
+        } catch (IOException e) {
+            throw new TorControlAuthenticationFailed("Could not read the cookie file " + authCookiePath + ": " + e);
+        }
+        torController.authenticateWithSafeCookie(authCookie);
+    }
+
     private void createTorControlDirectory() {
         Path controlDirFilePath = torDirectories.getDataDirPath().resolve(BaseTorrcGenerator.CONTROL_DIR_NAME);
         if (!Files.exists(controlDirFilePath)) {
@@ -515,45 +537,11 @@ public class TorService {
         torController = torControllerFactory.get();
         torController.initialize(controlPort);
 
-        boolean isAuthenticated = false;
-        boolean noCookieAuthenticationRequired = !externalTorConfig.isCookieAuthentication();
-        if (noCookieAuthenticationRequired) {
-            // No authentication required, but we still need to send an empty
-            // AUTHENTICATE call to be able to send control commands
-            try {
-                torController.authenticate();
-                isAuthenticated = true;
-            } catch (TorControlAuthenticationFailed e) {
-                log.warn("Authentication to Tor Control failed.");
-                return false;
-            }
-        }
-
-        if (!isAuthenticated) {
-            if (externalTorConfig.getCookieAuthFile().isPresent()) {
-                Path authCookiePath = externalTorConfig.getCookieAuthFile().get();
-                try {
-                    byte[] authCookie = Files.readAllBytes(authCookiePath);
-                    torController.authenticate(authCookie);
-                    isAuthenticated = true;
-                } catch (TorControlAuthenticationFailed e) {
-                    log.warn("Authentication with authCookie failed.");
-                } catch (IOException e) {
-                    log.warn("Couldn't read the COOKIE_AUTH_FILE '{}' from the config.", authCookiePath);
-                }
-            } else {
-                log.warn("The user did not provide the path to the COOKIE_AUTH_FILE.");
-            }
-        }
-
-        if (!isAuthenticated) {
-            log.info("We try to call authenticate without parameters for the case that authentication is not required.");
-            try {
-                torController.authenticate();
-            } catch (TorControlAuthenticationFailed ex) {
-                log.warn("Authentication to Tor Control failed.");
-                return false;
-            }
+        try {
+            authenticateToExternalTor(externalTorConfig);
+        } catch (TorControlAuthenticationFailed e) {
+            log.warn("Authentication to the external Tor failed: {}", e.getMessage());
+            return false;
         }
 
         onionServiceTargets.close();

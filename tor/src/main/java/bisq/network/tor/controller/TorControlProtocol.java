@@ -9,13 +9,19 @@ import com.google.common.io.BaseEncoding;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import lombok.extern.slf4j.Slf4j;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ScheduledFuture;
@@ -47,6 +53,15 @@ import java.util.stream.Stream;
 public class TorControlProtocol implements AutoCloseable {
     private static final int MAX_CONNECTION_ATTEMPTS = 10;
     private static final String SERVICE_ID_REPLY_PREFIX = "250-ServiceID=";
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
+    private static final int SAFE_COOKIE_NONCE_LENGTH = 32;
+    private static final String SAFE_COOKIE_SERVER_TO_CONTROLLER_KEY =
+            "Tor safe cookie authentication server-to-controller hash";
+    private static final String SAFE_COOKIE_CONTROLLER_TO_SERVER_KEY =
+            "Tor safe cookie authentication controller-to-server hash";
+    // 250 AUTHCHALLENGE SERVERHASH=<64 hex digits> SERVERNONCE=<64 hex digits>
+    private static final Pattern AUTHCHALLENGE_REPLY_PATTERN =
+            Pattern.compile("^250 AUTHCHALLENGE SERVERHASH=([0-9A-Fa-f]{64}) SERVERNONCE=([0-9A-Fa-f]{64})$");
     // Far more than any reply to the commands of Bisq.
     static final int MAX_REPLY_LENGTH = 1024 * 1024;
     // The service ID of a v3 onion service: its address without ".onion"
@@ -155,6 +170,56 @@ public class TorControlProtocol implements AutoCloseable {
 
     public void authenticate(byte[] authCookie) {
         authenticate(BaseEncoding.base16().lowerCase().encode(authCookie));
+    }
+
+    /**
+     * Authenticates with the SAFECOOKIE method of the control protocol (control-spec, AUTHCHALLENGE). Unlike the
+     * COOKIE method, it never sends the cookie: Tor first proves that it knows the cookie, so a process which only
+     * listens on the control port gets neither the cookie nor the commands which follow.
+     *
+     * <p>
+     * The method holds the lock for AUTHCHALLENGE and AUTHENTICATE, because Tor expects AUTHENTICATE as the next
+     * command.
+     *
+     * @throws TorControlAuthenticationFailed if the process on the control port does not prove that it knows the
+     *                                        cookie, or if it does not accept the authentication
+     */
+    public synchronized void authenticateWithSafeCookie(byte[] authCookie) {
+        byte[] clientNonce = new byte[SAFE_COOKIE_NONCE_LENGTH];
+        SECURE_RANDOM.nextBytes(clientNonce);
+        sendCommand("AUTHCHALLENGE SAFECOOKIE " + BaseEncoding.base16().encode(clientNonce) + "\r\n");
+        String reply = receiveReply().findFirst().orElseThrow();
+
+        Matcher matcher = AUTHCHALLENGE_REPLY_PATTERN.matcher(reply);
+        if (!matcher.matches()) {
+            throw new TorControlAuthenticationFailed("Invalid reply to AUTHCHALLENGE: " + reply);
+        }
+        byte[] serverHash = BaseEncoding.base16().decode(matcher.group(1).toUpperCase(Locale.ROOT));
+        byte[] serverNonce = BaseEncoding.base16().decode(matcher.group(2).toUpperCase(Locale.ROOT));
+
+        byte[] expectedServerHash = safeCookieHash(SAFE_COOKIE_SERVER_TO_CONTROLLER_KEY, authCookie, clientNonce, serverNonce);
+        if (!MessageDigest.isEqual(expectedServerHash, serverHash)) {
+            // Nothing more may be sent to this process.
+            close();
+            throw new TorControlAuthenticationFailed("The process on the Tor control port does not know the " +
+                    "authentication cookie. Another process may listen on the port.");
+        }
+        byte[] clientHash = safeCookieHash(SAFE_COOKIE_CONTROLLER_TO_SERVER_KEY, authCookie, clientNonce, serverNonce);
+        authenticate(BaseEncoding.base16().lowerCase().encode(clientHash));
+    }
+
+    // HMAC-SHA256(key, CookieString | ClientNonce | ServerNonce)
+    private static byte[] safeCookieHash(String key, byte[] authCookie, byte[] clientNonce, byte[] serverNonce) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(key.getBytes(StandardCharsets.US_ASCII), "HmacSHA256"));
+            mac.update(authCookie);
+            mac.update(clientNonce);
+            mac.update(serverNonce);
+            return mac.doFinal();
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     private synchronized void authenticate(String secretAsHex) {
