@@ -34,6 +34,16 @@ class EmbeddedTorProcessTest {
     Path tempDir;
 
     @Test
+    void theCommandLineWorksWithOlderSystemTors() {
+        // --torrc-file exists only since Tor 0.4.6.2-alpha, -f in every version
+        assertThat(EmbeddedTorProcess.torCommand(tempDir.resolve("tor"), tempDir.resolve("torrc"), "42"))
+                .containsExactly(tempDir.resolve("tor").toString(),
+                        "-f", tempDir.resolve("torrc").toString(),
+                        "--defaults-torrc", tempDir.resolve("torrc").toString(),
+                        "__OwningControllerProcess", "42");
+    }
+
+    @Test
     void torRunsInTheGivenWorkingDirectory() throws IOException {
         assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"));
         // Tor finds the programs of the pluggable transports relative to its working directory.
