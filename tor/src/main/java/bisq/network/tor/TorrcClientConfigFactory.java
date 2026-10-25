@@ -45,6 +45,7 @@ public class TorrcClientConfigFactory {
     // TorService reads the control port from the file which Tor writes, authenticates with the password of this start
     // and checks its hash, and gives each stream of the SOCKS listener its own circuit. An override of these keys
     // would break the start of Tor or this isolation.
+    private static final String AVOID_DISK_WRITES = "AvoidDiskWrites";
     private static final Set<String> KEYS_OWNED_BY_BISQ = Stream.of(CONTROL_PORT, CONTROL_PORT_WRITE_TO_FILE,
                     SOCKS_PORT, DATA_DIRECTORY, HASHED_CONTROL_PASSWORD, DISABLE_NETWORK)
             .map(key -> key.toLowerCase(Locale.ROOT))
@@ -74,6 +75,8 @@ public class TorrcClientConfigFactory {
 
     public Map<String, String> torrcClientConfigMap(Map<String, String> torrcOverrides) {
         Map<String, String> torrcClientConfig = clientTorrcGenerator().generate();
+        // Tor writes its state less often, as in Tor Browser and in netlayer. A torrc override can change it.
+        torrcClientConfig.put(AVOID_DISK_WRITES, "1");
         torrcOverrides.forEach((key, value) -> {
             if (isOwnedByBisq(key)) {
                 log.warn("We ignore the torrc override of {}, because Bisq sets it for the embedded Tor", key);

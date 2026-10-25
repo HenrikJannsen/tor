@@ -100,6 +100,14 @@ class TorrcClientConfigFactoryTest {
     }
 
     @Test
+    void torAvoidsDiskWritesUnlessTheUserChangesIt() {
+        assertThat(factory.torrcClientConfigMap(Map.of())).containsEntry("AvoidDiskWrites", "1");
+        assertThat(factory.torrcClientConfigMap(Map.of("avoiddiskwrites", "0")))
+                .containsEntry("avoiddiskwrites", "0")
+                .doesNotContainKey("AvoidDiskWrites");
+    }
+
+    @Test
     void anOverrideReplacesAKeyOfBisqInAnyCase() {
         Map<String, String> torrc = factory.torrcClientConfigMap(Map.of("log", "info stdout"));
 
@@ -111,11 +119,12 @@ class TorrcClientConfigFactoryTest {
     // Tor accepts the start of an option name. Both entries would be written, and Tor would take one by map order.
     @Test
     void anAbbreviatedOverrideReplacesAKeyOfBisq() {
-        Map<String, String> torrc = factory.torrcClientConfigMap(Map.of("lo", "info stdout"));
+        Map<String, String> torrc = factory.torrcClientConfigMap(Map.of("AvoidDiskWrite", "0", "lo", "info stdout"));
 
         assertThat(torrc)
+                .containsEntry("AvoidDiskWrite", "0")
                 .containsEntry("lo", "info stdout")
-                .doesNotContainKey("Log");
+                .doesNotContainKeys("AvoidDiskWrites", "Log");
     }
 
     @Test
