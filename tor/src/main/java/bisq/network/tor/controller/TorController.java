@@ -9,9 +9,13 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Slf4j
 public class TorController {
+    // For example 0.4.9.14 or 0.4.9.1-alpha
+    private static final Pattern VERSION_PATTERN = Pattern.compile("\\d+(?:\\.\\d+)+(?:-[0-9A-Za-z]+)?");
     private final TorControlProtocol torControlProtocol = new TorControlProtocol();
     private final int bootstrapTimeout; // in ms
     private final int hsUploadTimeout; // in ms
@@ -121,6 +125,26 @@ public class TorController {
         future.whenComplete((r, t) -> onionServiceOnlineStateServiceMap.remove(onionAddress));
         onionServiceOnlineStateServiceMap.put(onionAddress, onionServiceOnlineStateService);
         return future;
+    }
+
+    /**
+     * @return the version of the Tor on the control port, for example "0.4.9.14", or empty if the control port does
+     * not report it
+     */
+    public Optional<String> getTorVersion() {
+        try {
+            // 250-version=0.4.9.14 (git-...). The control-spec allows a name before the version, such as "Tor".
+            String reply = torControlProtocol.getInfo("version");
+            String prefix = "250-version=";
+            if (!reply.startsWith(prefix)) {
+                return Optional.empty();
+            }
+            Matcher matcher = VERSION_PATTERN.matcher(reply.substring(prefix.length()));
+            return matcher.find() ? Optional.of(matcher.group()) : Optional.empty();
+        } catch (TorCommandFilteredException | ControlCommandFailedException e) {
+            // A filtering proxy of the control port, such as onion-grater on Whonix, may refuse the request.
+            return Optional.empty();
+        }
     }
 
     public int getSocksPort() {

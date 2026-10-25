@@ -86,6 +86,9 @@ public class TorService {
     @Getter
     private volatile boolean useExternalTor;
     private final AtomicBoolean isRunning = new AtomicBoolean();
+    // The version which the running Tor reports. On Linux it is the tor of the system, not the bundled version.
+    @Getter
+    private volatile Optional<String> torVersion = Optional.empty();
 
     private Optional<EmbeddedTorProcess> torProcess = Optional.empty();
     private Optional<TorSocksProxyFactory> torSocksProxyFactory = Optional.empty();
@@ -197,6 +200,9 @@ public class TorService {
         torController.authenticate(hashedControlPassword);
         torController.bootstrap();
 
+        torVersion = torController.getTorVersion();
+        log.info("Tor {} runs with the binary {}", torVersion.orElse("of unknown version"), torBinaryPath);
+
         int port = torController.getSocksPort();
         torSocksProxyFactory = Optional.of(new TorSocksProxyFactory(port));
     }
@@ -267,6 +273,7 @@ public class TorService {
             torSocksProxyFactory = Optional.empty();
             publishedOnionServices.clear();
             externalTorConfigMap.clear();
+            torVersion = Optional.empty();
             return true;
         }, ForkJoinPool.commonPool());
     }
@@ -395,6 +402,10 @@ public class TorService {
                 return false;
             }
         }
+
+        torVersion = torController.getTorVersion();
+        log.info("The external Tor at {}:{} has version {}", controlHost, controlPort,
+                torVersion.orElse("unknown"));
 
         // We do not call torController.bootstrap as we do not need to bootstrap Tor.
         int port = torController.getSocksPort();
