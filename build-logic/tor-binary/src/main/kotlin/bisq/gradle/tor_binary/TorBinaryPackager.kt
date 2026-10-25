@@ -3,16 +3,13 @@ package bisq.gradle.tor_binary
 import bisq.gradle.common.OS
 import bisq.gradle.common.getOS
 import bisq.gradle.tasks.download.SignedBinaryDownloader
-import org.gradle.api.GradleException
 import org.gradle.api.Project
-import org.gradle.api.Task
 import org.gradle.api.file.RegularFile
 import org.gradle.api.provider.Provider
 import org.gradle.api.tasks.Sync
 import org.gradle.api.tasks.TaskProvider
 import org.gradle.api.tasks.bundling.Zip
 import org.gradle.kotlin.dsl.register
-import java.io.File
 
 class TorBinaryPackager(
     private val project: Project,
@@ -58,30 +55,12 @@ class TorBinaryPackager(
                 into(project.layout.buildDirectory.dir(PROCESSED_DIR))
             }
 
-        val signMacOsTorBinary: TaskProvider<Task> =
-            project.tasks.register("signMacOsTorBinary") {
+        val signMacOsTorBinary: TaskProvider<SignMacOsTorBinaryTask> =
+            project.tasks.register<SignMacOsTorBinaryTask>("signMacOsTorBinary") {
                 dependsOn(processUnpackedTorBinaryTar)
                 onlyIf { getOS() == OS.MAC_OS }
                 outputs.upToDateWhen { false }
-
-                doLast {
-                    val codesignFile = File("/usr/bin/codesign")
-                    if (!codesignFile.canExecute()) {
-                        throw GradleException("Cannot ad-hoc sign bundled Tor: /usr/bin/codesign is not executable.")
-                    }
-
-                    val processedDir = project.layout.buildDirectory.dir(PROCESSED_DIR)
-                    val torBinaryDir = processedDir.get().asFile
-                    torBinaryDir.walkTopDown()
-                        .filter { it.isFile }
-                        .filter { isMacOsCodeSignCandidate(it) }
-                        .sortedWith(compareBy<File> { it.name == "tor" }.thenBy { it.absolutePath })
-                        .forEach { binary ->
-                            project.exec {
-                                commandLine(codesignFile.absolutePath, "--force", "--sign", "-", binary.absolutePath)
-                            }
-                        }
-                }
+                torBinaryDir.set(project.layout.buildDirectory.dir(PROCESSED_DIR))
             }
 
         val packageTorBinary: TaskProvider<Zip> =
@@ -115,12 +94,5 @@ class TorBinaryPackager(
         processResourcesTask.configure {
             dependsOn(packageTorBinary)
         }
-    }
-
-    private fun isMacOsCodeSignCandidate(file: File): Boolean {
-        return file.name == "tor" ||
-                file.name.endsWith(".dylib") ||
-                file.name == "lyrebird" ||
-                file.name == "conjure-client"
     }
 }
