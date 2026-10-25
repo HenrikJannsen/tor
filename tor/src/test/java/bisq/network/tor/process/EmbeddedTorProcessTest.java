@@ -20,10 +20,12 @@ package bisq.network.tor.process;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -56,5 +58,37 @@ class EmbeddedTorProcessTest {
         process.waitUntilExited();
 
         assertThat(Files.readString(stdoutLogPath).trim()).isEqualTo(workingDir.toRealPath().toString());
+    }
+
+    @Test
+    void anUnsetPathFindsNothing() {
+        assertThat(EmbeddedTorProcess.findExecutableInPath(null, "tor")).isEmpty();
+    }
+
+    @Test
+    void onlyAnExecutableFileInAnAbsoluteDirectoryIsFound() throws IOException {
+        assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"));
+        Path withDirectory = Files.createDirectories(tempDir.resolve("withDirectory").resolve("tor")).getParent();
+        Path withNotExecutableFile = Files.createDirectories(tempDir.resolve("withNotExecutableFile"));
+        Files.createFile(withNotExecutableFile.resolve("tor"));
+        Path withExecutable = Files.createDirectories(tempDir.resolve("withExecutable"));
+        Path executable = Files.createFile(withExecutable.resolve("tor"));
+        Files.setPosixFilePermissions(executable, PosixFilePermissions.fromString("rwx------"));
+
+        // An empty entry and "." mean the working directory, "bin" a directory relative to it.
+        String path = String.join(File.pathSeparator, "", ".", "bin", withDirectory.toString(),
+                withNotExecutableFile.toString(), withExecutable.toString());
+
+        assertThat(EmbeddedTorProcess.findExecutableInPath(path, "tor")).contains(executable);
+    }
+
+    @Test
+    void relativeEntriesAreIgnored() throws IOException {
+        assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"));
+        Path relativeDirectory = Path.of("").toAbsolutePath().relativize(Files.createDirectories(tempDir.resolve("relative")));
+        Path executable = Files.createFile(tempDir.resolve("relative").resolve("tor"));
+        Files.setPosixFilePermissions(executable, PosixFilePermissions.fromString("rwx------"));
+
+        assertThat(EmbeddedTorProcess.findExecutableInPath(relativeDirectory.toString(), "tor")).isEmpty();
     }
 }
