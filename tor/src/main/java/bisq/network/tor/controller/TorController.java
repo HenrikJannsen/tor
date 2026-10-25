@@ -20,8 +20,11 @@ import java.util.regex.Pattern;
 
 @Slf4j
 public class TorController {
+    private static final String SOCKS_LISTENERS_KEY = "net/listeners/socks";
     // For example 0.4.9.14 or 0.4.9.1-alpha
     private static final Pattern VERSION_PATTERN = Pattern.compile("\\d+(?:\\.\\d+)+(?:-[0-9A-Za-z]+)?");
+    // A QuotedString of the control protocol, which escapes a quote and a backslash with a backslash
+    private static final Pattern QUOTED_STRING = Pattern.compile("\"((?:[^\"\\\\]|\\\\.)*)\"");
     private final TorControlProtocol torControlProtocol = new TorControlProtocol();
     private final int bootstrapTimeout; // in ms
     private final int hsUploadTimeout; // in ms
@@ -236,18 +239,33 @@ public class TorController {
     }
 
     public int getSocksPort() {
-        String socksListenersString = torControlProtocol.getInfo("net/listeners/socks");
-        String socksListener;
-        if (socksListenersString.contains(" ")) {
-            String[] socksPorts = socksListenersString.split(" ");
-            socksListener = socksPorts[0];
-        } else {
-            socksListener = socksListenersString;
-        }
+        String socksListenersReply = torControlProtocol.getInfo(SOCKS_LISTENERS_KEY);
+        return parseSocksPort(socksListenersReply);
+    }
 
-        // "127.0.0.1:12345"
-        socksListener = socksListener.replace("\"", "");
-        String portString = socksListener.split(":")[1];
-        return Integer.parseInt(portString);
+    /**
+     * @param socksListenersReply the reply line of GETINFO net/listeners/socks, for example
+     *                            {@code 250-net/listeners/socks="unix:/run/tor/socks" "127.0.0.1:9050"}
+     * @return the port of the first TCP listener. The system Tor of Debian lists its Unix socket first.
+     */
+    static int parseSocksPort(String socksListenersReply) {
+        String prefix = "250-" + SOCKS_LISTENERS_KEY + "=";
+        if (!socksListenersReply.startsWith(prefix)) {
+            throw new ControlCommandFailedException("Invalid reply to GETINFO " + SOCKS_LISTENERS_KEY + ": " +
+                    socksListenersReply);
+        }
+        Matcher listenerMatcher = QUOTED_STRING.matcher(socksListenersReply.substring(prefix.length()));
+        while (listenerMatcher.find()) {
+            String listener = listenerMatcher.group(1);
+            int portSeparator = listener.lastIndexOf(':');
+            if (!listener.startsWith("unix:") && portSeparator >= 0) {
+                try {
+                    return Integer.parseInt(listener.substring(portSeparator + 1));
+                } catch (NumberFormatException ignore) {
+                    // Not a TCP listener
+                }
+            }
+        }
+        throw new ControlCommandFailedException("Tor has no TCP SOCKS listener: " + socksListenersReply);
     }
 }
