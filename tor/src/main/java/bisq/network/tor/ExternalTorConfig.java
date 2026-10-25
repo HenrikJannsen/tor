@@ -1,0 +1,172 @@
+/*
+ * This file is part of Bisq.
+ *
+ * Bisq is free software: you can redistribute it and/or modify it
+ * under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or (at
+ * your option) any later version.
+ *
+ * Bisq is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public
+ * License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with Bisq. If not, see <http://www.gnu.org/licenses/>.
+ */
+
+package bisq.network.tor;
+
+import lombok.EqualsAndHashCode;
+import lombok.Getter;
+import lombok.ToString;
+import lombok.extern.slf4j.Slf4j;
+
+import java.nio.file.InvalidPathException;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.LinkedHashMap;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Optional;
+
+import static bisq.network.tor.common.torrc.Torrc.Keys.CONTROL_PORT;
+import static bisq.network.tor.common.torrc.Torrc.Keys.COOKIE_AUTHENTICATION;
+import static bisq.network.tor.common.torrc.Torrc.Keys.COOKIE_AUTH_FILE;
+import static bisq.network.tor.common.torrc.Torrc.Values.ExternalTor.DEFAULT_CONTROL_PORT;
+
+/**
+ * The settings for a Tor which runs outside Bisq, from the file external_tor.config. The file uses the format of a
+ * torrc: one option per line, the name and the value separated by white space, and comments starting with "#". Option
+ * names are case-insensitive, as in a torrc. If an option is set twice, the last value counts.
+ */
+@Slf4j
+@Getter
+@ToString
+@EqualsAndHashCode
+public final class ExternalTorConfig {
+    static final String USE_EXTERNAL_TOR = "UseExternalTor";
+
+    // Empty if the file does not set it
+    private final Optional<Boolean> useExternalTor;
+    private final String controlHost;
+    private final int controlPort;
+    private final boolean cookieAuthentication;
+    private final Optional<Path> cookieAuthFile;
+
+    private ExternalTorConfig(Optional<Boolean> useExternalTor,
+                              String controlHost,
+                              int controlPort,
+                              boolean cookieAuthentication,
+                              Optional<Path> cookieAuthFile) {
+        this.useExternalTor = useExternalTor;
+        this.controlHost = controlHost;
+        this.controlPort = controlPort;
+        this.cookieAuthentication = cookieAuthentication;
+        this.cookieAuthFile = cookieAuthFile;
+    }
+
+    /**
+     * @throws IllegalArgumentException if a value is invalid. A setting which Bisq could misread must stop the start,
+     *                                  because the user may rely on the external Tor, for example for its bridges.
+     */
+    public static ExternalTorConfig parse(String content) {
+        Map<String, String> valueByLowerCaseKey = new LinkedHashMap<>();
+        content.lines()
+                .map(String::trim)
+                .filter(line -> !line.isEmpty() && !line.startsWith("#"))
+                .forEach(line -> {
+                    String[] keyAndValue = line.split("\\s+", 2);
+                    String value = keyAndValue.length == 2 ? keyAndValue[1].trim() : "";
+                    valueByLowerCaseKey.put(keyAndValue[0].toLowerCase(Locale.ROOT), value);
+                });
+
+        Optional<Boolean> useExternalTor = Optional.ofNullable(valueByLowerCaseKey.remove(toKey(USE_EXTERNAL_TOR)))
+                .map(value -> parseBoolean(USE_EXTERNAL_TOR, value));
+        String controlPortValue = Optional.ofNullable(valueByLowerCaseKey.remove(toKey(CONTROL_PORT)))
+                .orElse(DEFAULT_CONTROL_PORT);
+        boolean cookieAuthentication = Optional.ofNullable(valueByLowerCaseKey.remove(toKey(COOKIE_AUTHENTICATION)))
+                .map(value -> parseBoolean(COOKIE_AUTHENTICATION, value))
+                .orElse(false);
+        Optional<Path> cookieAuthFile = Optional.ofNullable(valueByLowerCaseKey.remove(toKey(COOKIE_AUTH_FILE)))
+                .map(ExternalTorConfig::parsePath);
+        valueByLowerCaseKey.keySet().forEach(key -> log.warn("Bisq ignores the unknown option {} of the external " +
+                "Tor configuration", key));
+
+        HostAndPort controlHostAndPort = parseHostAndPort(controlPortValue);
+        return new ExternalTorConfig(useExternalTor,
+                controlHostAndPort.host(),
+                controlHostAndPort.port(),
+                cookieAuthentication,
+                cookieAuthFile);
+    }
+
+    private static String toKey(String key) {
+        return key.toLowerCase(Locale.ROOT);
+    }
+
+    private static boolean parseBoolean(String key, String value) {
+        return switch (value) {
+            case "1" -> true;
+            case "0" -> false;
+            default -> throw new IllegalArgumentException(key + " must be 0 or 1, but is '" + value + "'");
+        };
+    }
+
+    private static Path parsePath(String value) {
+        String path = value.length() >= 2 && value.startsWith("\"") && value.endsWith("\"") ?
+                value.substring(1, value.length() - 1) :
+                value;
+        try {
+            return Paths.get(path);
+        } catch (InvalidPathException e) {
+            throw new IllegalArgumentException(COOKIE_AUTH_FILE + " is not a valid path: '" + value + "'", e);
+        }
+    }
+
+    // The forms of ControlPort which Bisq accepts: "port", "host:port" and "[IPv6 address]:port"
+    private static HostAndPort parseHostAndPort(String value) {
+        if (value.toLowerCase(Locale.ROOT).startsWith("unix:")) {
+            throw new IllegalArgumentException("Bisq cannot connect to a Unix socket as Tor control port: " + value);
+        }
+        String host;
+        String port;
+        if (value.startsWith("[")) {
+            int end = value.indexOf("]:");
+            if (end < 0) {
+                throw new IllegalArgumentException(CONTROL_PORT + " must be [IPv6 address]:port, but is '" + value + "'");
+            }
+            host = value.substring(1, end);
+            port = value.substring(end + 2);
+        } else if (value.contains(":")) {
+            int separator = value.lastIndexOf(':');
+            host = value.substring(0, separator);
+            port = value.substring(separator + 1);
+            if (host.contains(":")) {
+                throw new IllegalArgumentException("An IPv6 address in " + CONTROL_PORT + " must be in brackets: '" +
+                        value + "'");
+            }
+        } else {
+            host = "127.0.0.1";
+            port = value;
+        }
+        if (host.isEmpty()) {
+            throw new IllegalArgumentException(CONTROL_PORT + " has no host: '" + value + "'");
+        }
+        return new HostAndPort(host, parsePort(value, port));
+    }
+
+    private static int parsePort(String value, String port) {
+        try {
+            int portNumber = Integer.parseInt(port);
+            if (portNumber > 0 && portNumber <= 0xFFFF) {
+                return portNumber;
+            }
+        } catch (NumberFormatException ignore) {
+        }
+        throw new IllegalArgumentException(CONTROL_PORT + " has no valid port: '" + value + "'");
+    }
+
+    private record HostAndPort(String host, int port) {
+    }
+}

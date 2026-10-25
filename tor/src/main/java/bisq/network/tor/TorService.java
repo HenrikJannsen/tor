@@ -48,8 +48,6 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -62,10 +60,6 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
-import static bisq.network.tor.common.torrc.Torrc.Keys.CONTROL_PORT;
-import static bisq.network.tor.common.torrc.Torrc.Keys.COOKIE_AUTHENTICATION;
-import static bisq.network.tor.common.torrc.Torrc.Keys.COOKIE_AUTH_FILE;
-import static com.google.common.base.Preconditions.checkArgument;
 
 @Slf4j
 public class TorService {
@@ -101,7 +95,6 @@ public class TorService {
     private volatile Optional<EmbeddedTorProcess> torProcess = Optional.empty();
     private volatile Optional<TorSocksProxyFactory> torSocksProxyFactory = Optional.empty();
     private volatile OnionServiceTargets onionServiceTargets = new DirectOnionServiceTargets(LoopbackPorts.IPV4_LOOPBACK);
-    private final Map<String, String> externalTorConfigMap = new HashMap<>();
 
     public TorService(TorTransportConfig transportConfig, PlatformServices platformServices) {
         this(transportConfig, platformServices, () -> new TorController(transportConfig.getBootstrapTimeout(),
@@ -204,11 +197,11 @@ public class TorService {
     private void start() {
         makeTorDir();
 
-        readExternalTorConfigMap();
+        ExternalTorConfig externalTorConfig = readExternalTorConfig();
 
-        useExternalTor = evaluateUseExternalTor();
+        useExternalTor = evaluateUseExternalTor(externalTorConfig);
         if (useExternalTor) {
-            if (connectedToExternalTor(externalTorConfigMap)) {
+            if (connectedToExternalTor(externalTorConfig)) {
                 log.info("External Tor will be used");
                 return;
             } else if (LinuxDistribution.isWhonix()) {
@@ -342,7 +335,7 @@ public class TorService {
         }
     }
 
-    private boolean evaluateUseExternalTor() {
+    private boolean evaluateUseExternalTor(ExternalTorConfig externalTorConfig) {
         if (LinuxDistribution.isWhonix()) {
             log.info("Bisq runs on a Whonix system and use the Whonix system Tor");
             return true;
@@ -355,14 +348,9 @@ public class TorService {
                         torSkipLaunch.equalsIgnoreCase("true") ||
                         torSkipLaunch.equalsIgnoreCase("yes");
             } else {
-                // We check if external_tor.config value is set. If so we use that value
-                Optional<String> externalTorFromConfigMap = Optional.ofNullable(externalTorConfigMap.get("UseExternalTor"));
-                if (externalTorFromConfigMap.isPresent()) {
-                    return externalTorFromConfigMap.get().equals("1");
-                } else {
-                    // Last we take the value form the JVM config
-                    return transportConfig.isUseExternalTor();
-                }
+                // We check if external_tor.config value is set. If so we use that value.
+                // Last we take the value form the JVM config.
+                return externalTorConfig.getUseExternalTor().orElse(transportConfig.isUseExternalTor());
             }
         }
     }
@@ -409,7 +397,6 @@ public class TorService {
         torProcess = Optional.empty();
         onionServiceTargets.close();
         torSocksProxyFactory = Optional.empty();
-        externalTorConfigMap.clear();
         torVersion = Optional.empty();
     }
 
@@ -513,10 +500,9 @@ public class TorService {
         return socksProxyFactory.getSocks5Proxy();
     }
 
-    private boolean connectedToExternalTor(Map<String, String> torConfigMap) {
-        ControlHostAndPort controlHostAndPort = getControlHostAndPort(torConfigMap);
-        String controlHost = controlHostAndPort.host();
-        int controlPort = controlHostAndPort.port();
+    private boolean connectedToExternalTor(ExternalTorConfig externalTorConfig) {
+        String controlHost = externalTorConfig.getControlHost();
+        int controlPort = externalTorConfig.getControlPort();
         if (!isTorControlAvailable(controlHost, controlPort)) {
             log.warn("Couldn't connect to external Tor control server. " +
                     "This could happen if the control port is not correctly set up in 'external_tor.config' file.");
@@ -530,7 +516,7 @@ public class TorService {
         torController.initialize(controlPort);
 
         boolean isAuthenticated = false;
-        boolean noCookieAuthenticationRequired = Optional.ofNullable(torConfigMap.get(COOKIE_AUTHENTICATION)).orElse("0").equals("0");
+        boolean noCookieAuthenticationRequired = !externalTorConfig.isCookieAuthentication();
         if (noCookieAuthenticationRequired) {
             // No authentication required, but we still need to send an empty
             // AUTHENTICATE call to be able to send control commands
@@ -544,10 +530,10 @@ public class TorService {
         }
 
         if (!isAuthenticated) {
-            if (torConfigMap.containsKey(COOKIE_AUTH_FILE)) {
-                String authCookiePath = torConfigMap.get(COOKIE_AUTH_FILE);
+            if (externalTorConfig.getCookieAuthFile().isPresent()) {
+                Path authCookiePath = externalTorConfig.getCookieAuthFile().get();
                 try {
-                    byte[] authCookie = Files.readAllBytes(Paths.get(authCookiePath));
+                    byte[] authCookie = Files.readAllBytes(authCookiePath);
                     torController.authenticate(authCookie);
                     isAuthenticated = true;
                 } catch (TorControlAuthenticationFailed e) {
@@ -584,47 +570,25 @@ public class TorService {
         return true;
     }
 
-    private ControlHostAndPort getControlHostAndPort(Map<String, String> externalTorConfigMap) {
-        String controlPortString = externalTorConfigMap.get(CONTROL_PORT);
-        String[] tokens = controlPortString.split(":");
-        String controlHost;
-        int controlPort;
-        if (tokens.length == 2) {
-            controlHost = tokens[0];
-            controlPort = Integer.parseInt(tokens[1]);
-        } else {
-            checkArgument(tokens.length == 1,
-                    "Value for CONTROL_PORT must be in the form of 'host:port' or 'port' but was: " + controlPortString);
-            controlHost = "127.0.0.1";
-            controlPort = Integer.parseInt(tokens[0]);
-        }
-        return new ControlHostAndPort(controlHost, controlPort);
-    }
-
-    private void readExternalTorConfigMap() {
+    private ExternalTorConfig readExternalTorConfig() {
+        Path torConfigFilePath = torDirectories.getExternalTorConfigPath();
+        String torConfig;
         try {
-            Path torConfigFilePath = torDirectories.getExternalTorConfigPath();
-            String torConfig;
             if (!Files.exists(torConfigFilePath)) {
                 torConfig = FileUtils.readStringFromResource("tor/" + TorDirectories.EXTERNAL_TOR_CONFIG_FILE_NAME);
                 FileUtils.writeToPath(torConfig, torConfigFilePath, platformServices.supportsPosixPermissions());
             } else {
                 torConfig = FileUtils.readUTF8String(torConfigFilePath);
             }
-            Set<String> lines = torConfig.lines().collect(Collectors.toSet());
-            for (String line : lines) {
-                line = line.trim();
-                if (!line.isEmpty() && !line.startsWith("#")) {
-                    int firstSpaceIndex = line.indexOf(" ");
-                    if (firstSpaceIndex != -1) {
-                        String key = line.substring(0, firstSpaceIndex);
-                        String value = line.substring(firstSpaceIndex + 1);
-                        externalTorConfigMap.put(key, value);
-                    }
-                }
-            }
         } catch (IOException e) {
-            log.warn("Could not read external tor config file.", e);
+            // Without the file, Bisq cannot know whether the user wants to use an external Tor.
+            log.warn("Could not read {}", torConfigFilePath, e);
+            throw new IllegalStateException("Could not read " + torConfigFilePath + ": " + e);
+        }
+        try {
+            return ExternalTorConfig.parse(torConfig);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Invalid " + torConfigFilePath + ": " + e.getMessage(), e);
         }
     }
 
@@ -746,8 +710,6 @@ public class TorService {
         }
     }
 
-    private record ControlHostAndPort(String host, int port) {
-    }
 
     private static void closeQuietly(ServerSocket serverSocket) {
         try {
