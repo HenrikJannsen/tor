@@ -18,6 +18,8 @@
 package bisq.network.tor;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -71,6 +73,81 @@ class ExternalTorConfigTest {
         assertThat(ipv6.getControlPort()).isEqualTo(9051);
         // Without ControlPort, Bisq uses the control port which Tor uses by convention
         assertThat(ExternalTorConfig.parse("UseExternalTor 1").getControlPort()).isEqualTo(9051);
+    }
+
+    @Test
+    void aCommentAfterAValueIsIgnored() {
+        // As in a torrc, which accepts "ControlPort 127.0.0.1:9051 # x"
+        ExternalTorConfig config = ExternalTorConfig.parse("""
+                UseExternalTor 1 # as in a torrc
+                ControlPort 127.0.0.1:9051 # the port of my Tor
+                CookieAuthentication 1#x
+                CookieAuthFile "/var/run/tor/control.authcookie" # the cookie
+                """);
+
+        assertThat(config.getUseExternalTor()).contains(true);
+        assertThat(config.getControlHost()).isEqualTo("127.0.0.1");
+        assertThat(config.getControlPort()).isEqualTo(9051);
+        assertThat(config.isCookieAuthentication()).isTrue();
+        assertThat(config.getCookieAuthFile()).contains(Paths.get("/var/run/tor/control.authcookie"));
+    }
+
+    @Test
+    void aPasswordWithACommentCharacterMustBeQuoted() {
+        assertThat(ExternalTorConfig.parse("ControlPassword \"pass#word\" # x").getControlPassword())
+                .contains("pass#word");
+        assertThat(ExternalTorConfig.parse("ControlPassword pass#word").getControlPassword()).contains("pass");
+    }
+
+    @Test
+    void quotedPasswordsDecodeEscapesBeforeAuthentication() {
+        assertThat(ExternalTorConfig.parse("ControlPassword \"pass\\\"word\\\\#tail\" # comment").getControlPassword())
+                .contains("pass\"word\\#tail");
+    }
+
+    @Test
+    void unquotedPasswordsKeepLiteralBackslashes() {
+        assertThat(ExternalTorConfig.parse("ControlPassword pass\\word").getControlPassword()).contains("pass\\word");
+    }
+
+    @Test
+    void quotedOptionsAreDecodedBeforeTheirValuesAreParsed() {
+        ExternalTorConfig config = ExternalTorConfig.parse("""
+                UseExternalTor "1"
+                ControlPort "127.0.0.1:9051"
+                CookieAuthentication "1"
+                CookieAuthFile "C:\\\\tor\\\\control.authcookie"
+                """);
+
+        assertThat(config.getUseExternalTor()).contains(true);
+        assertThat(config.getControlHost()).isEqualTo("127.0.0.1");
+        assertThat(config.getControlPort()).isEqualTo(9051);
+        assertThat(config.isCookieAuthentication()).isTrue();
+        assertThat(config.getCookieAuthFile()).contains(Paths.get("C:\\tor\\control.authcookie"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"secret\\q", "secret\\x1", "secret\\400", "secret\\xff"})
+    void invalidPasswordEscapesFailWithoutExposingThePassword(String password) {
+        assertThatThrownBy(() -> ExternalTorConfig.parse("ControlPassword \"" + password + "\""))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("ControlPassword")
+                .satisfies(exception -> {
+                    for (Throwable cause = exception; cause != null; cause = cause.getCause()) {
+                        assertThat(cause.getMessage()).doesNotContain("secret");
+                    }
+                });
+    }
+
+    @Test
+    void textAfterAQuotedValueStopsTheStart() {
+        assertThatThrownBy(() -> ExternalTorConfig.parse("CookieAuthFile \"/var/run/tor/cookie\" x"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("closing quote");
+        assertThatThrownBy(() -> ExternalTorConfig.parse("ControlPassword \"secret"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("closing quote")
+                .hasMessageNotContaining("secret");
     }
 
     @Test

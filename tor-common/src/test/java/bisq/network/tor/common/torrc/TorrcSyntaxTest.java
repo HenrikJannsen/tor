@@ -19,9 +19,14 @@ package bisq.network.tor.common.torrc;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 
+import java.util.stream.Stream;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class TorrcSyntaxTest {
     @Test
@@ -41,6 +46,7 @@ class TorrcSyntaxTest {
 
         assertThat(torrcValue).startsWith("\"").endsWith("\"");
         assertThat(TorrcSyntax.findValueProblem(torrcValue)).isEmpty();
+        assertThat(TorrcSyntax.decodeQuotedString(torrcValue)).isEqualTo(value);
     }
 
     @Test
@@ -92,5 +98,33 @@ class TorrcSyntaxTest {
         assertThat(TorrcSyntax.quotedStringLength("\"a\\\"b\" # x")).isEqualTo(6);
         assertThat(TorrcSyntax.quotedStringLength("\"abc")).isEqualTo(-1);
         assertThat(TorrcSyntax.quotedStringLength("\"abc\\\"")).isEqualTo(-1);
+    }
+
+    @ParameterizedTest
+    @MethodSource("quotedValues")
+    void quotedValuesDecodeTorrcEscapes(String encoded, String expected) {
+        assertThat(TorrcSyntax.decodeQuotedString(encoded)).isEqualTo(expected);
+    }
+
+    private static Stream<Arguments> quotedValues() {
+        return Stream.of(
+                Arguments.of("\"\"", ""),
+                Arguments.of("\"plain # value\"", "plain # value"),
+                Arguments.of("\"quote\\\"apostrophe\\'backslash\\\\\"", "quote\"apostrophe'backslash\\"),
+                Arguments.of("\"a\\nb\\rc\\td\"", "a\nb\rc\td"),
+                Arguments.of("\"\\1\\12\\1234\"", "\1\nS4"),
+                Arguments.of("\"\\x41\\X4a\\x4F\"", "AJO"),
+                // Hex and octal escapes denote bytes, not Unicode code points.
+                Arguments.of("\"\u00e9\\xc3\\xbc\\303\\237\"", "\u00e9\u00fc\u00df"),
+                Arguments.of("\"\ud83d\ude00\"", "\ud83d\ude00"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"plain", "\"", "\"abc", "\"abc\\\"", "\"abc\" trailing",
+            "\"\\q\"", "\"\\x\"", "\"\\x1\"", "\"\\xGG\"", "\"\\400\"",
+            "\"\\xc3\"", "\"\\377\"", "\"a\nb\"", "\"a\0b\""})
+    void invalidQuotedValuesAreRejected(String encoded) {
+        assertThatThrownBy(() -> TorrcSyntax.decodeQuotedString(encoded))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }

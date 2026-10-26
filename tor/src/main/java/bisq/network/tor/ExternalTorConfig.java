@@ -17,6 +17,7 @@
 
 package bisq.network.tor;
 
+import bisq.network.tor.common.torrc.TorrcSyntax;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.ToString;
@@ -38,8 +39,9 @@ import static bisq.network.tor.common.torrc.Torrc.Values.ExternalTor.DEFAULT_CON
 
 /**
  * The settings for a Tor which runs outside Bisq, from the file external_tor.config. The file uses the format of a
- * torrc: one option per line, the name and the value separated by white space, and comments starting with "#". Option
- * names are case-insensitive, as in a torrc. If an option is set twice, the last value counts.
+ * torrc: one option per line, the name and the value separated by white space, and comments starting with "#", also
+ * after a value. A value in double quotes can contain a "#" and C escapes. Option names are case-insensitive, as in
+ * a torrc. If an option is set twice, the last value counts.
  */
 @Slf4j
 @Getter
@@ -84,8 +86,9 @@ public final class ExternalTorConfig {
                 .filter(line -> !line.isEmpty() && !line.startsWith("#"))
                 .forEach(line -> {
                     String[] keyAndValue = line.split("\\s+", 2);
-                    String value = keyAndValue.length == 2 ? keyAndValue[1].trim() : "";
-                    valueByLowerCaseKey.put(keyAndValue[0].toLowerCase(Locale.ROOT), value);
+                    String key = keyAndValue[0];
+                    String value = keyAndValue.length == 2 ? parseValue(key, keyAndValue[1].trim()) : "";
+                    valueByLowerCaseKey.put(key.toLowerCase(Locale.ROOT), value);
                 });
 
         Optional<Boolean> useExternalTor = Optional.ofNullable(valueByLowerCaseKey.remove(toKey(USE_EXTERNAL_TOR)))
@@ -98,7 +101,6 @@ public final class ExternalTorConfig {
         Optional<Path> cookieAuthFile = Optional.ofNullable(valueByLowerCaseKey.remove(toKey(COOKIE_AUTH_FILE)))
                 .map(ExternalTorConfig::parsePath);
         Optional<String> controlPassword = Optional.ofNullable(valueByLowerCaseKey.remove(toKey(CONTROL_PASSWORD)))
-                .map(ExternalTorConfig::removeQuotes)
                 .filter(password -> !password.isEmpty());
         if (cookieAuthentication && controlPassword.isPresent()) {
             throw new IllegalArgumentException("Set either " + COOKIE_AUTHENTICATION + " 1 or " + CONTROL_PASSWORD +
@@ -131,6 +133,28 @@ public final class ExternalTorConfig {
         return key.toLowerCase(Locale.ROOT);
     }
 
+    // As in a torrc, a "#" starts a comment, unless the value is a quoted string, in which a backslash escapes the
+    // next character. The messages do not repeat the value, which can be the password.
+    private static String parseValue(String key, String value) {
+        if (value.startsWith("\"")) {
+            int length = TorrcSyntax.quotedStringLength(value);
+            if (length < 0) {
+                throw new IllegalArgumentException(key + " has no closing quote");
+            }
+            String rest = value.substring(length).trim();
+            if (!rest.isEmpty() && !rest.startsWith("#")) {
+                throw new IllegalArgumentException(key + " has text after the closing quote");
+            }
+            try {
+                return TorrcSyntax.decodeQuotedString(value.substring(0, length));
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException(key + " has an invalid quoted value", e);
+            }
+        }
+        int comment = value.indexOf('#');
+        return comment < 0 ? value : value.substring(0, comment).trim();
+    }
+
     private static boolean parseBoolean(String key, String value) {
         return switch (value) {
             case "1" -> true;
@@ -139,16 +163,9 @@ public final class ExternalTorConfig {
         };
     }
 
-    private static String removeQuotes(String value) {
-        return value.length() >= 2 && value.startsWith("\"") && value.endsWith("\"") ?
-                value.substring(1, value.length() - 1) :
-                value;
-    }
-
     private static Path parsePath(String value) {
-        String path = removeQuotes(value);
         try {
-            return Paths.get(path);
+            return Paths.get(value);
         } catch (InvalidPathException e) {
             throw new IllegalArgumentException(COOKIE_AUTH_FILE + " is not a valid path: '" + value + "'", e);
         }
