@@ -23,6 +23,9 @@ import java.net.ServerSocket;
 /**
  * The local endpoints of the onion services of one Tor process: where Bisq accepts the connections of an onion
  * service, and which loopback port Tor connects to (the target port of {@code ADD_ONION}).
+ * <p>
+ * Tor keeps the target port of a published onion service until it ends. All calls for one onion address therefore
+ * return the same target port, also after the server socket of the onion service was closed and is bound again.
  */
 public interface OnionServiceTargets extends AutoCloseable {
     record Target(ServerSocket serverSocket, int torTargetPort) {

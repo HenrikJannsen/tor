@@ -45,6 +45,7 @@ import java.util.stream.Stream;
 @Slf4j
 public class TorControlProtocol implements AutoCloseable {
     private static final int MAX_CONNECTION_ATTEMPTS = 10;
+    private static final String SERVICE_ID_REPLY_PREFIX = "250-ServiceID=";
     // Closes a connection whose write does not end in time. One daemon thread for all connections.
     private static final ScheduledThreadPoolExecutor WRITE_TIMEOUT_SCHEDULER = createWriteTimeoutScheduler();
 
@@ -153,13 +154,29 @@ public class TorControlProtocol implements AutoCloseable {
         }
     }
 
-    public synchronized void addOnion(OnionServiceKey onionServiceKey, int onionPort, int localPort) {
+    /**
+     * @return the service ID (the onion address without ".onion") which Tor reports for the key, if the reply
+     * contains it
+     */
+    public synchronized Optional<String> addOnion(OnionServiceKey onionServiceKey, int onionPort, int localPort) {
         String base64SecretScalar = onionServiceKey.getBase64SecretScalar();
         String command = "ADD_ONION " + "ED25519-V3:" + base64SecretScalar + " Port=" + onionPort + "," + localPort + "\r\n";
 
         sendCommand(command);
         Stream<String> replyStream = receiveReply();
-        validateReply(replyStream, "ADD_ONION");
+        String reply = validateReply(replyStream, "ADD_ONION");
+        return reply.startsWith(SERVICE_ID_REPLY_PREFIX) ?
+                Optional.of(reply.substring(SERVICE_ID_REPLY_PREFIX.length())) :
+                Optional.empty();
+    }
+
+    public synchronized void delOnion(String serviceId) {
+        String command = "DEL_ONION " + serviceId + "\r\n";
+        sendCommand(command);
+        String reply = receiveReply().findFirst().orElseThrow();
+        if (!isSuccessReply(reply)) {
+            throw new ControlCommandFailedException("Couldn't remove onion service " + serviceId + ": " + reply);
+        }
     }
 
     public synchronized String getInfo(String keyword) {

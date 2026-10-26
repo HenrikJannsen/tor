@@ -41,6 +41,7 @@ public class PublishOnionAddressService extends FilteredHsDescEventListener {
     private final int timeout;
     private final OnionServiceKey onionServiceKey;
     private final CountDownLatch countDownLatch = new CountDownLatch(1);
+    private volatile boolean isShutdown;
     @Getter
     private Optional<CompletableFuture<Void>> future = Optional.empty();
 
@@ -61,19 +62,16 @@ public class PublishOnionAddressService extends FilteredHsDescEventListener {
         future = Optional.of(CompletableFuture.runAsync(() -> {
                     torControlProtocol.addHsDescEventListener(this);
 
+                    String serviceId = onionServiceKey.getOnionAddress().replace(".onion", "");
                     torControlProtocol.addOnion(onionServiceKey, onionServicePort, localPort);
 
-                    boolean isSuccess;
                     try {
-                        isSuccess = countDownLatch.await(timeout, TimeUnit.MILLISECONDS);
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt(); // Restore interrupted state
-                        throw new HsDescUploadFailedException(e);
-                    } catch (Exception e) {
-                        throw new HsDescUploadFailedException(e);
-                    }
-                    if (!isSuccess) {
-                        throw new HsDescUploadFailedException("Could not get onion address upload completed in " + timeout + " ms");
+                        awaitUpload();
+                    } catch (RuntimeException e) {
+                        // Tor keeps the onion service until the control connection ends. A new publication of the
+                        // onion address would fail with "550 Onion address collision".
+                        removeOnionServiceQuietly(serviceId);
+                        throw e;
                     }
                 }, executor)
                 .whenComplete((nil, throwable) -> {
@@ -84,7 +82,39 @@ public class PublishOnionAddressService extends FilteredHsDescEventListener {
         return future.get();
     }
 
+    private void awaitUpload() {
+        boolean isSuccess;
+        try {
+            isSuccess = countDownLatch.await(timeout, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt(); // Restore interrupted state
+            throw new HsDescUploadFailedException(e);
+        } catch (Exception e) {
+            throw new HsDescUploadFailedException(e);
+        }
+        if (isShutdown) {
+            throw new HsDescUploadFailedException("The Tor controller was shut down before the onion " +
+                    "service was published");
+        }
+        if (!isSuccess) {
+            throw new HsDescUploadFailedException("Could not get onion address upload completed in " + timeout + " ms");
+        }
+    }
+
+    private void removeOnionServiceQuietly(String serviceId) {
+        if (isShutdown) {
+            // The control connection ends, and Tor removes the onion service with it.
+            return;
+        }
+        try {
+            torControlProtocol.delOnion(serviceId);
+        } catch (RuntimeException e) {
+            log.warn("Could not remove the onion service {}.onion from Tor", serviceId, e);
+        }
+    }
+
     public void shutdown() {
+        isShutdown = true;
         torControlProtocol.removeHsDescEventListener(this);
         if (countDownLatch.getCount() > 0) {
             countDownLatch.countDown();

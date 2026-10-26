@@ -1,5 +1,6 @@
 package bisq.network.tor.controller;
 
+import bisq.network.tor.controller.exceptions.HsDescUploadFailedException;
 import bisq.network.tor.controller.exceptions.TorBootstrapFailedException;
 import bisq.network.tor.onionservice.OnionServiceKey;
 import lombok.extern.slf4j.Slf4j;
@@ -92,7 +93,8 @@ public class TorController {
 
     public void publish(OnionServiceKey onionServiceKey, int onionServicePort, int localPort) throws InterruptedException {
         if (isShutdownInProgress) {
-            return;
+            // The caller must not take the onion service as published.
+            throw new HsDescUploadFailedException("The Tor controller is shut down");
         }
         publishAsync(onionServiceKey, onionServicePort, localPort).join();
     }

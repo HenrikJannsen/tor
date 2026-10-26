@@ -31,6 +31,7 @@ import bisq.network.tor.onionservice.OnionServiceKey;
 import bisq.network.tor.onionservice.OnionServiceTargets;
 import bisq.network.tor.process.EmbeddedTorProcess;
 import bisq.network.tor.process.LdPreload;
+import bisq.network.tor.process.LoopbackPorts;
 import bisq.network.tor.process.TorDirectories;
 import bisq.network.tor.process.TorStartupFailedException;
 import bisq.network.tor.process.control_port.ControlPortFileParser;
@@ -40,7 +41,6 @@ import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
-import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
@@ -54,6 +54,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
@@ -92,7 +93,7 @@ public class TorService {
 
     private Optional<EmbeddedTorProcess> torProcess = Optional.empty();
     private Optional<TorSocksProxyFactory> torSocksProxyFactory = Optional.empty();
-    private volatile OnionServiceTargets onionServiceTargets = new DirectOnionServiceTargets(getOnionServiceBindAddress());
+    private volatile OnionServiceTargets onionServiceTargets = new DirectOnionServiceTargets(LoopbackPorts.IPV4_LOOPBACK);
     private final Map<String, String> externalTorConfigMap = new HashMap<>();
 
     public TorService(TorTransportConfig transportConfig, PlatformServices platformServices) {
@@ -294,11 +295,16 @@ public class TorService {
 
             return CompletableFuture.completedFuture(onionAddress);
         } catch (InterruptedException e) {
-            log.error("Can't create onion service", e);
+            log.warn("Can't create onion service. Thread got interrupted at publishOnionService method", e);
+            Thread.currentThread().interrupt(); // Restore interrupted state
             return CompletableFuture.failedFuture(e);
         } catch (IOException e) {
             log.error("Can't create onion service", e);
             return CompletableFuture.failedFuture(e);
+        } catch (RuntimeException e) {
+            Throwable cause = unwrapCompletionException(e);
+            log.error("Can't create onion service", cause);
+            return CompletableFuture.failedFuture(cause);
         }
     }
 
@@ -326,9 +332,21 @@ public class TorService {
             return CompletableFuture.completedFuture(target.serverSocket());
         } catch (InterruptedException e) {
             log.warn("Can't create onion service. Thread got interrupted at publishOnionService method", e);
+            closeQuietly(target.serverSocket());
             Thread.currentThread().interrupt(); // Restore interrupted state
             return CompletableFuture.failedFuture(e);
+        } catch (RuntimeException e) {
+            closeQuietly(target.serverSocket());
+            Throwable cause = unwrapCompletionException(e);
+            log.error("Can't create onion service", cause);
+            return CompletableFuture.failedFuture(cause);
         }
+    }
+
+    // TorController.publish reports a failed publication as a CompletionException with the failure as its cause. The
+    // hosts wait on the returned future, so the failure belongs into the future, as for the other failures.
+    private static Throwable unwrapCompletionException(RuntimeException e) {
+        return e instanceof CompletionException && e.getCause() != null ? e.getCause() : e;
     }
 
     public CompletableFuture<Boolean> isOnionServiceOnlineAsync(String onionUrl) {
@@ -402,6 +420,9 @@ public class TorService {
                 return false;
             }
         }
+
+        onionServiceTargets.close();
+        onionServiceTargets = new DirectOnionServiceTargets(getExternalTorBindAddress());
 
         torVersion = torController.getTorVersion();
         log.info("The external Tor at {}:{} has version {}", controlHost, controlPort,
@@ -527,11 +548,12 @@ public class TorService {
         return torrcConfigMap;
     }
 
-    private static InetAddress getOnionServiceBindAddress() {
+    private static InetAddress getExternalTorBindAddress() {
         if (!LinuxDistribution.isWhonix()) {
-            return Inet4Address.getLoopbackAddress();
+            return LoopbackPorts.IPV4_LOOPBACK;
         }
         try {
+            // The Tor of Whonix runs on the Whonix-Gateway and connects to the workstation over the internal network.
             return InetAddress.getByName("0.0.0.0");
         } catch (IOException e) {
             throw new IllegalStateException(e);
@@ -539,5 +561,12 @@ public class TorService {
     }
 
     private record ControlHostAndPort(String host, int port) {
+    }
+
+    private static void closeQuietly(ServerSocket serverSocket) {
+        try {
+            serverSocket.close();
+        } catch (IOException ignore) {
+        }
     }
 }
