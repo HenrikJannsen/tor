@@ -64,29 +64,48 @@ public class TorControlReader implements AutoCloseable {
         String[] parts = line.split(" ");
 
         boolean parsedEvent = false;
-        if (parts.length > 2) {
-            String eventType = parts[1];
+        try {
+            if (parts.length > 2) {
+                String eventType = parts[1];
 
-            if (isStatusClientEvent(eventType)) {
-                Optional<TorBootstrapEvent> bootstrapEventOptional = BootstrapEventParser.tryParse(parts);
-                if (bootstrapEventOptional.isPresent()) {
-                    parsedEvent = true;
-                    TorBootstrapEvent torBootstrapEvent = bootstrapEventOptional.get();
-                    bootstrapEventListeners.forEach(listener -> listener.onBootstrapStatusEvent(torBootstrapEvent));
-                }
+                if (isStatusClientEvent(eventType)) {
+                    Optional<TorBootstrapEvent> bootstrapEventOptional = BootstrapEventParser.tryParse(parts);
+                    if (bootstrapEventOptional.isPresent()) {
+                        parsedEvent = true;
+                        TorBootstrapEvent torBootstrapEvent = bootstrapEventOptional.get();
+                        for (BootstrapEventListener listener : bootstrapEventListeners) {
+                            notifyListener(() -> listener.onBootstrapStatusEvent(torBootstrapEvent), line);
+                        }
+                    }
 
-            } else if (isHsDescEvent(eventType)) {
-                Optional<HsDescEvent> hsDescEventOptional = HsDescEventParser.tryParse(parts);
-                if (hsDescEventOptional.isPresent()) {
-                    parsedEvent = true;
-                    HsDescEvent hsDescEvent = hsDescEventOptional.get();
-                    hsDescEventListeners.forEach(listener -> listener.onHsDescEvent(hsDescEvent));
+                } else if (isHsDescEvent(eventType)) {
+                    Optional<HsDescEvent> hsDescEventOptional = HsDescEventParser.tryParse(parts);
+                    if (hsDescEventOptional.isPresent()) {
+                        parsedEvent = true;
+                        HsDescEvent hsDescEvent = hsDescEventOptional.get();
+                        for (HsDescEventListener listener : hsDescEventListeners) {
+                            notifyListener(() -> listener.onHsDescEvent(hsDescEvent), line);
+                        }
+                    }
                 }
             }
+        } catch (RuntimeException e) {
+            // A malformed event must not end the reader. Otherwise every later command would wait forever.
+            log.warn("Could not handle Tor event: {}", TorControlLogFormat.toLoggableReply(line), e);
+            return;
         }
 
         if (!parsedEvent) {
             log.info("Unknown Tor event: {}", TorControlLogFormat.toLoggableReply(line));
+        }
+    }
+
+    // A listener which fails must not keep the event from the other listeners.
+    private static void notifyListener(Runnable notification, String line) {
+        try {
+            notification.run();
+        } catch (RuntimeException e) {
+            log.warn("A listener could not handle the Tor event: {}", TorControlLogFormat.toLoggableReply(line), e);
         }
     }
 
