@@ -27,6 +27,8 @@ import bisq.network.tor.controller.TorController;
 import bisq.network.tor.installer.TorInstaller;
 import bisq.network.tor.onionservice.OnionServiceKey;
 import bisq.network.tor.process.EmbeddedTorProcess;
+import bisq.network.tor.process.LdPreload;
+import bisq.network.tor.process.TorStartupFailedException;
 import bisq.network.tor.process.control_port.ControlPortFileParser;
 import com.runjva.sourceforge.jsocks.protocol.Socks5Proxy;
 import lombok.Getter;
@@ -43,6 +45,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -51,6 +54,7 @@ import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 import static bisq.network.tor.common.torrc.Torrc.Keys.CONTROL_PORT;
@@ -144,7 +148,8 @@ public class TorService {
             throw new RuntimeException("Failed to delete tor control port file", e);
         }
 
-        var embeddedTorProcess = new EmbeddedTorProcess(torBinaryPath, torDataDirPath, platformServices.getMyPid());
+        createTorControlDirectory();
+        EmbeddedTorProcess embeddedTorProcess = createTorProcess(torBinaryPath);
         torProcess = Optional.of(embeddedTorProcess);
         embeddedTorProcess.start();
 
@@ -175,6 +180,34 @@ public class TorService {
         torSocksProxyFactory = Optional.of(new TorSocksProxyFactory(port));
 
         return CompletableFuture.completedFuture(true);
+    }
+
+    private EmbeddedTorProcess createTorProcess(Path torBinaryPath) {
+        Consumer<Map<String, String>> environmentAdjuster = torBinaryPath.startsWith(torDataDirPath) ?
+                environment -> LdPreload.applyToEnvironment(environment, torDataDirPath) :
+                environment -> {
+                };
+        return new EmbeddedTorProcess(createTorCommand(torBinaryPath),
+                torDataDirPath,
+                environmentAdjuster,
+                torDataDirPath.resolve("tor-stdout.log"),
+                torDataDirPath.resolve("tor-stderr.log"));
+    }
+
+    private List<String> createTorCommand(Path torBinaryPath) {
+        String ownerPid = platformServices.getMyPid();
+        return EmbeddedTorProcess.torCommand(torBinaryPath, torDataDirPath.resolve("torrc"), ownerPid);
+    }
+
+    private void createTorControlDirectory() {
+        Path controlDirFilePath = torDataDirPath.resolve(BaseTorrcGenerator.CONTROL_DIR_NAME);
+        if (!Files.exists(controlDirFilePath)) {
+            try {
+                FileUtils.createDirectories(controlDirFilePath);
+            } catch (IOException e) {
+                throw new TorStartupFailedException("Couldn't create Tor control directory.");
+            }
+        }
     }
 
     private boolean evaluateUseExternalTor() {
