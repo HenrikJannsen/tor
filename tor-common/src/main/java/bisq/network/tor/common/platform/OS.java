@@ -35,7 +35,8 @@ public class OS {
     }
 
     public static boolean isWindows() {
-        return getOsName().contains("win");
+        // Not contains("win"): "darwin" contains it too
+        return getOsName().startsWith("windows");
     }
 
     private static boolean isAndroid() {
