@@ -27,6 +27,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -53,22 +54,7 @@ class LocalEmbeddedTorStartTest {
 
         var transportConfig = new TorTransportConfig(torDir, 3000, 1000, false, Set.of(),
                 Map.of("Socks5Proxy", "127.0.0.1:1"), false);
-        var torService = new TorService(transportConfig, new PlatformServices() {
-            @Override
-            public String getMyPid() {
-                return String.valueOf(ProcessHandle.current().pid());
-            }
-
-            @Override
-            public Stream<String> getProcessCommandStream() {
-                return ProcessHandle.allProcesses().map(process -> process.info().command().orElse(""));
-            }
-
-            @Override
-            public boolean supportsPosixPermissions() {
-                return true;
-            }
-        });
+        var torService = new TorService(transportConfig, new LocalPlatformServices());
 
         assertThatThrownBy(() -> torService.initialize())
                 .satisfies(e -> assertThat(Throwables.getRootCause(e)).isInstanceOf(TorBootstrapFailedException.class));
@@ -113,6 +99,26 @@ class LocalEmbeddedTorStartTest {
                 .contains("DataDirectory \"" + hashTorDir.toAbsolutePath() + "\"\n");
         assertThat(hashTorDir.resolve("state")).exists();
         assertThatNoTorOfThisTestRuns(hashTorDir);
+    }
+
+    @Test
+    void aStartWithBridgesConnectsOnlyToTheBridges() throws Exception {
+        assumeTrue(OS.isLinux(), "Only Linux runs the tor of the system");
+        assumeTrue(EmbeddedTorProcess.getSystemTorPath().isPresent(), "No tor in PATH");
+        // A bridge without pluggable transport on a closed local port. With UseBridges, Tor connects to no other
+        // relay, so it cannot bootstrap.
+        String bridgeLine = "127.0.0.1:1 0123456789ABCDEF0123456789ABCDEF01234567";
+        var transportConfig = new TorTransportConfig(torDir, 3000, 1000, false, Set.of(),
+                Map.of("UseBridges", "0"), false, BridgeConfig.custom(List.of(bridgeLine)));
+        var torService = new TorService(transportConfig, new LocalPlatformServices());
+
+        assertThatThrownBy(() -> torService.initialize())
+                .satisfies(e -> assertThat(Throwables.getRootCause(e)).isInstanceOf(TorBootstrapFailedException.class));
+
+        // Tor accepted the bridge entries. The override of UseBridges is ignored.
+        String torrc = Files.readString(torDir.resolve("torrc"));
+        assertThat(torrc).contains("UseBridges 1\n", "Bridge " + bridgeLine + "\n").doesNotContain("UseBridges 0");
+        assertThatNoTorOfThisTestRuns();
     }
 
     private void assertThatNoTorOfThisTestRuns() {

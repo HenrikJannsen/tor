@@ -17,6 +17,7 @@
 
 package bisq.network.tor;
 
+import bisq.network.tor.common.platform.OS;
 import bisq.network.tor.installer.TorInstaller;
 import bisq.network.tor.process.LdPreload;
 import org.junit.jupiter.api.Test;
@@ -27,10 +28,12 @@ import java.nio.file.Path;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 public class InstallerAndRunRaceConditionTest {
     @Test
     void test(@TempDir Path tempDirPath) throws IOException, InterruptedException {
+        assumeFalse(OS.isLinux(), "On Linux the bundle has no tor, because Bisq uses the tor of the system");
         var torInstaller = new TorInstaller(tempDirPath);
         torInstaller.installIfNotUpToDate();
 

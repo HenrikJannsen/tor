@@ -28,6 +28,7 @@ import lombok.extern.slf4j.Slf4j;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -45,8 +46,22 @@ public class TorTransportConfig {
                 config.getBoolean("testNetwork"),
                 parseDirectoryAuthorities(config.getList("directoryAuthorities")),
                 parseTorrcOverrideConfig(config.getConfig("torrcOverrides")),
-                config.getBoolean("useExternalTor")
+                config.getBoolean("useExternalTor"),
+                parseBridgeConfig(config)
         );
+    }
+
+    // The bridges are optional, so that a configuration without them stays valid.
+    private static BridgeConfig parseBridgeConfig(com.typesafe.config.Config config) {
+        String builtInBridges = config.hasPath("builtInBridges") ? config.getString("builtInBridges").trim() : "";
+        List<String> bridges = config.hasPath("bridges") ? config.getStringList("bridges") : List.of();
+        if (!builtInBridges.isEmpty() && !bridges.isEmpty()) {
+            throw new IllegalArgumentException("Set either builtInBridges or bridges, not both");
+        }
+        if (!builtInBridges.isEmpty()) {
+            return BridgeConfig.builtIn(builtInBridges);
+        }
+        return bridges.isEmpty() ? BridgeConfig.NONE : BridgeConfig.custom(bridges);
     }
 
     private static Set<DirectoryAuthority> parseDirectoryAuthorities(ConfigList directoryAuthoritiesConfig) {
@@ -89,6 +104,8 @@ public class TorTransportConfig {
     private final Set<DirectoryAuthority> directoryAuthorities;
     private final Map<String, String> torrcOverrides;
     private final boolean useExternalTor;
+    // Only for the Tor which Bisq starts
+    private final BridgeConfig bridgeConfig;
 
     public TorTransportConfig(Path dataDirPath,
                               int bootstrapTimeout,
@@ -97,6 +114,24 @@ public class TorTransportConfig {
                               Set<DirectoryAuthority> directoryAuthorities,
                               Map<String, String> torrcOverrides,
                               boolean useExternalTor) {
+        this(dataDirPath,
+                bootstrapTimeout,
+                hsUploadTimeout,
+                isTestNetwork,
+                directoryAuthorities,
+                torrcOverrides,
+                useExternalTor,
+                BridgeConfig.NONE);
+    }
+
+    public TorTransportConfig(Path dataDirPath,
+                              int bootstrapTimeout,
+                              int hsUploadTimeout,
+                              boolean isTestNetwork,
+                              Set<DirectoryAuthority> directoryAuthorities,
+                              Map<String, String> torrcOverrides,
+                              boolean useExternalTor,
+                              BridgeConfig bridgeConfig) {
         this.dataDirPath = dataDirPath;
         this.bootstrapTimeout = bootstrapTimeout;
         this.hsUploadTimeout = hsUploadTimeout;
@@ -104,5 +139,6 @@ public class TorTransportConfig {
         this.directoryAuthorities = directoryAuthorities;
         this.torrcOverrides = torrcOverrides;
         this.useExternalTor = useExternalTor;
+        this.bridgeConfig = bridgeConfig;
     }
 }

@@ -65,13 +65,14 @@ class TorBundlePinsTest {
         }
 
         for (Platform platform : Platform.values()) {
-            String url = new TorBinaryUrlProvider(torVersion).urlFor(platform);
+            Platform bundlePlatform = TorBinaryPackager.Companion.bundlePlatform(platform);
+            String url = new TorBinaryUrlProvider(torVersion).urlFor(bundlePlatform);
             if (url == null) {
                 continue;
             }
             String fileName = url.substring(url.lastIndexOf('/') + 1);
-            String pinnedSha256 = gradleProperties.getProperty("tor.bundleSha256." + platform.getPlatformName());
-            assertNotNull(pinnedSha256, "No pin for " + platform.getPlatformName());
+            String pinnedSha256 = gradleProperties.getProperty("tor.bundleSha256." + bundlePlatform.getPlatformName());
+            assertNotNull(pinnedSha256, "No pin for " + bundlePlatform.getPlatformName());
             assertEquals(signedSha256ByFileName.get(fileName), pinnedSha256, fileName);
         }
     }

@@ -21,6 +21,7 @@ import bisq.network.tor.common.file.FileUtils;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -29,13 +30,26 @@ import static com.google.common.base.Preconditions.checkArgument;
 public class TorrcFileGenerator {
     private final Path torrcPath;
     private final Map<String, String> torrcConfigMap;
+    private final List<Map.Entry<String, String>> repeatedEntries;
     private final Set<DirectoryAuthority> customDirectoryAuthorities;
 
     public TorrcFileGenerator(Path torrcPath,
                               Map<String, String> torrcConfigMap,
                               Set<DirectoryAuthority> customDirectoryAuthorities) {
+        this(torrcPath, torrcConfigMap, List.of(), customDirectoryAuthorities);
+    }
+
+    /**
+     * @param repeatedEntries entries whose key can occur more than once, for example {@code Bridge}. They follow the
+     *                        entries of torrcConfigMap, in their order.
+     */
+    public TorrcFileGenerator(Path torrcPath,
+                              Map<String, String> torrcConfigMap,
+                              List<Map.Entry<String, String>> repeatedEntries,
+                              Set<DirectoryAuthority> customDirectoryAuthorities) {
         this.torrcPath = torrcPath;
         this.torrcConfigMap = torrcConfigMap;
+        this.repeatedEntries = List.copyOf(repeatedEntries);
         this.customDirectoryAuthorities = customDirectoryAuthorities;
     }
 
@@ -45,6 +59,7 @@ public class TorrcFileGenerator {
     public void generate() {
         StringBuilder torrcStringBuilder = new StringBuilder();
         torrcConfigMap.forEach((key, value) -> appendEntry(torrcStringBuilder, key, value));
+        repeatedEntries.forEach(entry -> appendEntry(torrcStringBuilder, entry.getKey(), entry.getValue()));
 
         // The fields of an authority are checked by toTorrcValue, and the entry passes the value rules as well.
         customDirectoryAuthorities.forEach(dirAuthority ->

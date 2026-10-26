@@ -195,7 +195,7 @@ public class EmbeddedTorProcess {
     /**
      * @param pathEnvironmentVariable the value of PATH, or null if it is not set
      */
-    static Optional<Path> findExecutableInPath(String pathEnvironmentVariable, String fileName) {
+    public static Optional<Path> findExecutableInPath(String pathEnvironmentVariable, String fileName) {
         if (pathEnvironmentVariable == null) {
             return Optional.empty();
         }

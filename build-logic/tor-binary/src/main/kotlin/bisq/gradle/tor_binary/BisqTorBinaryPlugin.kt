@@ -15,19 +15,19 @@ class BisqTorBinaryPlugin : Plugin<Project> {
 
     override fun apply(project: Project) {
         val extension = project.extensions.create<BisqTorBinaryPluginExtension>("tor")
-        val platform = getPlatform()
-        val platformName = platform.platformName
+        val bundlePlatform = TorBinaryPackager.bundlePlatform(getPlatform())
+        val bundlePlatformName = bundlePlatform.platformName
 
         val torBinaryDownloader = SignedBinaryDownloader(
             project = project,
             binaryName = "Tor",
             version = extension.version,
 
-            platform = platform,
+            platform = bundlePlatform,
             // A valid signature alone would also accept the signed bundle of another release
             sha256 = extension.bundleSha256.map { pins ->
-                pins[platformName] ?: throw GradleException("No SHA-256 of the Tor expert bundle for " +
-                        "$platformName is pinned: set tor.bundleSha256.$platformName in gradle.properties.")
+                pins[bundlePlatformName] ?: throw GradleException("No SHA-256 of the Tor expert bundle for " +
+                        "$bundlePlatformName is pinned: set tor.bundleSha256.$bundlePlatformName in gradle.properties.")
             },
             perPlatformUrlProvider = { version -> TorBinaryUrlProvider(version) },
             downloadDirectory = DOWNLOADS_DIR,

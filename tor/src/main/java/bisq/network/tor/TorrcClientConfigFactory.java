@@ -17,6 +17,7 @@
 
 package bisq.network.tor;
 
+import bisq.network.tor.bridges.BridgeTorrcEntries;
 import bisq.network.tor.common.torrc.BaseTorrcGenerator;
 import bisq.network.tor.common.torrc.ClientTorrcGenerator;
 import bisq.network.tor.common.torrc.TestNetworkTorrcGenerator;
@@ -64,16 +65,24 @@ public class TorrcClientConfigFactory {
             "owningcontrollerfd", "hashedcontrolsessionpassword", "cookieauthentication", "cookieauthfile",
             "cookieauthfilegroupreadable");
 
+    private static final Set<String> BRIDGE_KEYS = BridgeTorrcEntries.KEYS.stream()
+            .map(key -> key.toLowerCase(Locale.ROOT))
+            .collect(Collectors.toUnmodifiableSet());
+
     private final boolean isTestNetwork;
     private final Path dataDirPath;
     private final PasswordDigest hashedControlPassword;
+    // With the bridges of the Bisq configuration, Bisq also sets the torrc keys of the bridges.
+    private final boolean usesBridges;
 
     public TorrcClientConfigFactory(boolean isTestNetwork,
                                     Path dataDirPath,
-                                    PasswordDigest hashedControlPassword) {
+                                    PasswordDigest hashedControlPassword,
+                                    boolean usesBridges) {
         this.isTestNetwork = isTestNetwork;
         this.dataDirPath = dataDirPath;
         this.hashedControlPassword = hashedControlPassword;
+        this.usesBridges = usesBridges;
     }
 
     public Map<String, String> torrcClientConfigMap(Map<String, String> torrcOverrides) {
@@ -89,6 +98,8 @@ public class TorrcClientConfigFactory {
                 log.warn("We ignore the torrc override of {}, because Bisq sets it for the embedded Tor", key);
             } else if (isControlAccessKey(key)) {
                 log.warn("We ignore the torrc override of {}, because Bisq alone controls the embedded Tor", key);
+            } else if (usesBridges && isPrefixOfAny(key, BRIDGE_KEYS)) {
+                log.warn("We ignore the torrc override of {}, because Bisq sets the bridges of its configuration", key);
             } else {
                 // An override replaces a key of Bisq which it names in any case or as an abbreviation. Otherwise both
                 // entries would be written, and Tor would take one of them by the order of the map.

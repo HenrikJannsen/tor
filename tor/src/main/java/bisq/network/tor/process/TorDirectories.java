@@ -33,9 +33,11 @@ import java.nio.file.Path;
 @EqualsAndHashCode
 public final class TorDirectories {
     public static final String EXTERNAL_TOR_CONFIG_FILE_NAME = "external_tor.config";
+    public static final String PLUGGABLE_TRANSPORTS_DIR_NAME = "pluggable_transports";
 
     private final Path baseDirPath;
-    // The bundled Tor (macOS and Windows): binary, libraries, pluggable transports and GeoIP files.
+    // The installed files of the Tor expert bundle. On macOS and Windows: binary, libraries, pluggable transports and
+    // GeoIP files. On Linux, where Bisq uses the tor of the system: the pluggable transports.
     private final Path binaryDirPath;
     // The DataDirectory of Tor.
     private final Path dataDirPath;
@@ -67,6 +69,15 @@ public final class TorDirectories {
     // An empty OpenSSL configuration for the bundled Tor
     public Path getOpenSslConfigPath() {
         return baseDirPath.resolve("openssl.cnf");
+    }
+
+    public Path getPluggableTransportsDirPath() {
+        return binaryDirPath.resolve(PLUGGABLE_TRANSPORTS_DIR_NAME);
+    }
+
+    // The configuration of the pluggable transports and the built-in bridges of the Tor Browser version of the bundle
+    public Path getPluggableTransportConfigPath() {
+        return getPluggableTransportsDirPath().resolve("pt_config.json");
     }
 
     public Path getBundledTorBinaryPath() {

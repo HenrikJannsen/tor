@@ -17,6 +17,9 @@
 
 package bisq.network.tor;
 
+import bisq.network.tor.bridges.BridgeTorrcEntries;
+import bisq.network.tor.bridges.PluggableTransportConfig;
+import bisq.network.tor.bridges.PluggableTransportPrograms;
 import bisq.network.tor.common.file.FileUtils;
 import bisq.network.tor.common.platform.LinuxDistribution;
 import bisq.network.tor.common.platform.OS;
@@ -236,6 +239,10 @@ public class TorService {
 
         useExternalTor = evaluateUseExternalTor(externalTorConfig);
         if (useExternalTor) {
+            if (transportConfig.getBridgeConfig().isUsed()) {
+                log.warn("Bisq does not use the bridges of its configuration, because it uses an external Tor. The " +
+                        "external Tor uses the bridges of its own configuration.");
+            }
             try {
                 connectToExternalTor(externalTorConfig);
             } catch (RuntimeException e) {
@@ -258,9 +265,8 @@ public class TorService {
     }
 
     private void startEmbeddedTor() {
-        if (!OS.isLinux()) {
-            installTorIfNotUpToDate();
-        }
+        // On Linux the bundle has only the pluggable transports, because Bisq uses the tor of the system.
+        installTorIfNotUpToDate();
 
         Path torBinaryPath = getTorBinaryPath();
 
@@ -832,10 +838,12 @@ public class TorService {
     }
 
     private Map<String, String> createTorrcConfigFile(PasswordDigest hashedControlPassword, boolean isBundledTor) {
+        BridgeConfig bridgeConfig = transportConfig.getBridgeConfig();
         TorrcClientConfigFactory torrcClientConfigFactory = TorrcClientConfigFactory.builder()
                 .isTestNetwork(transportConfig.isTestNetwork())
                 .dataDirPath(torDirectories.getDataDirPath())
                 .hashedControlPassword(hashedControlPassword)
+                .usesBridges(bridgeConfig.isUsed())
                 .build();
 
         Map<String, String> torrcOverrideConfigs = transportConfig.getTorrcOverrides();
@@ -844,11 +852,31 @@ public class TorService {
             putBundledGeoIpFiles(torrcConfigMap, torDirectories);
         }
 
+        List<Map.Entry<String, String>> bridgeEntries = bridgeConfig.isUsed() ?
+                createBridgeTorrcEntries(bridgeConfig) :
+                List.of();
+
         var torrcFileGenerator = new TorrcFileGenerator(torDirectories.getTorrcPath(),
                 torrcConfigMap,
+                bridgeEntries,
                 transportConfig.getDirectoryAuthorities());
         torrcFileGenerator.generate();
         return torrcConfigMap;
+    }
+
+    private List<Map.Entry<String, String>> createBridgeTorrcEntries(BridgeConfig bridgeConfig) {
+        PluggableTransportConfig pluggableTransportConfig =
+                PluggableTransportConfig.read(torDirectories.getPluggableTransportConfigPath());
+        Path bundleDirPath = torDirectories.getBinaryDirPath();
+        List<Map.Entry<String, String>> bridgeEntries = BridgeTorrcEntries.create(bridgeConfig,
+                pluggableTransportConfig,
+                programName -> PluggableTransportPrograms.find(bundleDirPath, programName));
+        // The bridge lines are not logged: a bridge which the user got privately would be blocked once it is known.
+        log.info("The embedded Tor connects through {}",
+                bridgeConfig.getBuiltInBridges()
+                        .map(name -> "the built-in bridges of the type " + name)
+                        .orElse(bridgeConfig.getCustomBridgeLines().size() + " bridges of the user"));
+        return bridgeEntries;
     }
 
     private InetAddress getExternalTorBindAddress() {

@@ -41,6 +41,9 @@ class TorDirectoriesTest {
         assertThat(directories.getOpenSslConfigPath()).isEqualTo(BASE.resolve("openssl.cnf"));
         assertThat(directories.getBundledGeoIpFilePath()).isEqualTo(BASE.resolve("geoip"));
         assertThat(directories.getBundledGeoIpv6FilePath()).isEqualTo(BASE.resolve("geoip6"));
+        assertThat(directories.getPluggableTransportsDirPath()).isEqualTo(BASE.resolve("pluggable_transports"));
+        assertThat(directories.getPluggableTransportConfigPath())
+                .isEqualTo(BASE.resolve("pluggable_transports").resolve("pt_config.json"));
     }
 
     @Test
