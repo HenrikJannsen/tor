@@ -17,17 +17,45 @@
 
 package bisq.network.tor.process;
 
+import java.io.IOException;
 import java.net.InetAddress;
+import java.net.ServerSocket;
 import java.net.UnknownHostException;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Collectors;
 
 public final class LoopbackPorts {
     /**
-     * Tor and Bisq use IPv4 loopback for the local connections between them. {@link
+     * Tor, sandy and Bisq use IPv4 loopback for the local connections between them. {@link
      * InetAddress#getLoopbackAddress()} returns the IPv6 address when the JVM prefers IPv6.
      */
     public static final InetAddress IPV4_LOOPBACK = createIpv4Loopback();
 
     private LoopbackPorts() {
+    }
+
+    /**
+     * Returns {@code count} distinct loopback ports which are free at the time of the call. The ports are released
+     * before the method returns, so another process can take one of them before Tor or sandy binds it. Tor then fails
+     * to start with a bind error, and the next start uses other ports.
+     */
+    public static List<Integer> allocate(int count) throws IOException {
+        List<ServerSocket> serverSockets = new ArrayList<>(count);
+        try {
+            for (int i = 0; i < count; i++) {
+                // Keeping every socket open until all are chosen makes the ports distinct.
+                serverSockets.add(new ServerSocket(0, 1, IPV4_LOOPBACK));
+            }
+            return serverSockets.stream().map(ServerSocket::getLocalPort).collect(Collectors.toList());
+        } finally {
+            for (ServerSocket serverSocket : serverSockets) {
+                try {
+                    serverSocket.close();
+                } catch (IOException ignore) {
+                }
+            }
+        }
     }
 
     private static InetAddress createIpv4Loopback() {
