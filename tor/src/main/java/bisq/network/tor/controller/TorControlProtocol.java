@@ -49,6 +49,8 @@ public class TorControlProtocol implements AutoCloseable {
     private static final String SERVICE_ID_REPLY_PREFIX = "250-ServiceID=";
     // Far more than any reply to the commands of Bisq.
     static final int MAX_REPLY_LENGTH = 1024 * 1024;
+    // The service ID of a v3 onion service: its address without ".onion"
+    private static final Pattern SERVICE_ID_PATTERN = Pattern.compile("[a-z2-7]{56}");
     // Closes a connection whose write does not end in time. One daemon thread for all connections.
     private static final ScheduledThreadPoolExecutor WRITE_TIMEOUT_SCHEDULER = createWriteTimeoutScheduler();
 
@@ -176,11 +178,17 @@ public class TorControlProtocol implements AutoCloseable {
         String command = "ADD_ONION " + "ED25519-V3:" + base64SecretScalar + " Port=" + onionPort + "," + localPort + "\r\n";
 
         sendCommand(command);
-        Stream<String> replyStream = receiveReply();
-        String reply = validateReply(replyStream, "ADD_ONION");
-        return reply.startsWith(SERVICE_ID_REPLY_PREFIX) ?
-                Optional.of(reply.substring(SERVICE_ID_REPLY_PREFIX.length())) :
-                Optional.empty();
+        List<String> replies = receiveReply().collect(Collectors.toList());
+        // ServiceID, and other lines for other forms of the command, such as PrivateKey. A filtering control port such
+        // as onion-grater may leave the ServiceID out.
+        List<String> serviceIds = getDataLinesOfSuccess(replies, "ADD_ONION").stream()
+                .filter(line -> line.startsWith(SERVICE_ID_REPLY_PREFIX))
+                .map(line -> line.substring(SERVICE_ID_REPLY_PREFIX.length()))
+                .collect(Collectors.toList());
+        if (serviceIds.size() > 1) {
+            throw invalidReply("ADD_ONION", replies);
+        }
+        return serviceIds.stream().findFirst();
     }
 
     public synchronized void delOnion(String serviceId) {
@@ -192,11 +200,18 @@ public class TorControlProtocol implements AutoCloseable {
         }
     }
 
+    /**
+     * @return the reply line of the keyword, for example {@code 250-version=0.4.9.14}, or a data reply line with its
+     * data, for example {@code 250+config-text=} and the lines of the configuration after line feeds
+     */
     public synchronized String getInfo(String keyword) {
         String command = "GETINFO " + keyword + "\r\n";
         sendCommand(command);
-        Stream<String> replyStream = receiveReply();
-        return validateReply(replyStream, "GETINFO");
+        List<String> replies = receiveReply().collect(Collectors.toList());
+        return getDataLinesOfSuccess(replies, "GETINFO").stream()
+                .filter(line -> line.startsWith("250-" + keyword + "=") || line.startsWith("250+" + keyword + "="))
+                .findFirst()
+                .orElseThrow(() -> invalidReply("GETINFO", replies));
     }
 
     /**
@@ -213,18 +228,26 @@ public class TorControlProtocol implements AutoCloseable {
                 .map(matcher -> matcher.group(1))
                 .toList();
         if (values.isEmpty() || !replies.get(replies.size() - 1).startsWith("250 ")) {
-            List<String> loggableReplies = replies.stream().map(TorControlLogFormat::toLoggableReply).collect(Collectors.toList());
-            throw new ControlCommandFailedException("Invalid GETCONF reply: " + loggableReplies);
+            throw invalidReply("GETCONF", replies);
         }
         return values;
     }
 
-    public synchronized void hsFetch(String hsAddress) {
-        String command = "HSFETCH " + hsAddress + "\r\n";
+    /**
+     * @param serviceId the service ID of a v3 onion service (the address without ".onion"). The address of a peer
+     *                  comes from the network, so the method accepts nothing else: a CR LF in the argument would
+     *                  carry further commands into the control connection.
+     * @throws IllegalArgumentException if the argument is not a service ID
+     */
+    public synchronized void hsFetch(String serviceId) {
+        if (!SERVICE_ID_PATTERN.matcher(serviceId).matches()) {
+            throw new IllegalArgumentException("The argument of HSFETCH is not the service ID of a v3 onion service");
+        }
+        String command = "HSFETCH " + serviceId + "\r\n";
         sendCommand(command);
         String reply = receiveReply().findFirst().orElseThrow();
         if (!isSuccessReply(reply)) {
-            throw new ControlCommandFailedException("Couldn't initiate HSFETCH for : " + hsAddress);
+            throw new ControlCommandFailedException("Couldn't initiate HSFETCH for : " + serviceId);
         }
     }
 
@@ -437,6 +460,7 @@ public class TorControlProtocol implements AutoCloseable {
     }
 
     private void sendCommand(String command) {
+        checkIsOneLine(command);
         if (isClosed) {
             throw new ControlCommandFailedException("The connection to the Tor control port is closed");
         }
@@ -464,6 +488,22 @@ public class TorControlProtocol implements AutoCloseable {
             throw new CannotSendCommandToTorException(e);
         } finally {
             writeTimeout.cancel(false);
+        }
+    }
+
+    /**
+     * Every command of Bisq is one line which ends with CR LF. A CR, an LF or another control character inside the
+     * line, for example in an argument which comes from the network or from a configuration, would end the command
+     * early, and Tor would run the rest as further commands. The check covers every command, also those whose
+     * arguments are trusted today.
+     *
+     * @throws IllegalArgumentException if the command is not one such line
+     */
+    private static void checkIsOneLine(String command) {
+        boolean endsWithLineEnd = command.endsWith("\r\n");
+        String line = endsWithLineEnd ? command.substring(0, command.length() - 2) : command;
+        if (!endsWithLineEnd || line.chars().anyMatch(Character::isISOControl)) {
+            throw new IllegalArgumentException("A Tor control command must be one line without control characters");
         }
     }
 
@@ -546,45 +586,25 @@ public class TorControlProtocol implements AutoCloseable {
         return DATA_REPLY_PATTERN.matcher(reply).matches();
     }
 
-    // TODO check if this change is correct
-    // We can receive 1 entry with "250 OK" or multiple entries starting with "250-" and the last entry with "250 OK"
-    // Multiple entries following a single entry have been observed when using multiple user profiles.
-    // E.g. [250 OK]
-    // [250-ServiceID=bedb3wpuybkuwvjat2zq5odtqbajq7x3ovllvh7l2kbxakbgkzgikqyd, 250 OK]
-    // [250-ServiceID=bedb3wpuybkuwvjat2zq5odtqbajq7x3ovllvh7l2kbxakbgkzgikqyd, 250-ServiceID=xjlwqzk6n4i5co574jrljsigelx6itzya32cfb7sfofqn7wueyhjj4id, 250 OK]
-    private String validateReply(Stream<String> replyStream, String commandName) {
-        List<String> replies = replyStream.collect(Collectors.toList());
-
-        String OK250 = "250 OK";
-        boolean hasOK250 = replies.stream().anyMatch(e -> e.equals(OK250));
-        List<String> listOf250WithData = replies.stream()
-                .filter(e -> e.startsWith("250-") || e.startsWith("250+"))
-                .collect(Collectors.toList());
-        if (!listOf250WithData.isEmpty()) {
-            // TODO are there use cases where we need all 250WithData entries?
-            return listOf250WithData.get(0);
-        } else if (hasOK250) {
-            return OK250;
-        } else {
-            List<String> loggableReplies = replies.stream().map(TorControlLogFormat::toLoggableReply).collect(Collectors.toList());
-            throw new ControlCommandFailedException("Invalid " + commandName + " reply: " + loggableReplies);
+    /**
+     * A reply to a command which succeeded has mid or data reply lines with the status 250 and ends with "250 OK".
+     * Anything else, also the reply to another command, which a broken or hostile Tor could send, fails the command.
+     *
+     * @return the lines before "250 OK"
+     */
+    private static List<String> getDataLinesOfSuccess(List<String> replies, String commandName) {
+        boolean isSuccess = !replies.isEmpty() &&
+                replies.get(replies.size() - 1).equals("250 OK") &&
+                replies.stream().allMatch(line -> line.startsWith("250"));
+        if (!isSuccess) {
+            throw invalidReply(commandName, replies);
         }
+        return replies.subList(0, replies.size() - 1);
+    }
 
-       /* if (replies.size() != 2) {
-            throw new ControlCommandFailedException("Invalid " + commandName + " reply: " + replies);
-        }
-
-        String firstLine = replies.get(0);
-        if (!firstLine.startsWith("250-")) {
-            throw new ControlCommandFailedException("Invalid " + commandName + " reply: " + replies);
-        }
-
-        String secondLine = replies.get(1);
-        if (!secondLine.equals("250 OK")) {
-            throw new ControlCommandFailedException("Invalid " + commandName + " reply: " + replies);
-        }
-
-        return firstLine;*/
+    private static ControlCommandFailedException invalidReply(String commandName, List<String> replies) {
+        List<String> loggableReplies = replies.stream().map(TorControlLogFormat::toLoggableReply).collect(Collectors.toList());
+        return new ControlCommandFailedException("Invalid " + commandName + " reply: " + loggableReplies);
     }
 
     private boolean isSuccessReply(String reply) {

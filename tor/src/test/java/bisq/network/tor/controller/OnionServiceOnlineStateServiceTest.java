@@ -195,6 +195,17 @@ class OnionServiceOnlineStateServiceTest {
         }
     }
 
+    @Test
+    void anythingButAServiceIdIsRefusedBeforeItReachesTor() throws Exception {
+        // The address of a peer comes from the network. CR LF would carry a second command into the connection.
+        connect(command -> "250 OK\r\n");
+
+        CompletableFuture<Boolean> lookup = torController.isOnionServiceOnlineAsync(serviceId + "\r\nSIGNAL SHUTDOWN");
+
+        assertThatThrownBy(lookup::join).hasCauseInstanceOf(IllegalArgumentException.class);
+        assertThat(server.getCommands()).noneMatch(command -> command.startsWith("HSFETCH") || command.startsWith("SIGNAL"));
+    }
+
     private void waitForCommand(String commandStart) throws InterruptedException {
         while (server.getCommands().stream().noneMatch(command -> command.startsWith(commandStart))) {
             Thread.sleep(10);
