@@ -17,12 +17,15 @@
 
 package bisq.network.tor.controller;
 
+import com.google.common.collect.Sets;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -67,6 +70,61 @@ class OnionServiceOnlineStateServiceTest {
     }
 
     @Test
+    void aFinishedLookupIsNotReused() throws Exception {
+        connect(command -> command.startsWith("HSFETCH") ?
+                "250 OK\r\n650 HS_DESC RECEIVED " + serviceId + " NO_AUTH " + HS_DIR + " descriptorId\r\n" :
+                "250 OK\r\n");
+
+        assertThat(torController.isOnionServiceOnlineAsync(onionAddress).join()).isTrue();
+        assertThat(torController.isOnionServiceOnlineAsync(onionAddress).join()).isTrue();
+
+        assertThat(server.getCommands()).filteredOn(command -> command.startsWith("HSFETCH")).hasSize(2);
+    }
+
+    @Test
+    void concurrentLookupsOfOneAddressShareOneHsFetch() throws Exception {
+        // The descriptor arrives with the reply to a later GETINFO, after both lookups have started.
+        connect(command -> {
+            if (command.equals("GETINFO version")) {
+                return "250-version=0.4.9.14\r\n250 OK\r\n" +
+                        "650 HS_DESC RECEIVED " + serviceId + " NO_AUTH " + HS_DIR + " descriptorId\r\n";
+            }
+            return "250 OK\r\n";
+        });
+        CompletableFuture<Boolean> first = torController.isOnionServiceOnlineAsync(onionAddress);
+        waitForCommand("HSFETCH");
+        CompletableFuture<Boolean> second = torController.isOnionServiceOnlineAsync(onionAddress);
+
+        torController.getTorVersion();
+
+        assertThat(first.join()).isTrue();
+        assertThat(second.join()).isTrue();
+        assertThat(server.getCommands()).filteredOn(command -> command.startsWith("HSFETCH")).hasSize(1);
+    }
+
+    @Test
+    void aRefusedRemovalOfTheListenerKeepsTheResultAndEndsTheThread() throws Exception {
+        // Tor confirms the SETEVENTS of the registration and refuses the one of the removal.
+        AtomicInteger setEventsCommands = new AtomicInteger();
+        connect(command -> {
+            if (command.startsWith("HSFETCH")) {
+                return "250 OK\r\n650 HS_DESC RECEIVED " + serviceId + " NO_AUTH " + HS_DIR + " descriptorId\r\n";
+            }
+            if (command.startsWith("SETEVENTS") && setEventsCommands.incrementAndGet() > 1) {
+                return "552 Unrecognized event\r\n";
+            }
+            return "250 OK\r\n";
+        });
+        Set<Thread> threadsBefore = PublishOnionAddressServiceTest.liveThreadsNamed("OnionServiceOnlineStateService-");
+
+        assertThat(torController.isOnionServiceOnlineAsync(onionAddress).join()).isTrue();
+
+        assertThat(setEventsCommands).hasValue(2);
+        PublishOnionAddressServiceTest.assertAllEnd(Sets.difference(
+                PublishOnionAddressServiceTest.liveThreadsNamed("OnionServiceOnlineStateService-"), threadsBefore));
+    }
+
+    @Test
     void theEndOfTheConnectionFailsTheLookupAtOnce() throws Exception {
         // Tor exits after it accepted HSFETCH, long before the timeout of the lookup
         connect(command -> "250 OK\r\n");
@@ -78,6 +136,12 @@ class OnionServiceOnlineStateServiceTest {
                 .isInstanceOf(CompletionException.class)
                 .hasMessageContaining("ended");
         assertThat(System.currentTimeMillis() - start).isLessThan(5000);
+    }
+
+    private void waitForCommand(String commandStart) throws InterruptedException {
+        while (server.getCommands().stream().noneMatch(command -> command.startsWith(commandStart))) {
+            Thread.sleep(10);
+        }
     }
 
     private void connect(Function<String, String> replyByCommand) throws Exception {

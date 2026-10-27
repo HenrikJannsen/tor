@@ -3,6 +3,7 @@ package bisq.network.tor.controller;
 import bisq.network.tor.controller.exceptions.HsDescUploadFailedException;
 import bisq.network.tor.controller.exceptions.TorBootstrapFailedException;
 import bisq.network.tor.onionservice.OnionServiceKey;
+import com.google.common.annotations.VisibleForTesting;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.Map;
@@ -12,6 +13,7 @@ import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -23,10 +25,18 @@ public class TorController {
     private final int bootstrapTimeout; // in ms
     private final int hsUploadTimeout; // in ms
     private final long isOnlineTimeout = TimeUnit.SECONDS.toMillis(30); // in ms
-    private final Map<String, PublishOnionAddressService> publishOnionAddressServiceMap = new ConcurrentHashMap<>();
-    private final Map<String, OnionServiceOnlineStateService> onionServiceOnlineStateServiceMap = new ConcurrentHashMap<>();
+    // The running operations per onion address, and the publications which succeeded on this connection
+    private final Map<String, Operation<Void>> publications = new ConcurrentHashMap<>();
+    private final Map<String, Operation<Boolean>> onlineChecks = new ConcurrentHashMap<>();
     private Optional<BootstrapService> bootstrapService = Optional.empty();
     private volatile boolean isShutdownInProgress;
+
+    /**
+     * A publication or an online check of one onion address, with the shutdown of its service and its result.
+     */
+    @VisibleForTesting
+    record Operation<T>(Runnable shutdown, CompletableFuture<T> result) {
+    }
 
     public TorController(int bootstrapTimeout, int hsUploadTimeout) {
         this.bootstrapTimeout = bootstrapTimeout;
@@ -62,12 +72,12 @@ public class TorController {
         runQuietly(torControlProtocol::close, "closing the connection to the Tor control port");
         bootstrapService.ifPresent(service -> runQuietly(service::shutdown, "the shutdown of the bootstrap"));
         bootstrapService = Optional.empty();
-        publishOnionAddressServiceMap.values().forEach(service ->
-                runQuietly(service::shutdown, "the shutdown of a publication"));
-        publishOnionAddressServiceMap.clear();
-        onionServiceOnlineStateServiceMap.values().forEach(service ->
-                runQuietly(service::shutdown, "the shutdown of an onion service lookup"));
-        onionServiceOnlineStateServiceMap.clear();
+        publications.values().forEach(operation ->
+                runQuietly(operation.shutdown(), "the shutdown of a publication"));
+        publications.clear();
+        onlineChecks.values().forEach(operation ->
+                runQuietly(operation.shutdown(), "the shutdown of an onion service lookup"));
+        onlineChecks.clear();
     }
 
     // One failing step must not keep the other steps of the shutdown from running.
@@ -115,8 +125,12 @@ public class TorController {
     }
 
     /**
+     * Publishes the onion service once per connection: a call for an onion address which is being published waits for
+     * that publication, and a call after its success returns at once, because Tor keeps the onion service until the
+     * connection ends. A call after a failure publishes anew.
+     *
      * @throws InterruptedException if the thread is interrupted while it waits. The publication goes on in the
-     *                              background; a later call for the same onion address waits for it.
+     *                              background, and a later call for the same onion address gets its result.
      * @throws CompletionException  with the cause of a failed publication, such as HsDescUploadFailedException
      */
     public void publish(OnionServiceKey onionServiceKey, int onionServicePort, int localPort) throws InterruptedException {
@@ -134,31 +148,55 @@ public class TorController {
     public CompletableFuture<Void> publishAsync(OnionServiceKey onionServiceKey,
                                                 int onionServicePort,
                                                 int localPort) {
-        String onionAddress = onionServiceKey.getOnionAddress();
-        if (publishOnionAddressServiceMap.containsKey(onionAddress) && publishOnionAddressServiceMap.get(onionAddress).getFuture().isPresent()) {
-            return publishOnionAddressServiceMap.get(onionAddress).getFuture().get();
-        }
-
-        PublishOnionAddressService publishOnionAddressService = new PublishOnionAddressService(torControlProtocol, hsUploadTimeout, onionServiceKey);
-        CompletableFuture<Void> future = publishOnionAddressService.publish(onionServicePort, localPort);
-        future.whenComplete((nil, throwable) -> publishOnionAddressServiceMap.remove(onionAddress));
-        publishOnionAddressServiceMap.put(onionAddress, publishOnionAddressService);
-        return future;
+        PublishOnionAddressService service = new PublishOnionAddressService(torControlProtocol, hsUploadTimeout, onionServiceKey);
+        return runOnce(publications, onionServiceKey.getOnionAddress(), true, service::shutdown,
+                () -> service.publish(onionServicePort, localPort));
     }
 
     public CompletableFuture<Boolean> isOnionServiceOnlineAsync(String onionAddress) {
         if (isShutdownInProgress) {
             return CompletableFuture.completedFuture(false);
         }
-        if (onionServiceOnlineStateServiceMap.containsKey(onionAddress) && onionServiceOnlineStateServiceMap.get(onionAddress).getFuture().isPresent()) {
-            return onionServiceOnlineStateServiceMap.get(onionAddress).getFuture().get();
-        }
+        OnionServiceOnlineStateService service = new OnionServiceOnlineStateService(torControlProtocol, onionAddress, isOnlineTimeout);
+        return runOnce(onlineChecks, onionAddress, false, service::shutdown, service::isOnionServiceOnlineAsync);
+    }
 
-        OnionServiceOnlineStateService onionServiceOnlineStateService = new OnionServiceOnlineStateService(torControlProtocol, onionAddress, isOnlineTimeout);
-        CompletableFuture<Boolean> future = onionServiceOnlineStateService.isOnionServiceOnlineAsync();
-        future.whenComplete((r, t) -> onionServiceOnlineStateServiceMap.remove(onionAddress));
-        onionServiceOnlineStateServiceMap.put(onionAddress, onionServiceOnlineStateService);
-        return future;
+    /**
+     * Starts an operation for the onion address, unless one runs for it already, whose result the caller gets then.
+     * The operation is in the map before its work starts, so that a concurrent call finds it. It leaves the map before
+     * its result is visible, so that a call which follows the result starts a new operation, and it removes only
+     * itself.
+     *
+     * @param isSuccessKept whether a successful operation stays in the map, so that every later call gets its result
+     */
+    @VisibleForTesting
+    static <T> CompletableFuture<T> runOnce(Map<String, Operation<T>> operations,
+                                           String onionAddress,
+                                           boolean isSuccessKept,
+                                           Runnable shutdown,
+                                           Supplier<CompletableFuture<T>> work) {
+        Operation<T> operation = new Operation<>(shutdown, new CompletableFuture<>());
+        Operation<T> runningOperation = operations.putIfAbsent(onionAddress, operation);
+        if (runningOperation != null) {
+            return runningOperation.result();
+        }
+        CompletableFuture<T> workResult;
+        try {
+            workResult = work.get();
+        } catch (RuntimeException e) {
+            workResult = CompletableFuture.failedFuture(e);
+        }
+        workResult.whenComplete((value, throwable) -> {
+            if (throwable != null || !isSuccessKept) {
+                operations.remove(onionAddress, operation);
+            }
+            if (throwable != null) {
+                operation.result().completeExceptionally(throwable);
+            } else {
+                operation.result().complete(value);
+            }
+        });
+        return operation.result();
     }
 
     /**

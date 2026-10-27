@@ -24,10 +24,8 @@ import bisq.network.tor.controller.events.events.HsDescFailedEvent;
 import bisq.network.tor.controller.events.listener.FilteredHsDescEventListener;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
-import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -44,8 +42,6 @@ public class OnionServiceOnlineStateService extends FilteredHsDescEventListener 
     private final Runnable connectionEndListener = this::onConnectionEnd;
     private volatile boolean hasConnectionEnded;
     private boolean isOnline;
-    @Getter
-    private Optional<CompletableFuture<Boolean>> future = Optional.empty();
     private final ExecutorService executor;
 
     public OnionServiceOnlineStateService(TorControlProtocol torControlProtocol, String onionAddress, long timeout) {
@@ -63,7 +59,7 @@ public class OnionServiceOnlineStateService extends FilteredHsDescEventListener 
     }
 
     public CompletableFuture<Boolean> isOnionServiceOnlineAsync() {
-        future = Optional.of(CompletableFuture.supplyAsync(() -> {
+        return CompletableFuture.supplyAsync(() -> {
                     torControlProtocol.addConnectionEndListener(connectionEndListener);
                     torControlProtocol.addHsDescEventListener(this);
 
@@ -90,11 +86,23 @@ public class OnionServiceOnlineStateService extends FilteredHsDescEventListener 
                     return isOnline;
                 }, executor)
                 .whenComplete((isOnline, throwable) -> {
-                    torControlProtocol.removeConnectionEndListener(connectionEndListener);
-                    torControlProtocol.removeHsDescEventListener(this);
-                    executor.shutdown();
-                }));
-        return future.get();
+                    try {
+                        torControlProtocol.removeConnectionEndListener(connectionEndListener);
+                        removeHsDescEventListenerQuietly();
+                    } finally {
+                        executor.shutdown();
+                    }
+                });
+    }
+
+    // The result of the lookup stands when Tor does not confirm the SETEVENTS of the removal: an exception here would
+    // replace it. Tor then reports HS_DESC events which no listener needs.
+    private void removeHsDescEventListenerQuietly() {
+        try {
+            torControlProtocol.removeHsDescEventListener(this);
+        } catch (RuntimeException e) {
+            log.warn("Could not remove the event listener of an onion service lookup", e);
+        }
     }
 
     // Tor exited or closed the connection: the result of the lookup cannot arrive any more.

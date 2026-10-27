@@ -19,15 +19,19 @@ package bisq.network.tor.controller;
 
 import bisq.network.tor.controller.exceptions.HsDescUploadFailedException;
 import bisq.network.tor.onionservice.OnionServiceKey;
+import com.google.common.collect.Sets;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -136,6 +140,116 @@ class PublishOnionAddressServiceTest {
 
         assertThat(caller.isAlive()).isFalse();
         assertThat(interrupted).isTrue();
+    }
+
+    @Test
+    void aFailedPublicationIsNotReused() throws Exception {
+        connect(1000, command -> command.startsWith("ADD_ONION") ? "550 Onion address collision\r\n" : "250 OK\r\n");
+
+        for (int attempt = 0; attempt < 2; attempt++) {
+            assertThatThrownBy(() -> torController.publish(onionServiceKey, 9999, 12345))
+                    .hasRootCauseInstanceOf(ControlCommandFailedException.class);
+        }
+
+        assertThat(server.getCommands()).filteredOn(command -> command.startsWith("ADD_ONION")).hasSize(2);
+    }
+
+    @Test
+    void aRefusedRemovalOfTheListenerKeepsThePublicationAndEndsItsThread() throws Exception {
+        // Tor confirms the SETEVENTS of the registration and refuses the one of the removal.
+        AtomicInteger setEventsCommands = new AtomicInteger();
+        connect(1000, command -> {
+            if (command.startsWith("ADD_ONION")) {
+                return addOnionReply(serviceId) + uploadEvent(serviceId);
+            }
+            if (command.startsWith("SETEVENTS") && setEventsCommands.incrementAndGet() > 1) {
+                return "552 Unrecognized event\r\n";
+            }
+            return "250 OK\r\n";
+        });
+        Set<Thread> threadsBefore = liveThreadsNamed("PublishOnionAddressService");
+
+        assertThatCode(() -> torController.publish(onionServiceKey, 9999, 12345)).doesNotThrowAnyException();
+
+        assertThat(setEventsCommands).hasValue(2);
+        assertAllEnd(Sets.difference(liveThreadsNamed("PublishOnionAddressService"), threadsBefore));
+    }
+
+    static Set<Thread> liveThreadsNamed(String namePrefix) {
+        return Thread.getAllStackTraces().keySet().stream()
+                .filter(thread -> thread.getName().startsWith(namePrefix) && thread.isAlive())
+                .collect(Collectors.toSet());
+    }
+
+    static void assertAllEnd(Set<Thread> threads) throws InterruptedException {
+        for (Thread thread : threads) {
+            thread.join(5000);
+            assertThat(thread.isAlive()).as("thread %s ended", thread.getName()).isFalse();
+        }
+    }
+
+    @Test
+    void aRetryAfterAnInterruptWaitsForThePublicationWhichGoesOn() throws Exception {
+        connectToATorWhichUploadsOnGetInfo();
+        interruptAPublicationAfterItsAddOnion();
+
+        CompletableFuture<Void> retry = torController.publishAsync(onionServiceKey, 9999, 12345);
+        assertThat(retry).isNotDone();
+        torController.getTorVersion();
+
+        assertThatCode(retry::join).doesNotThrowAnyException();
+        assertThat(server.getCommands()).filteredOn(command -> command.startsWith("ADD_ONION")).hasSize(1);
+    }
+
+    @Test
+    void aRetryAfterTheInterruptedPublicationSucceededSendsNoSecondAddOnion() throws Exception {
+        connectToATorWhichUploadsOnGetInfo();
+        interruptAPublicationAfterItsAddOnion();
+        torController.getTorVersion();
+        // The publication removes its listener when it has succeeded.
+        waitUntil(() -> server.getCommands().stream().filter(command -> command.startsWith("SETEVENTS")).count() == 2);
+
+        assertThatCode(() -> torController.publish(onionServiceKey, 9999, 12345)).doesNotThrowAnyException();
+        assertThat(server.getCommands()).filteredOn(command -> command.startsWith("ADD_ONION")).hasSize(1);
+    }
+
+    // Tor accepts the first ADD_ONION, starts the upload when the test sends GETINFO, and refuses a second ADD_ONION of
+    // the address, which it keeps.
+    private void connectToATorWhichUploadsOnGetInfo() throws Exception {
+        AtomicInteger addOnionCommands = new AtomicInteger();
+        connect(10_000, command -> {
+            if (command.startsWith("ADD_ONION")) {
+                return addOnionCommands.incrementAndGet() == 1 ?
+                        addOnionReply(serviceId) :
+                        "550 Onion address collision\r\n";
+            }
+            if (command.equals("GETINFO version")) {
+                return "250-version=0.4.9.14\r\n250 OK\r\n" + uploadEvent(serviceId);
+            }
+            return "250 OK\r\n";
+        });
+    }
+
+    private void interruptAPublicationAfterItsAddOnion() throws InterruptedException {
+        AtomicBoolean interrupted = new AtomicBoolean();
+        Thread caller = new Thread(() -> {
+            try {
+                torController.publish(onionServiceKey, 9999, 12345);
+            } catch (InterruptedException e) {
+                interrupted.set(true);
+            }
+        });
+        caller.start();
+        waitForCommand("ADD_ONION");
+        caller.interrupt();
+        caller.join(5000);
+        assertThat(interrupted).isTrue();
+    }
+
+    private static void waitUntil(BooleanSupplier condition) throws InterruptedException {
+        while (!condition.getAsBoolean()) {
+            Thread.sleep(10);
+        }
     }
 
     @Test

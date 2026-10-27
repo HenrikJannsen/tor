@@ -24,7 +24,6 @@ import bisq.network.tor.controller.events.listener.FilteredHsDescEventListener;
 import bisq.network.tor.controller.exceptions.HsDescUploadFailedException;
 import bisq.network.tor.onionservice.OnionServiceKey;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
-import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.Optional;
@@ -44,8 +43,6 @@ public class PublishOnionAddressService extends FilteredHsDescEventListener {
     private final Runnable connectionEndListener = this::onConnectionEnd;
     private volatile boolean isShutdown;
     private volatile boolean hasConnectionEnded;
-    @Getter
-    private Optional<CompletableFuture<Void>> future = Optional.empty();
 
     public PublishOnionAddressService(TorControlProtocol torControlProtocol, int timeout, OnionServiceKey onionServiceKey) {
         super(EventType.HS_DESC, onionServiceKey.getOnionAddress(), Set.of(HsDescEvent.Action.UPLOAD));
@@ -61,7 +58,7 @@ public class PublishOnionAddressService extends FilteredHsDescEventListener {
                 .setDaemon(true)
                 .setPriority(Thread.NORM_PRIORITY)
                 .build());
-        future = Optional.of(CompletableFuture.runAsync(() -> {
+        return CompletableFuture.runAsync(() -> {
                     torControlProtocol.addConnectionEndListener(connectionEndListener);
                     torControlProtocol.addHsDescEventListener(this);
 
@@ -78,12 +75,23 @@ public class PublishOnionAddressService extends FilteredHsDescEventListener {
                     }
                 }, executor)
                 .whenComplete((nil, throwable) -> {
-                            torControlProtocol.removeConnectionEndListener(connectionEndListener);
-                            torControlProtocol.removeHsDescEventListener(this);
-                            executor.shutdown();
-                        }
-                ));
-        return future.get();
+                    try {
+                        torControlProtocol.removeConnectionEndListener(connectionEndListener);
+                        removeHsDescEventListenerQuietly();
+                    } finally {
+                        executor.shutdown();
+                    }
+                });
+    }
+
+    // The result of the publication stands when Tor does not confirm the SETEVENTS of the removal: an exception here
+    // would replace it. Tor then reports HS_DESC events which no listener needs.
+    private void removeHsDescEventListenerQuietly() {
+        try {
+            torControlProtocol.removeHsDescEventListener(this);
+        } catch (RuntimeException e) {
+            log.warn("Could not remove the event listener of a publication", e);
+        }
     }
 
     // Tor exited or closed the connection: the upload event cannot arrive any more.

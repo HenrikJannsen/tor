@@ -55,7 +55,6 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
-import java.util.concurrent.CopyOnWriteArraySet;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -82,7 +81,6 @@ public class TorService {
     private final Supplier<TorController> torControllerFactory;
 
     private TorController torController;
-    private final Set<String> publishedOnionServices = new CopyOnWriteArraySet<>();
     // Written by initialize, read by the user interface
     @Getter
     private volatile boolean useExternalTor;
@@ -272,7 +270,6 @@ public class TorService {
             torProcess = Optional.empty();
             onionServiceTargets.close();
             torSocksProxyFactory = Optional.empty();
-            publishedOnionServices.clear();
             externalTorConfigMap.clear();
             torVersion = Optional.empty();
             return true;
@@ -284,11 +281,9 @@ public class TorService {
         try {
             String onionAddress = onionServiceKey.getOnionAddress();
             log.info("Publish onion service for address {}:{} (localPort={})", onionAddress, onionServicePort, localPort);
-            if (!publishedOnionServices.contains(onionAddress)) {
-                int torTargetPort = onionServiceTargets.targetPortOf(onionAddress, localPort);
-                torController.publish(onionServiceKey, onionServicePort, torTargetPort);
-                publishedOnionServices.add(onionAddress);
-            }
+            int torTargetPort = onionServiceTargets.targetPortOf(onionAddress, localPort);
+            // The controller publishes each onion address once per connection to Tor, also for concurrent calls.
+            torController.publish(onionServiceKey, onionServicePort, torTargetPort);
 
             log.info("Tor onion service Ready. Took {} ms. Onion address={}:{} (localPort={})",
                     System.currentTimeMillis() - ts, onionAddress, onionServicePort, localPort);
@@ -321,10 +316,8 @@ public class TorService {
 
         try {
             log.info("Publish onion service for onion address {}:{}", onionAddress, port);
-            if (!publishedOnionServices.contains(onionAddress)) {
-                torController.publish(onionServiceKey, port, target.torTargetPort());
-                publishedOnionServices.add(onionAddress);
-            }
+            // The controller publishes each onion address once per connection to Tor, also for concurrent calls.
+            torController.publish(onionServiceKey, port, target.torTargetPort());
 
             log.info("Tor onion service Ready. Took {} ms. Onion address={}:{}",
                     System.currentTimeMillis() - ts, onionAddress, port);
