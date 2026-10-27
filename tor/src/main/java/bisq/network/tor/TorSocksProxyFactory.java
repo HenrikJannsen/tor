@@ -19,6 +19,8 @@ package bisq.network.tor;
 
 import com.runjva.sourceforge.jsocks.protocol.Socks5Proxy;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
@@ -29,8 +31,8 @@ import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.SocketException;
 import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
+import java.security.GeneralSecurityException;
+import java.security.SecureRandom;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkNotNull;
@@ -42,6 +44,12 @@ public class TorSocksProxyFactory {
     private static final byte CONNECT_COMMAND = 1;
     private static final byte DOMAIN_NAME_ADDRESS_TYPE = 3;
     private static final byte[] PASSWORD = {'0'};
+    // Tor, and every controller of a shared Tor, sees the SOCKS username, for example in its STREAM events. A key which
+    // is new at every start of the application keeps the username from naming the stream ID, which can be public, such
+    // as the node ID of Bisq 2, and from linking the streams of one stream ID across starts. Static, because the apps
+    // call performHandshake without an instance.
+    private static final byte[] USERNAME_KEY = createUsernameKey();
+    private static final String USERNAME_MAC_ALGORITHM = "HmacSHA256";
 
     private final int socksPort;
 
@@ -160,11 +168,20 @@ public class TorSocksProxyFactory {
         return socks5Proxy;
     }
 
+    private static byte[] createUsernameKey() {
+        byte[] key = new byte[32];
+        new SecureRandom().nextBytes(key);
+        return key;
+    }
+
+    // The same username for the same stream ID during one start, so that Tor isolates the streams by stream ID
     private static byte[] toUsername(String streamId) {
         try {
-            byte[] digest = MessageDigest.getInstance("SHA-256").digest(streamId.getBytes(StandardCharsets.UTF_8));
+            Mac mac = Mac.getInstance(USERNAME_MAC_ALGORITHM);
+            mac.init(new SecretKeySpec(USERNAME_KEY, USERNAME_MAC_ALGORITHM));
+            byte[] digest = mac.doFinal(streamId.getBytes(StandardCharsets.UTF_8));
             return new BigInteger(digest).toString(26).getBytes(StandardCharsets.US_ASCII);
-        } catch (NoSuchAlgorithmException e) {
+        } catch (GeneralSecurityException e) {
             throw new IllegalStateException(e);
         }
     }

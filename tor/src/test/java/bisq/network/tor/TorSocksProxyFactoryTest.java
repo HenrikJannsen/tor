@@ -25,6 +25,7 @@ import java.io.DataInputStream;
 import java.io.EOFException;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.math.BigInteger;
 import java.net.ConnectException;
 import java.net.InetAddress;
 import java.net.ServerSocket;
@@ -32,6 +33,7 @@ import java.net.Socket;
 import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -97,6 +99,16 @@ class TorSocksProxyFactoryTest {
         assertEquals(node1, node1Again);
         assertNotEquals(node1, node2);
         assertFalse(node1.contains("node1"));
+    }
+
+    @Test
+    void usernameDoesNotNameAPublicStreamId() throws Exception {
+        // Bisq 2 passes the node ID, which can be public. Whoever sees the usernames, for example another controller
+        // of a shared Tor, must not find it by hashing known node IDs.
+        String nodeId = "node1";
+        byte[] unkeyedDigest = MessageDigest.getInstance("SHA-256").digest(nodeId.getBytes(StandardCharsets.UTF_8));
+
+        assertNotEquals(new BigInteger(unkeyedDigest).toString(26), usernameOf(nodeId));
     }
 
     @Test
