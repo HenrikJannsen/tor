@@ -36,18 +36,21 @@ public final class TorSandboxConfig {
     // The path of the configuration of Bisq 2
     public static final String BISQ2_CONFIG_PATH = "application.network.configByTransportType.tor.sandbox";
     static final int DEFAULT_ONION_SERVICE_PORT_POOL_SIZE = 32;
-    private static final int MAX_ONION_SERVICE_PORT_POOL_SIZE = 1024;
+    // On macOS sandy holds every forwarded port at every address of the Mac, and a process may open at most 10240
+    // files. That allows about 600 ports on a Mac with 16 addresses (measured), and fewer with more network
+    // interfaces, for example of VPNs. The maximum leaves room for them.
+    static final int MAX_ONION_SERVICE_PORT_POOL_SIZE = 256;
 
     public static final TorSandboxConfig DISABLED = new TorSandboxConfig(false, true, false,
             DEFAULT_ONION_SERVICE_PORT_POOL_SIZE, "bisq", "");
 
     /**
-     * Reads the optional block {@code sandbox} of the Tor configuration of Bisq 2. The sandbox is off unless the
-     * configuration turns it on, because sandy has no public release which a build could download and package.
+     * Reads the optional block {@code sandbox} of the Tor configuration of Bisq 2. The sandbox is on unless the
+     * configuration turns it off, and it allows no pluggable transports unless the configuration allows them.
      */
     static TorSandboxConfig from(Config torConfig) {
         Config config = torConfig.hasPath("sandbox") ? torConfig.getConfig("sandbox") : null;
-        boolean enabled = config != null && config.hasPath("enabled") && config.getBoolean("enabled");
+        boolean enabled = config == null || !config.hasPath("enabled") || config.getBoolean("enabled");
         boolean forwardOnionServicePorts = config == null || !config.hasPath("forwardOnionServicePorts") ||
                 config.getBoolean("forwardOnionServicePorts");
         boolean allowPluggableTransports = config != null && config.hasPath("allowPluggableTransports") &&
@@ -69,7 +72,9 @@ public final class TorSandboxConfig {
     // Tor may start the pluggable transports of the bridges in its sandbox, which then lets it start processes and,
     // for transports that resolve names or use UDP, gives it the network of the host. Off by default.
     private final boolean allowPluggableTransports;
-    // The number of onion services which can receive connections through forwarded ports.
+    // The number of onion services which can receive connections through forwarded ports. Each costs a forwarded
+    // port for the whole run of Tor. Since sandy 2.3 one relay process serves all of them on every platform; with the
+    // maximum of 256 forwarded ports sandy took about 5 MiB and no CPU while idle on Windows 11 (measured).
     private final int onionServicePortPoolSize;
     // A short name of the application, for example bisq1 or bisq2. The AppContainer of Windows is named after it.
     private final String applicationId;

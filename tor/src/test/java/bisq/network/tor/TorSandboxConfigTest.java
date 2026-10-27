@@ -27,15 +27,18 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class TorSandboxConfigTest {
     @Test
-    void theSandboxIsOffUnlessTheConfigurationTurnsItOn() {
-        // sandy has no public release which a build could download and package.
+    void theSandboxIsOnUnlessTheConfigurationTurnsItOff() {
         TorSandboxConfig missing = TorSandboxConfig.from(ConfigFactory.parseString("useExternalTor = false"));
+        TorSandboxConfig empty = TorSandboxConfig.from(ConfigFactory.parseString("sandbox {}"));
         TorSandboxConfig enabled = TorSandboxConfig.from(ConfigFactory.parseString("sandbox { enabled = true }"));
+        TorSandboxConfig disabled = TorSandboxConfig.from(ConfigFactory.parseString("sandbox { enabled = false }"));
 
-        assertThat(missing.isEnabled()).isFalse();
+        assertThat(missing.isEnabled()).isTrue();
+        assertThat(empty.isEnabled()).isTrue();
         assertThat(enabled.isEnabled()).isTrue();
-        assertThat(enabled.getApplicationId()).isEqualTo("bisq2");
-        assertThat(enabled.getOptOutHint()).contains(TorSandboxConfig.BISQ2_CONFIG_PATH + ".enabled=false");
+        assertThat(disabled.isEnabled()).isFalse();
+        assertThat(missing.getApplicationId()).isEqualTo("bisq2");
+        assertThat(missing.getOptOutHint()).contains(TorSandboxConfig.BISQ2_CONFIG_PATH + ".enabled=false");
     }
 
     @Test
@@ -56,11 +59,27 @@ class TorSandboxConfigTest {
     }
 
     @Test
+    void theOnionServicePortPoolHasAMaximum() {
+        int max = TorSandboxConfig.MAX_ONION_SERVICE_PORT_POOL_SIZE;
+        TorSandboxConfig largest = TorSandboxConfig.from(ConfigFactory.parseString(
+                "sandbox { onionServicePortPoolSize = " + max + " }"));
+
+        assertThat(max).isEqualTo(256);
+        assertThat(largest.getOnionServicePortPoolSize()).isEqualTo(max);
+        assertThatThrownBy(() -> TorSandboxConfig.from(ConfigFactory.parseString(
+                "sandbox { onionServicePortPoolSize = " + (max + 1) + " }")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("between 1 and " + max);
+    }
+
+    @Test
     void theSandboxAllowsNoPluggableTransportsByDefault() {
+        TorSandboxConfig missing = TorSandboxConfig.from(ConfigFactory.parseString("useExternalTor = false"));
         TorSandboxConfig config = TorSandboxConfig.from(ConfigFactory.parseString("sandbox { enabled = true }"));
         TorSandboxConfig allowing = TorSandboxConfig.from(ConfigFactory.parseString(
                 "sandbox { enabled = true, allowPluggableTransports = true }"));
 
+        assertThat(missing.isAllowPluggableTransports()).isFalse();
         assertThat(config.isAllowPluggableTransports()).isFalse();
         assertThat(TorSandboxConfig.DISABLED.isAllowPluggableTransports()).isFalse();
         assertThat(allowing.isAllowPluggableTransports()).isTrue();
