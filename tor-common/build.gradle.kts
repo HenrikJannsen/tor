@@ -4,5 +4,5 @@ plugins {
 }
 
 dependencies {
-    api(platform(project(":tor-platform")))
+    "torPlatform"(platform(project(":tor-platform")))
 }

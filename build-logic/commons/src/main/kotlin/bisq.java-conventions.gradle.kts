@@ -57,6 +57,16 @@ tasks {
     }
 }
 
+// The version constraints of the Tor build (tor-platform) for the class paths of its own modules. They are not
+// published with a module, so they do not change the versions which an application resolves.
+val torPlatform: Configuration = configurations.create("torPlatform") {
+    isCanBeResolved = false
+    isCanBeConsumed = false
+}
+configurations.matching { it.isCanBeResolved && it.name.endsWith("Classpath") }.configureEach {
+    extendsFrom(torPlatform)
+}
+
 val versionCatalog = extensions.getByType<VersionCatalogsExtension>().named("libs")
 dependencies {
     versionCatalog.findLibrary("google-guava").ifPresent {
@@ -79,11 +89,12 @@ dependencies {
         implementation(it)
     }
 
+    // The application chooses the logging backend, on Android another one. The tests check the log output with logback.
     versionCatalog.findLibrary("logback-core").ifPresent {
-        implementation(it)
+        testImplementation(it)
     }
     versionCatalog.findLibrary("logback-classic").ifPresent {
-        implementation(it)
+        testImplementation(it)
     }
 
     versionCatalog.findLibrary("junit-jupiter").ifPresent {

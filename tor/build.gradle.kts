@@ -56,9 +56,10 @@ sourceSets {
 }
 
 dependencies {
-    api(platform(project(":tor-platform")))
+    "torPlatform"(platform(project(":tor-platform")))
 
-    implementation(project(":tor-common"))
+    // The API takes types of tor-common, such as the DirectoryAuthority entries of TorTransportConfig
+    api(project(":tor-common"))
 
     implementation(libs.typesafe.config)
 
