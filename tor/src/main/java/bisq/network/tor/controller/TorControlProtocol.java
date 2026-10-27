@@ -47,6 +47,8 @@ import java.util.stream.Stream;
 public class TorControlProtocol implements AutoCloseable {
     private static final int MAX_CONNECTION_ATTEMPTS = 10;
     private static final String SERVICE_ID_REPLY_PREFIX = "250-ServiceID=";
+    // Far more than any reply to the commands of Bisq.
+    static final int MAX_REPLY_LENGTH = 1024 * 1024;
     // Closes a connection whose write does not end in time. One daemon thread for all connections.
     private static final ScheduledThreadPoolExecutor WRITE_TIMEOUT_SCHEDULER = createWriteTimeoutScheduler();
 
@@ -471,6 +473,7 @@ public class TorControlProtocol implements AutoCloseable {
      */
     private Stream<String> receiveReply() {
         var streamBuilder = Stream.<String>builder();
+        int replyLength = 0;
         // One deadline for the whole reply: a Tor which sends one line at a time, each just before the timeout of
         // a line, must not hold the command forever. The monotonic clock, so that a change of the system time does
         // not shorten or extend it.
@@ -478,10 +481,12 @@ public class TorControlProtocol implements AutoCloseable {
         String reply;
         do {
             reply = tryReadNextReply(deadline);
+            replyLength = addToReplyLength(replyLength, reply);
             if (isDataReply(reply)) {
                 StringBuilder dataReply = new StringBuilder(reply);
                 String dataLine;
                 while (!(dataLine = readLineOfReply(deadline)).equals(DATA_END)) {
+                    replyLength = addToReplyLength(replyLength, dataLine);
                     // A line of the data which starts with a dot is sent with a second dot in front.
                     dataReply.append('\n').append(dataLine.startsWith("..") ? dataLine.substring(1) : dataLine);
                 }
@@ -494,6 +499,16 @@ public class TorControlProtocol implements AutoCloseable {
         return streamBuilder.build();
     }
 
+    // Tor is not trusted. A reply without an end must not use unbounded memory. Every line counts with its line end,
+    // so a reply of empty lines is bounded as well.
+    private int addToReplyLength(int replyLength, String line) {
+        int newReplyLength = replyLength + line.length() + 1;
+        if (newReplyLength > MAX_REPLY_LENGTH) {
+            close();
+            throw new ControlCommandFailedException("Tor sent a reply longer than " + MAX_REPLY_LENGTH + " characters");
+        }
+        return newReplyLength;
+    }
 
     private String tryReadNextReply(long deadline) {
         String reply = readLineOfReply(deadline);
