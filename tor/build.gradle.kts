@@ -63,31 +63,64 @@ val generateTorBuildVersionClass by tasks.registering {
 
 /**
  * Packages the sandy binary of the platform of the build, which the sandbox of the embedded Tor needs, with its SHA-256
- * hash. sandy has no published release yet, so the binary is packaged only if the Gradle property sandy.binary names
- * one. See src/main/resources/sandy/README.md.
+ * hash. The releases of sandy cannot be downloaded publicly yet, so the binaries of the pinned release are committed in
+ * sandy/<version>/ of this project, and the build fails if the binary of its platform does not have the pinned hash.
+ * The Gradle property sandy.package=false builds without sandy. See src/main/resources/sandy/README.md.
  */
 val packageSandyBinary by tasks.registering {
+    val sandyVersion = "2.4.1"
+    // The SHA-256 of the binary in each release archive of sandy 2.4.1, as its release notes list them. The binaries
+    // can be built again from the signed tag v2.4.1 and compared.
+    val pinnedSha256 = mapOf(
+        "linux_x86_64" to "e80d6bebae3893126f10ee8b6f76240dc343991b3b017b108af9c2a1a8553645",
+        "linux_arm64" to "cea318cdd1d43dc719817864370488165494b796510d92c6a893396f9b8f1865",
+        "macos_x86_64" to "56289aa444172985d09c281adff12ba7d2969b4a9080b71a4e9cc6f4aef4793f",
+        "macos_arm64" to "a1153b499055b52342abe3ebc7c71d3dafe8a6478957ff230d307e7da8bd19fc",
+        "win_x86_64" to "851c27f9b48ef22d316bc5c64a2b5df29e484851d044b7c3b5c135a13b0e574a",
+    )
     val projectDirectory = layout.projectDirectory
-    // The content of the binary is the input, not its path: a rebuilt binary at the same path is packaged again.
-    val sandyBinaryFiles = objects.fileCollection().from(providers.gradleProperty("sandy.binary")
-        .map { listOf(projectDirectory.file(it)) }
-        .orElse(listOf()))
-    val outputDir = layout.buildDirectory.dir("generated/sandy")
     val platformName = getPlatform().platformName
+    val fileName = if (platformName.startsWith("win")) "sandy.exe" else "sandy"
+    val packageSandy = providers.gradleProperty("sandy.package")
+        .map {
+            when (it) {
+                "true" -> true
+                "false" -> false
+                else -> throw GradleException("The Gradle property sandy.package must be true or false, not $it")
+            }
+        }
+        .orElse(true)
+    // A platform without a pinned binary gets none, and a sandboxed start of Tor fails there. The content of the
+    // binary is the input, not its path: a changed binary at the same path is packaged again.
+    val sandyBinaryFiles = objects.fileCollection().from(packageSandy.map {
+        if (it && platformName in pinnedSha256) {
+            listOf(projectDirectory.file("sandy/$sandyVersion/$platformName/$fileName"))
+        } else {
+            listOf()
+        }
+    })
+    val outputDir = layout.buildDirectory.dir("generated/sandy")
     inputs.files(sandyBinaryFiles).withPathSensitivity(PathSensitivity.NONE)
     inputs.property("platformName", platformName)
+    inputs.property("pinnedSha256", pinnedSha256)
     outputs.dir(outputDir)
 
     doLast {
         val sandyDir = outputDir.get().asFile.resolve("sandy")
         sandyDir.deleteRecursively()
         val sandyBinaryFile = sandyBinaryFiles.singleOrNull() ?: return@doLast
-        val fileName = if (platformName.startsWith("win")) "sandy.exe" else "sandy"
+        val expectedSha256 = pinnedSha256.getValue(platformName)
         val target = sandyDir.resolve("$platformName/$fileName")
         target.parentFile.mkdirs()
         sandyBinaryFile.copyTo(target)
+        // The hash of the copy, so that the packaged file is the file which was checked
         val sha256 = MessageDigest.getInstance("SHA-256").digest(target.readBytes())
             .joinToString("") { "%02x".format(it) }
+        if (sha256 != expectedSha256) {
+            sandyDir.deleteRecursively()
+            throw GradleException("$sandyBinaryFile is not the binary of sandy $sandyVersion for $platformName: " +
+                    "its SHA-256 is $sha256, expected $expectedSha256. See src/main/resources/sandy/README.md.")
+        }
         sandyDir.resolve("SHA256SUMS").writeText("$sha256  $platformName/$fileName\n")
     }
 }

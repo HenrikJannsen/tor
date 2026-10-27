@@ -138,7 +138,7 @@ class SandyBinaryTest {
                 .hasMessageContaining("win_arm64");
     }
 
-    // The build packages the binary of its platform only if the property sandy.binary names one.
+    // The build packages the binary of its platform unless -Psandy.package=false.
     @Test
     void anEmbeddedBinaryMatchesTheEmbeddedSums() throws IOException {
         assumeTrue(SandyBinaryTest.class.getClassLoader().getResource("sandy/SHA256SUMS") != null,

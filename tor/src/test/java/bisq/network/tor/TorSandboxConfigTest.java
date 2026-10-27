@@ -28,7 +28,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class TorSandboxConfigTest {
     @Test
     void theSandboxIsOffUnlessTheConfigurationTurnsItOn() {
-        // sandy has no published release which a build could package.
+        // sandy has no public release which a build could download and package.
         TorSandboxConfig missing = TorSandboxConfig.from(ConfigFactory.parseString("useExternalTor = false"));
         TorSandboxConfig enabled = TorSandboxConfig.from(ConfigFactory.parseString("sandbox { enabled = true }"));
 

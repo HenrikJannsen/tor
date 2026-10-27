@@ -13,10 +13,31 @@ sandboxed start of Tor, Bisq installs the binary into the directory `sandy` of t
 write, and checks its hash against `SHA256SUMS`.
 
 The library needs sandy 2.2 or newer: it passes the policy on standard input and uses its fallback levels and
-`check --json`. The build does not download and verify sandy releases yet. The build packages a binary only
-if the Gradle property `sandy.binary` names one, for example `-Psandy.binary=/path/to/sandy`, built from the signed tag
-of a sandy release. A relative path is relative to the directory `tor/`. The content of the binary is an input of the
-build, so a rebuilt binary at the same path is packaged again. A build without the property contains no sandy binary,
-and a sandboxed start of Tor fails with
-`SandboxUnavailableException`. A release build needs a build step which downloads the release archives of sandy and
-checks their pinned hashes and the signature of the release, as the build does for the Tor expert bundle.
+`check --json`. The build packages sandy 2.4.1, whose binary of each platform `tor/build.gradle.kts` pins by its
+SHA-256 hash. The release archives of sandy cannot be downloaded publicly yet, so the binaries are committed in
+`tor/sandy/2.4.1/<platform name>/`, and the build fails if the binary of its platform does not have the pinned hash.
+`-Psandy.package=false` builds without sandy; a sandboxed start of Tor then fails with `SandboxUnavailableException`,
+as it does on `win_arm64`, for which no binary is packaged.
+
+The committed binaries were taken from the release archives of sandy 2.4.1:
+
+| Platform | Archive |
+|---|---|
+| `linux_x86_64` | `sandy-2.4.1-x86_64-unknown-linux-musl.tar.gz` |
+| `linux_arm64` | `sandy-2.4.1-aarch64-unknown-linux-musl.tar.gz` |
+| `macos_x86_64` | `sandy-2.4.1-x86_64-apple-darwin.tar.gz` |
+| `macos_arm64` | `sandy-2.4.1-aarch64-apple-darwin.tar.gz` |
+| `win_x86_64` | `sandy-2.4.1-x86_64-pc-windows-msvc.zip` |
+
+Check the archives against the signed `SHA256SUMS` of the release (OpenPGP key
+`E850 152C 47E1 3655 DDF3  A62B 4CE3 8D03 67B5 3CC5`, which also signs the release tags of sandy):
+
+```sh
+gpg --verify SHA256SUMS.asc SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS
+```
+
+The binaries are reproducible: `scripts/release-build.sh TARGET` in a checkout of the signed tag `v2.4.1` of sandy
+builds a binary with the pinned hash again. Once the releases can be downloaded publicly, the build should download
+the archive of its platform and check the signature of `SHA256SUMS` and the pinned hash, as it does for the Tor expert
+bundle, and `tor/sandy/` should be removed.

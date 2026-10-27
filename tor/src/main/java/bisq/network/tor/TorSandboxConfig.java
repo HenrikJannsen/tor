@@ -42,7 +42,7 @@ public final class TorSandboxConfig {
 
     /**
      * Reads the optional block {@code sandbox} of the Tor configuration of Bisq 2. The sandbox is off unless the
-     * configuration turns it on, because sandy has no published release which a build could package.
+     * configuration turns it on, because sandy has no public release which a build could download and package.
      */
     static TorSandboxConfig from(Config torConfig) {
         Config config = torConfig.hasPath("sandbox") ? torConfig.getConfig("sandbox") : null;

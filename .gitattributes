@@ -7,6 +7,9 @@ gradle/wrapper/gradle-wrapper.properties text eol=lf
 gradle/wrapper/*.sha256 text eol=lf
 gradle/wrapper/gradle-wrapper.jar binary
 
+# The build checks the sandy binaries against their pinned SHA-256 hashes.
+tor/sandy/** binary
+
 # The test resource checks the reading of a line which ends with CRLF, so its line endings must not be converted.
 tor-common/src/test/resources/file_utils_test_resource.txt -text
 
