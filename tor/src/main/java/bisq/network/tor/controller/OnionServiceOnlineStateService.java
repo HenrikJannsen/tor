@@ -26,6 +26,7 @@ import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import lombok.extern.slf4j.Slf4j;
 
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -40,8 +41,11 @@ public class OnionServiceOnlineStateService extends FilteredHsDescEventListener 
     private final long timeout;
     private final CountDownLatch countDownLatch = new CountDownLatch(1);
     private final Runnable connectionEndListener = this::onConnectionEnd;
+    private volatile boolean isShutdown;
     private volatile boolean hasConnectionEnded;
+    // The result of the lookup, written by the first HS_DESC event before it opens the latch
     private boolean isOnline;
+    private Optional<String> failureReason = Optional.empty();
     private final ExecutorService executor;
 
     public OnionServiceOnlineStateService(TorControlProtocol torControlProtocol, String onionAddress, long timeout) {
@@ -75,12 +79,20 @@ public class OnionServiceOnlineStateService extends FilteredHsDescEventListener 
                     } catch (Exception e) {
                         throw new RuntimeException(e);
                     }
+                    if (isShutdown) {
+                        throw new RuntimeException("The Tor controller was shut down before the lookup of the onion " +
+                                "service completed");
+                    }
                     if (hasConnectionEnded) {
                         throw new RuntimeException("The connection to the Tor control port ended before the lookup " +
                                 "of the onion service completed");
                     }
                     if (!isSuccess) {
-                        throw new RuntimeException("Could not get onion address upload completed in " + timeout / 1000 + " seconds");
+                        throw new RuntimeException("Tor did not report the result of the lookup of the onion " +
+                                "service within " + timeout / 1000 + " seconds");
+                    }
+                    if (failureReason.isPresent()) {
+                        throw new RuntimeException("Tor could not look up the onion service: " + failureReason.get());
                     }
 
                     return isOnline;
@@ -111,7 +123,9 @@ public class OnionServiceOnlineStateService extends FilteredHsDescEventListener 
         countDownLatch.countDown();
     }
 
+    // The lookup fails then: without the flag, the open latch would answer "offline".
     public void shutdown() {
+        isShutdown = true;
         torControlProtocol.removeHsDescEventListener(this);
         if (countDownLatch.getCount() > 0) {
             countDownLatch.countDown();
@@ -119,22 +133,32 @@ public class OnionServiceOnlineStateService extends FilteredHsDescEventListener 
         MoreExecutors.shutdownAndAwaitTermination(executor, 100, TimeUnit.MILLISECONDS);
     }
 
+    /**
+     * Tor fetches the descriptor from one HSDir per HSFETCH, so the first result is the answer. NOT_FOUND means that the
+     * service is offline. Another reason, for example QUERY_NO_HSDIR or QUERY_RATE_LIMITED, means that Tor could not
+     * look it up, so the lookup fails at once instead of waiting for its timeout. The events arrive on the one thread of
+     * the reader.
+     */
     @Override
     public void onFilteredEvent(HsDescEvent hsDescEvent) {
+        if (countDownLatch.getCount() == 0) {
+            return;
+        }
         switch (hsDescEvent.getAction()) {
             case FAILED:
-                HsDescFailedEvent hsDescFailedEvent = (HsDescFailedEvent) hsDescEvent;
-                if (hsDescFailedEvent.getReason().equals("REASON=NOT_FOUND")) {
-                    log.info("hsFetch request for {} failed with reason NOT_FOUND", onionAddress);
-                    countDownLatch.countDown();
+                Optional<String> reason = ((HsDescFailedEvent) hsDescEvent).getReason();
+                log.info("hsFetch request for {} failed with reason {}", onionAddress, reason.orElse("none"));
+                if (!reason.equals(Optional.of("NOT_FOUND"))) {
+                    failureReason = Optional.of(reason.map(value -> "REASON=" + value).orElse("no REASON"));
                 }
+                countDownLatch.countDown();
                 break;
             case RECEIVED:
                 log.info("hsFetch request for {} succeeded", onionAddress);
                 isOnline = true;
                 countDownLatch.countDown();
                 break;
-            case UPLOADED:
+            default:
                 break;
         }
     }

@@ -8,24 +8,13 @@ import lombok.experimental.SuperBuilder;
 @Getter
 @ToString
 public abstract class HsDescEvent {
-    @Getter
+    // The actions which Bisq handles. The control-spec has more, for example REQUESTED, which the parser ignores.
     public enum Action {
-        CREATED(7),
-        FAILED(8),
-        RECEIVED(7),
-        UPLOAD(8),
-        UPLOADED(6);
-
-        private final int numberOfArgs;
-
-        Action(int numberOfArgs) {
-            this.numberOfArgs = numberOfArgs;
-        }
-
-        public boolean isAction(String[] parts) {
-            // Example: 650 HS_DESC CREATED <onion_address> UNKNOWN UNKNOWN <descriptor_id>
-            return parts[2].equals(this.toString()) && parts.length == numberOfArgs;
-        }
+        CREATED,
+        FAILED,
+        RECEIVED,
+        UPLOAD,
+        UPLOADED
     }
 
     protected final Action action;

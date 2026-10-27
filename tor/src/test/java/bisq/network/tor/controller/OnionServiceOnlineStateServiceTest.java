@@ -22,6 +22,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -61,12 +62,49 @@ class OnionServiceOnlineStateServiceTest {
     }
 
     @Test
+    void anAddressInUpperCaseIsLookedUp() throws Exception {
+        // Bisq 2 accepts an onion address in any case. Tor names it in lower case in its events.
+        connect(command -> command.startsWith("HSFETCH") ?
+                "250 OK\r\n650 HS_DESC RECEIVED " + serviceId + " NO_AUTH " + HS_DIR + " descriptorId\r\n" :
+                "250 OK\r\n");
+
+        assertThat(torController.isOnionServiceOnlineAsync(onionAddress.toUpperCase(Locale.ROOT)).join()).isTrue();
+        assertThat(server.getCommands()).contains("HSFETCH " + serviceId);
+    }
+
+    @Test
     void aMissingDescriptorMeansOffline() throws Exception {
         connect(command -> command.startsWith("HSFETCH") ?
                 "250 OK\r\n650 HS_DESC FAILED " + serviceId + " NO_AUTH " + HS_DIR + " descriptorId REASON=NOT_FOUND\r\n" :
                 "250 OK\r\n");
 
         assertThat(torController.isOnionServiceOnlineAsync(onionAddress).join()).isFalse();
+    }
+
+    @Test
+    void aMissingDescriptorWithoutTheOptionalDescriptorIdMeansOffline() throws Exception {
+        connect(command -> command.startsWith("HSFETCH") ?
+                "250 OK\r\n650 HS_DESC FAILED " + serviceId + " NO_AUTH " + HS_DIR + " REASON=NOT_FOUND\r\n" :
+                "250 OK\r\n");
+
+        long start = System.currentTimeMillis();
+        assertThat(torController.isOnionServiceOnlineAsync(onionAddress).join()).isFalse();
+        assertThat(System.currentTimeMillis() - start).isLessThan(5000);
+    }
+
+    @Test
+    void aFailureForAnotherReasonEndsTheLookupAtOnce() throws Exception {
+        // Tor could not look the service up, so its state is unknown; the lookup must not wait for its timeout.
+        connect(command -> command.startsWith("HSFETCH") ?
+                "250 OK\r\n650 HS_DESC FAILED " + serviceId + " NO_AUTH " + HS_DIR + " descriptorId " +
+                        "REASON=QUERY_RATE_LIMITED\r\n" :
+                "250 OK\r\n");
+
+        long start = System.currentTimeMillis();
+        CompletableFuture<Boolean> lookup = torController.isOnionServiceOnlineAsync(onionAddress);
+
+        assertThatThrownBy(lookup::join).hasMessageContaining("QUERY_RATE_LIMITED");
+        assertThat(System.currentTimeMillis() - start).isLessThan(5000);
     }
 
     @Test
@@ -136,6 +174,25 @@ class OnionServiceOnlineStateServiceTest {
                 .isInstanceOf(CompletionException.class)
                 .hasMessageContaining("ended");
         assertThat(System.currentTimeMillis() - start).isLessThan(5000);
+    }
+
+    @Test
+    void aShutdownFailsTheLookupInsteadOfAnsweringOffline() throws Exception {
+        server = new FakeTorControlServer(command -> "250 OK\r\n");
+        TorControlProtocol torControlProtocol = new TorControlProtocol();
+        torControlProtocol.initialize(server.getPort());
+        try {
+            OnionServiceOnlineStateService service = new OnionServiceOnlineStateService(torControlProtocol,
+                    onionAddress, 10_000);
+            CompletableFuture<Boolean> lookup = service.isOnionServiceOnlineAsync();
+            waitForCommand("HSFETCH");
+
+            service.shutdown();
+
+            assertThatThrownBy(lookup::join).hasMessageContaining("shut down");
+        } finally {
+            torControlProtocol.close();
+        }
     }
 
     private void waitForCommand(String commandStart) throws InterruptedException {

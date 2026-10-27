@@ -49,6 +49,13 @@ installer, which fails on Android because the app has no `tor.zip`. For example,
 34, and `ProcessHandle` does not exist on Android. The Tor build uses Guava instead of `HexFormat`. The embedded Tor
 process and `tor-local-network` only run on desktop systems.
 
+## Onion services
+
+A publication of an onion service completes once the first HSDir has stored its descriptor, which Tor reports with
+`HS_DESC UPLOADED`, not at the start of the upload (`HS_DESC UPLOAD`), when no peer could find the onion service yet. It
+fails if no HSDir has stored the descriptor within the upload timeout of `TorTransportConfig`. The exception is an
+`UPLOAD` which a filter in front of Tor shortened, as the onion-grater profiles of Whonix before September 2024 do.
+
 ## Build
 
 Run these commands in the repository root:

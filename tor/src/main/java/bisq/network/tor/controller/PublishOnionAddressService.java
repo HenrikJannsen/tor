@@ -20,9 +20,11 @@ package bisq.network.tor.controller;
 import bisq.network.tor.common.util.StringUtils;
 import bisq.network.tor.controller.events.events.EventType;
 import bisq.network.tor.controller.events.events.HsDescEvent;
+import bisq.network.tor.controller.events.events.HsDescUploadEvent;
 import bisq.network.tor.controller.events.listener.FilteredHsDescEventListener;
 import bisq.network.tor.controller.exceptions.HsDescUploadFailedException;
 import bisq.network.tor.onionservice.OnionServiceKey;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import lombok.extern.slf4j.Slf4j;
 
@@ -45,7 +47,9 @@ public class PublishOnionAddressService extends FilteredHsDescEventListener {
     private volatile boolean hasConnectionEnded;
 
     public PublishOnionAddressService(TorControlProtocol torControlProtocol, int timeout, OnionServiceKey onionServiceKey) {
-        super(EventType.HS_DESC, onionServiceKey.getOnionAddress(), Set.of(HsDescEvent.Action.UPLOAD));
+        // See completesThePublication
+        super(EventType.HS_DESC, onionServiceKey.getOnionAddress(),
+                Set.of(HsDescEvent.Action.UPLOAD, HsDescEvent.Action.UPLOADED));
 
         this.torControlProtocol = torControlProtocol;
         this.timeout = timeout;
@@ -146,9 +150,29 @@ public class PublishOnionAddressService extends FilteredHsDescEventListener {
     @Override
     public void onFilteredEvent(HsDescEvent hsDescEvent) {
         log.info("Received HsDescEvent: {}", StringUtils.truncate(hsDescEvent, 200));
+        if (!completesThePublication(hsDescEvent)) {
+            return;
+        }
         if (countDownLatch.getCount() > 0) {
             log.info("Publishing of onion address completed. Event {}", StringUtils.truncate(hsDescEvent, 200));
         }
         countDownLatch.countDown();
+    }
+
+    /**
+     * The onion service is published once an HSDir has stored its descriptor, which Tor reports with UPLOADED. At
+     * UPLOAD, the start of an upload, no HSDir has it yet, and a peer which looks the onion service up then does not
+     * find it. Every onion-grater profile of Bisq on Whonix delivers UPLOADED, with the HSDir redacted.
+     * <p>
+     * Tor sends the HSDir index with every UPLOAD of a v3 descriptor. The profiles before September 2024 shorten
+     * UPLOAD to {@code <address> <auth> redacted redacted}, without it. An UPLOAD in such a form, which a filter in
+     * front of Tor shortened, completes the publication as before.
+     */
+    @VisibleForTesting
+    static boolean completesThePublication(HsDescEvent hsDescEvent) {
+        if (hsDescEvent.getAction() == HsDescEvent.Action.UPLOADED) {
+            return true;
+        }
+        return hsDescEvent instanceof HsDescUploadEvent uploadEvent && uploadEvent.getHsDirIndex().isEmpty();
     }
 }

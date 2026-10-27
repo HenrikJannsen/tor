@@ -17,6 +17,7 @@
 
 package bisq.network.tor.controller;
 
+import bisq.network.tor.controller.events.events.HsDescEvent;
 import bisq.network.tor.controller.exceptions.HsDescUploadFailedException;
 import bisq.network.tor.onionservice.OnionServiceKey;
 import com.google.common.collect.Sets;
@@ -48,14 +49,78 @@ class PublishOnionAddressServiceTest {
 
     @AfterEach
     void tearDown() throws Exception {
-        torController.shutdown();
-        server.close();
+        if (torController != null) {
+            torController.shutdown();
+        }
+        if (server != null) {
+            server.close();
+        }
     }
 
     @Test
-    void theStartOfTheUploadPublishesTheOnionService() throws Exception {
+    void theEndOfTheFirstUploadPublishesTheOnionService() throws Exception {
         connect(1000, command -> command.startsWith("ADD_ONION") ?
-                addOnionReply(serviceId) + uploadEvent(serviceId) :
+                addOnionReply(serviceId) + uploadEvents(serviceId) :
+                "250 OK\r\n");
+
+        assertThatCode(() -> torController.publish(onionServiceKey, 9999, 12345)).doesNotThrowAnyException();
+    }
+
+    // At the start of an upload no HSDir has the descriptor, so a peer could not find the onion service. Before, the
+    // start of the upload completed the publication.
+    @Test
+    void theStartOfAnUploadDoesNotPublishTheOnionService() throws Exception {
+        connect(300, command -> command.startsWith("ADD_ONION") ?
+                addOnionReply(serviceId) + uploadStartEvent(serviceId) :
+                "250 OK\r\n");
+
+        assertThatThrownBy(() -> torController.publish(onionServiceKey, 9999, 12345))
+                .hasRootCauseInstanceOf(HsDescUploadFailedException.class)
+                .hasMessageContaining("upload completed in 300 ms");
+        assertThat(server.getCommands()).contains("DEL_ONION " + serviceId);
+    }
+
+    @Test
+    void onlyTheEventsOfAStoredDescriptorOrOfAShortenedUploadCompleteThePublication() {
+        String fullUpload = "650 HS_DESC UPLOAD " + serviceId + " UNKNOWN " + HS_DIR + " descriptorId HSDIR_INDEX=index";
+        String shortenedUpload = "650 HS_DESC UPLOAD " + serviceId + " UNKNOWN redacted redacted";
+
+        assertThat(PublishOnionAddressService.completesThePublication(event(fullUpload))).isFalse();
+        assertThat(PublishOnionAddressService.completesThePublication(event(shortenedUpload))).isTrue();
+        assertThat(PublishOnionAddressService.completesThePublication(
+                event("650 HS_DESC UPLOADED " + serviceId + " UNKNOWN " + HS_DIR))).isTrue();
+        assertThat(PublishOnionAddressService.completesThePublication(
+                event("650 HS_DESC UPLOADED " + serviceId + " UNKNOWN redacted"))).isTrue();
+    }
+
+    // onion-grater of Whonix since September 2024: UPLOAD as Tor sends it, UPLOADED with the HSDir redacted
+    @Test
+    void theRedactedEndOfAnUploadOfCurrentOnionGraterProfilesPublishesTheOnionService() throws Exception {
+        connect(1000, command -> command.startsWith("ADD_ONION") ?
+                "250 OK\r\n" + uploadStartEvent(serviceId) +
+                        "650 HS_DESC UPLOADED " + serviceId + " UNKNOWN redacted\r\n" :
+                "250 OK\r\n");
+
+        assertThatCode(() -> torController.publish(onionServiceKey, 9999, 12345)).doesNotThrowAnyException();
+    }
+
+    @Test
+    void theEndOfAnUploadAlsoPublishesTheOnionService() throws Exception {
+        // A filtering control port may deliver only UPLOADED, here with a redacted HSDir as onion-grater on Whonix does
+        connect(1000, command -> command.startsWith("ADD_ONION") ?
+                "250 OK\r\n" +
+                        "650 HS_DESC UPLOADED " + serviceId + " UNKNOWN redacted\r\n" :
+                "250 OK\r\n");
+
+        assertThatCode(() -> torController.publish(onionServiceKey, 9999, 12345)).doesNotThrowAnyException();
+    }
+
+    @Test
+    void theShortenedUploadOfOldOnionGraterProfilesPublishesTheOnionService() throws Exception {
+        // Onion-grater profiles of Whonix before September 2024 deliver UPLOAD without its optional fields, which the
+        // parser read by position and dropped before. There the publication completes at UPLOAD.
+        connect(1000, command -> command.startsWith("ADD_ONION") ?
+                "250 OK\r\n650 HS_DESC UPLOAD " + serviceId + " UNKNOWN redacted redacted\r\n" :
                 "250 OK\r\n");
 
         assertThatCode(() -> torController.publish(onionServiceKey, 9999, 12345)).doesNotThrowAnyException();
@@ -160,7 +225,7 @@ class PublishOnionAddressServiceTest {
         AtomicInteger setEventsCommands = new AtomicInteger();
         connect(1000, command -> {
             if (command.startsWith("ADD_ONION")) {
-                return addOnionReply(serviceId) + uploadEvent(serviceId);
+                return addOnionReply(serviceId) + uploadEvents(serviceId);
             }
             if (command.startsWith("SETEVENTS") && setEventsCommands.incrementAndGet() > 1) {
                 return "552 Unrecognized event\r\n";
@@ -224,7 +289,7 @@ class PublishOnionAddressServiceTest {
                         "550 Onion address collision\r\n";
             }
             if (command.equals("GETINFO version")) {
-                return "250-version=0.4.9.14\r\n250 OK\r\n" + uploadEvent(serviceId);
+                return "250-version=0.4.9.14\r\n250 OK\r\n" + uploadEvents(serviceId);
             }
             return "250 OK\r\n";
         });
@@ -277,7 +342,16 @@ class PublishOnionAddressServiceTest {
         return "250-ServiceID=" + serviceId + "\r\n250 OK\r\n";
     }
 
-    static String uploadEvent(String serviceId) {
+    // Tor starts the upload of the descriptor to an HSDir, and reports when the HSDir has stored it.
+    static String uploadEvents(String serviceId) {
+        return uploadStartEvent(serviceId) + "650 HS_DESC UPLOADED " + serviceId + " UNKNOWN " + HS_DIR + "\r\n";
+    }
+
+    private static String uploadStartEvent(String serviceId) {
         return "650 HS_DESC UPLOAD " + serviceId + " UNKNOWN " + HS_DIR + " descriptorId HSDIR_INDEX=index\r\n";
+    }
+
+    private static HsDescEvent event(String line) {
+        return HsDescEventParser.tryParse(line.split(" ")).orElseThrow();
     }
 }

@@ -6,6 +6,7 @@ import bisq.network.tor.onionservice.OnionServiceKey;
 import com.google.common.annotations.VisibleForTesting;
 import lombok.extern.slf4j.Slf4j;
 
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -153,12 +154,18 @@ public class TorController {
                 () -> service.publish(onionServicePort, localPort));
     }
 
+    /**
+     * @param onionAddress a v3 onion address in any case, as Bisq 2 accepts it. Tor reads it in any case, but names it
+     *                     in lower case in its events, so the lookup uses the lower case form.
+     */
     public CompletableFuture<Boolean> isOnionServiceOnlineAsync(String onionAddress) {
         if (isShutdownInProgress) {
             return CompletableFuture.completedFuture(false);
         }
-        OnionServiceOnlineStateService service = new OnionServiceOnlineStateService(torControlProtocol, onionAddress, isOnlineTimeout);
-        return runOnce(onlineChecks, onionAddress, false, service::shutdown, service::isOnionServiceOnlineAsync);
+        String lowerCaseOnionAddress = onionAddress.toLowerCase(Locale.ROOT);
+        OnionServiceOnlineStateService service = new OnionServiceOnlineStateService(torControlProtocol,
+                lowerCaseOnionAddress, isOnlineTimeout);
+        return runOnce(onlineChecks, lowerCaseOnionAddress, false, service::shutdown, service::isOnionServiceOnlineAsync);
     }
 
     /**
