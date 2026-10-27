@@ -66,7 +66,9 @@ public class TorrcFileGenerator {
                 appendEntry(torrcStringBuilder, "DirAuthority", dirAuthority.toTorrcValue()));
 
         try {
-            FileUtils.writeToPath(torrcStringBuilder.toString(), torrcPath);
+            // A new file: a Tor which outlived an earlier start, where sandy does not end Tor with Bisq, keeps only the
+            // rights on the old torrc, so it cannot read the password hash of the next start.
+            FileUtils.writeToPathAtomically(torrcStringBuilder.toString(), torrcPath);
         } catch (IOException e) {
             throw new IllegalStateException("Couldn't create torrc file: " + torrcPath.toAbsolutePath());
         }

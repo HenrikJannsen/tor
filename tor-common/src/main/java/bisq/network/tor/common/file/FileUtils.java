@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystems;
 import java.nio.file.FileVisitResult;
@@ -94,15 +95,41 @@ public class FileUtils {
 
     public static void writeToPath(String content, Path path, boolean posixPermissionsAllowed) throws IOException {
         try {
-            ByteBuffer encoded = StandardCharsets.UTF_8.newEncoder().encode(CharBuffer.wrap(content));
-            byte[] bytes = new byte[encoded.remaining()];
-            encoded.get(bytes);
-            Files.write(path, bytes);
+            Files.write(path, encodeUtf8(content));
             applyDefaultPermissions(path, posixPermissionsAllowed);
         } catch (IOException e) {
             log.warn("Could not write to file {}", path);
             throw e;
         }
+    }
+
+    /**
+     * Writes the content into a new file in the directory of the path, with the permissions rw------- from its
+     * creation on, and moves it over the path in one step. The path then names a new file: a process which has the old
+     * file open, or rights on it, for example a Tor whose sandbox granted the old torrc, cannot read the new content,
+     * and no reader sees a partly written file.
+     */
+    public static void writeToPathAtomically(String content, Path path) throws IOException {
+        byte[] bytes = encodeUtf8(content);
+        Path absolutePath = path.toAbsolutePath();
+        // On a POSIX file system the JDK creates a temporary file with the permissions rw-------.
+        Path tempFilePath = Files.createTempFile(absolutePath.getParent(), absolutePath.getFileName() + ".", ".tmp");
+        try {
+            applyDefaultPermissions(tempFilePath, true);
+            Files.write(tempFilePath, bytes);
+            Files.move(tempFilePath, absolutePath, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException e) {
+            log.warn("Could not write to file {}", path);
+            Files.deleteIfExists(tempFilePath);
+            throw e;
+        }
+    }
+
+    private static byte[] encodeUtf8(String content) throws CharacterCodingException {
+        ByteBuffer encoded = StandardCharsets.UTF_8.newEncoder().encode(CharBuffer.wrap(content));
+        byte[] bytes = new byte[encoded.remaining()];
+        encoded.get(bytes);
+        return bytes;
     }
 
     public static void inputStreamToFile(InputStream inputStream, Path destinationPath) throws IOException {
