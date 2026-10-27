@@ -5,7 +5,8 @@ val expectedReleaseJavaVersion = providers.gradleProperty("releaseBuild.javaVers
 
 tasks.register("verifyGithubActionsSecurity") {
     group = "verification"
-    description = "Verifies GitHub Actions workflows use pinned actions and non-floating build environments."
+    description = "Verifies GitHub Actions workflows use pinned actions, non-floating build environments, " +
+        "explicit permissions, no privileged triggers and no event data in scripts."
 
     val workflowFiles = fileTree(".github/workflows") {
         include("*.yml")
@@ -31,7 +32,14 @@ tasks.register("verifyGithubActionsSecurity") {
         val checkLatestTrueRegex = Regex("""^\s*check-latest:\s*['"]?true['"]?\s*$""", RegexOption.IGNORE_CASE)
         val checkLatestFalseRegex = Regex("""^\s*check-latest:\s*['"]?false['"]?\s*$""", RegexOption.IGNORE_CASE)
         val persistCredentialsFalseRegex = Regex("""^\s*persist-credentials:\s*['"]?false['"]?\s*$""", RegexOption.IGNORE_CASE)
+        val validateWrappersTrueRegex = Regex("""^\s*validate-wrappers:\s*['"]?true['"]?\s*$""", RegexOption.IGNORE_CASE)
         val stepStartRegex = Regex("""^(\s*)-\s+[A-Za-z_][A-Za-z0-9_-]*\s*:.*$""")
+        // Both run a workflow of the default branch with secrets and a write token for an event of a fork
+        val privilegedTriggerRegex = Regex("""\b(pull_request_target|workflow_run)\b""")
+        val topLevelPermissionsRegex = Regex("""^permissions\s*:""")
+        val runKeyRegex = Regex("""^(\s*(?:-\s+)?)run\s*:(.*)$""")
+        // Event data such as the title of a pull request comes from whoever opens it; inside a script it is shell code
+        val eventExpressionRegex = Regex("""\$\{\{[^}]*\bgithub\.event\b""")
 
         if (expectedJavaVersion.isNullOrEmpty()) {
             violations += "Missing releaseBuild.javaVersion in gradle.properties"
@@ -57,12 +65,45 @@ tasks.register("verifyGithubActionsSecurity") {
             }
         }
 
+        fun withoutComment(line: String): String {
+            val commentStart = Regex("""(^|\s)#""").find(line)
+            return if (commentStart == null) line else line.substring(0, commentStart.range.first)
+        }
+
         workflowFiles.files.sortedBy { it.path }.forEach { workflowFile ->
             val workflowPath = rootProject.relativePath(workflowFile)
             val lines = workflowFile.readLines(StandardCharsets.UTF_8)
 
+            if (lines.none { topLevelPermissionsRegex.containsMatchIn(it) }) {
+                violations += "$workflowPath has no top-level permissions block"
+            }
+
+            // The column of the run key of the script in which the current line is, or null outside of a script
+            var runKeyColumn: Int? = null
             lines.forEachIndexed { index, line ->
                 val lineNumber = index + 1
+
+                if (privilegedTriggerRegex.containsMatchIn(withoutComment(line))) {
+                    violations += "$workflowPath:$lineNumber uses a privileged trigger: ${line.trim()}"
+                }
+
+                val lineIndent = line.length - line.trimStart().length
+                if (runKeyColumn != null && line.isNotBlank() && lineIndent <= runKeyColumn!!) {
+                    runKeyColumn = null
+                }
+                val runKeyMatch = runKeyRegex.find(line)
+                val scriptPart = when {
+                    runKeyMatch != null -> {
+                        runKeyColumn = runKeyMatch.groupValues[1].length
+                        runKeyMatch.groupValues[2]
+                    }
+                    runKeyColumn != null -> line
+                    else -> null
+                }
+                if (scriptPart != null && eventExpressionRegex.containsMatchIn(scriptPart)) {
+                    violations += "$workflowPath:$lineNumber expands github.event in a run script; " +
+                        "pass it in an environment variable instead"
+                }
                 val usesMatch = usesRegex.find(line)
                 if (usesMatch != null) {
                     val actionRef = usesMatch.groupValues[1]
@@ -89,6 +130,15 @@ tasks.register("verifyGithubActionsSecurity") {
                         val setupJavaStepLines = stepLinesAfter(lines, index)
                         if (setupJavaStepLines.none { checkLatestFalseRegex.matches(it) }) {
                             violations += "$workflowPath:$lineNumber uses actions/setup-java without check-latest: false"
+                        }
+                    }
+
+                    // The wrapper checksums of this repository are written by this repository; only this check of
+                    // setup-gradle compares the wrapper jar with the checksums which Gradle publishes
+                    if (actionRef.startsWith("gradle/actions/setup-gradle@")) {
+                        val setupGradleStepLines = stepLinesAfter(lines, index)
+                        if (setupGradleStepLines.none { validateWrappersTrueRegex.matches(it) }) {
+                            violations += "$workflowPath:$lineNumber uses gradle/actions/setup-gradle without validate-wrappers: true"
                         }
                     }
                 }

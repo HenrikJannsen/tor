@@ -7,6 +7,10 @@
 `gradle/wrapper/gradle-wrapper.sha256`. The task also requires `distributionUrl` to point to `services.gradle.org` for
 `releaseBuild.gradleVersion` with a pinned `distributionSha256Sum`.
 
+These checksums are written by this repository, so a change which replaces the wrapper jar can replace its checksum as
+well. CI therefore also checks the jar against the checksums which Gradle publishes (`validate-wrappers: true` of
+`gradle/actions/setup-gradle`), and `verifyGithubActionsSecurity` requires that setting.
+
 The checksums cover the committed bytes. `.gitattributes` disables line-ending conversion for `gradlew.bat` (`-text`),
 which is committed with CRLF line endings as Gradle generates it; the other files are committed with LF. Do not
 renormalize these files.
@@ -74,7 +78,8 @@ To verify the current metadata without rewriting it:
 ./gradlew verifyDependencySignaturePolicy
 ```
 
-`./gradlew dependencySignatureReport` writes `docs/dependency-signature-report.md`.
+`./gradlew dependencySignatureReport` writes `docs/dependency-signature-report.md`. CI writes it again and fails if it
+differs from the committed report, so regenerate it with every change of the dependencies or of the verification files.
 
 ### Adding or updating a dependency
 
