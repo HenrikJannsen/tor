@@ -124,4 +124,24 @@ class FileUtilsTest {
 
         assertThat(filePath).doesNotExist();
     }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void aRecursiveDeleteRemovesLinksButNotTheirTargets(@TempDir Path tempDirPath) throws IOException {
+        Path outsideDir = Files.createDirectories(tempDirPath.resolve("outside"));
+        Path outsideFile = Files.writeString(outsideDir.resolve("keep"), "keep");
+        Path dir = Files.createDirectories(tempDirPath.resolve("data").resolve("sub"));
+        Files.writeString(dir.resolve("file"), "content");
+        Files.createSymbolicLink(dir.resolve("linkToDir"), outsideDir);
+        Files.createSymbolicLink(dir.resolve("linkToFile"), outsideFile);
+        Path linkAsRoot = Files.createSymbolicLink(tempDirPath.resolve("root-link"), outsideDir);
+
+        FileUtils.deleteRecursively(tempDirPath.resolve("data"));
+        FileUtils.deleteRecursively(linkAsRoot);
+        FileUtils.deleteRecursively(tempDirPath.resolve("missing"));
+
+        assertThat(tempDirPath.resolve("data")).doesNotExist();
+        assertThat(linkAsRoot).doesNotExist();
+        assertThat(outsideFile).hasContent("keep");
+    }
 }

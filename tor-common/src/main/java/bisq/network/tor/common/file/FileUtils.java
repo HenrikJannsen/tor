@@ -24,9 +24,13 @@ import java.nio.ByteBuffer;
 import java.nio.CharBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileSystems;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.FileAttribute;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
@@ -120,6 +124,57 @@ public class FileUtils {
             }
             Thread.sleep(50);
         }
+    }
+
+    /**
+     * Deletes a file, or a directory with its content, if it exists. A symbolic link and, on Windows, a junction are
+     * deleted themselves, never what they point to, also inside the directory. A process which can write the directory,
+     * such as Tor in its data directory, then cannot make the caller delete files elsewhere, as long as it does not
+     * write the directory during the deletion: the walk reads the attributes of an entry and then opens it by its path,
+     * so a link which replaces a directory between the two steps would be followed. A walk relative to open directory
+     * descriptors would close that gap where the JDK offers a SecureDirectoryStream, as it does on Linux, but not on
+     * Windows; this walk does not use one. Call this method only while no other process writes the directory, for
+     * example before Tor starts.
+     */
+    public static void deleteRecursively(Path path) throws IOException {
+        if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
+            return;
+        }
+        if (isLinkOrJunction(path)) {
+            Files.delete(path);
+            return;
+        }
+        Files.walkFileTree(path, new SimpleFileVisitor<>() {
+            @Override
+            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attributes) throws IOException {
+                if (attributes.isOther()) {
+                    // A junction: Files.walkFileTree reports it as a directory and would enter it.
+                    Files.delete(dir);
+                    return FileVisitResult.SKIP_SUBTREE;
+                }
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attributes) throws IOException {
+                Files.delete(file);
+                return FileVisitResult.CONTINUE;
+            }
+
+            @Override
+            public FileVisitResult postVisitDirectory(Path dir, IOException exception) throws IOException {
+                if (exception != null) {
+                    throw exception;
+                }
+                Files.delete(dir);
+                return FileVisitResult.CONTINUE;
+            }
+        });
+    }
+
+    private static boolean isLinkOrJunction(Path path) throws IOException {
+        BasicFileAttributes attributes = Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+        return attributes.isSymbolicLink() || (attributes.isDirectory() && attributes.isOther());
     }
 
     public static String readUTF8String(Path path) throws IOException {

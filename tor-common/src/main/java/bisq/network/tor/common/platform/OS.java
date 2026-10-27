@@ -14,29 +14,58 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with Bisq. If not, see <http://www.gnu.org/licenses/>.
  */
+
 package bisq.network.tor.common.platform;
 
 import java.util.Locale;
 
 /**
- * Stripped copy of bisq.common.platform.OS with the methods which the Tor build uses.
+ * Stripped copy of bisq.common.platform.OS with the members which the Tor build uses.
  */
-public class OS {
-    private OS() {
+public enum OS {
+    LINUX,
+    MAC_OS,
+    WINDOWS,
+    ANDROID;
+
+    public static OS getOS() {
+        if (isLinux()) {
+            return LINUX;
+        } else if (isMacOs()) {
+            return MAC_OS;
+        } else if (isWindows()) {
+            return WINDOWS;
+        } else if (isAndroid()) {
+            return ANDROID;
+        }
+        throw new IllegalStateException("Running on unsupported OS: " + getOsName());
     }
 
     public static boolean isLinux() {
-        return getOsName().contains("linux") && !isAndroid();
+        return isLinux(getOsName()) && !isAndroid();
     }
 
     public static boolean isMacOs() {
-        String osName = getOsName();
-        return osName.contains("mac") || osName.contains("darwin");
+        return isMacOs(getOsName());
     }
 
     public static boolean isWindows() {
+        return isWindows(getOsName());
+    }
+
+    // osName is the os.name of the JVM, for example "Linux", "Mac OS X" or "Windows 11". Android reports "Linux".
+    static boolean isLinux(String osName) {
+        return toLowerCase(osName).contains("linux");
+    }
+
+    static boolean isMacOs(String osName) {
+        String lowerCaseOsName = toLowerCase(osName);
+        return lowerCaseOsName.contains("mac") || lowerCaseOsName.contains("darwin");
+    }
+
+    static boolean isWindows(String osName) {
         // Not contains("win"): "darwin" contains it too
-        return getOsName().startsWith("windows");
+        return toLowerCase(osName).startsWith("windows");
     }
 
     private static boolean isAndroid() {
@@ -49,6 +78,10 @@ public class OS {
     }
 
     private static String getOsName() {
-        return System.getProperty("os.name").toLowerCase(Locale.US);
+        return System.getProperty("os.name");
+    }
+
+    private static String toLowerCase(String osName) {
+        return osName.toLowerCase(Locale.US);
     }
 }
