@@ -11,11 +11,6 @@ apply(from = "gradle/dependency-verification.gradle.kts")
 apply(from = "gradle/gradle-wrapper-verification.gradle.kts")
 apply(from = "gradle/github-actions-verification.gradle.kts")
 
-extensions.findByName("buildScan")?.withGroovyBuilder {
-    setProperty("termsOfServiceUrl", "https://gradle.com/terms-of-service")
-    setProperty("termsOfServiceAgree", "yes")
-}
-
 val properties = Properties().apply {
     file("gradle.properties").inputStream().use { load(it) }
 }

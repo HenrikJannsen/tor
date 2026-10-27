@@ -7,9 +7,6 @@ plugins {
 
 repositories {
     mavenCentral()
-    maven {
-        url = uri("https://jitpack.io")
-    }
 }
 
 val pinnedJavaLanguageVersion = providers.gradleProperty("releaseBuild.javaVersion")

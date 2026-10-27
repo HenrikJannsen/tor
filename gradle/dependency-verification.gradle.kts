@@ -374,7 +374,8 @@ fun resolveConfigurations(): ResolvedBuildDependencies {
     )
 }
 
-// Included builds can finish their inventories before cleanAll deletes build outputs.
+// Below .gradle/ and not build/, so that a clean in the same invocation does not delete an inventory which a build
+// has written already.
 fun dependencyVerificationInventoryFile(buildDir: File = rootDir): File =
     File(buildDir, ".gradle/dependency-verification/inventory.tsv")
 
