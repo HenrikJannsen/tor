@@ -18,10 +18,20 @@ import java.util.Optional;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
 @Slf4j
 public class TorControlReader implements AutoCloseable {
-    private final BlockingQueue<String> replies = new LinkedBlockingQueue<>();
+    // Tor answers the commands of Bisq at once. Slow operations, such as the upload of an onion service descriptor,
+    // report their result later as events.
+    static final long REPLY_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(60);
+    private static final Pattern DATA_LINE_PATTERN = Pattern.compile("^\\d{3}\\+.*");
+    // CmdData = *DataLine "." CRLF
+    private static final String DATA_END = ".";
+
+    // An empty element marks the end of the stream.
+    private final BlockingQueue<Optional<String>> replies = new LinkedBlockingQueue<>();
     @Getter
     private final List<BootstrapEventListener> bootstrapEventListeners = new CopyOnWriteArrayList<>();
     @Getter
@@ -37,13 +47,28 @@ public class TorControlReader implements AutoCloseable {
                 var bufferedReader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.US_ASCII));
 
                 String line;
+                // The lines after a data reply line ("250+key=") or a data event line ("650+NAME") until the line
+                // with the single dot are data (control-spec, CmdData). A data line belongs to the reply or the
+                // event, whatever it starts with.
+                boolean isInDataBlock = false;
+                boolean isDataBlockOfEvent = false;
                 while (!isStopped && (line = bufferedReader.readLine()) != null && !Thread.currentThread().isInterrupted()) {
 
                     log.info("Received reply from Tor control server: {}", TorControlLogFormat.toLoggableReply(line));
-                    if (isEventWithCode_650(line)) {
+                    if (isInDataBlock) {
+                        if (!isDataBlockOfEvent) {
+                            replies.add(Optional.of(line));
+                        }
+                        isInDataBlock = !line.equals(DATA_END);
+                    } else if (isEventWithCode_650(line)) {
                         handleEvent(line);
+                        // Bisq registers no event with data, so the data of such an event belongs to no command.
+                        isInDataBlock = isDataLine(line);
+                        isDataBlockOfEvent = true;
                     } else {
-                        replies.add(line);
+                        replies.add(Optional.of(line));
+                        isInDataBlock = isDataLine(line);
+                        isDataBlockOfEvent = false;
                     }
 
                     if (Thread.interrupted()) {
@@ -54,6 +79,9 @@ public class TorControlReader implements AutoCloseable {
                 if (!isStopped) {
                     log.error("Tor control port reader couldn't read reply.", e);
                 }
+            } finally {
+                // Wake up the callers waiting for a reply.
+                replies.add(Optional.empty());
             }
         });
         workerThread = Optional.of(thread);
@@ -115,13 +143,31 @@ public class TorControlReader implements AutoCloseable {
         workerThread.ifPresent(Thread::interrupt);
     }
 
+    /**
+     * @throws ControlCommandFailedException if the connection ended, if no reply arrived within the timeout, or if
+     *                                       the thread was interrupted while it waited
+     */
     public String readLine() {
+        return readLine(REPLY_TIMEOUT_MS);
+    }
+
+    String readLine(long timeoutMs) {
         try {
-            return replies.take();
+            Optional<String> reply = replies.poll(timeoutMs, TimeUnit.MILLISECONDS);
+            if (reply == null) {
+                throw new ControlCommandFailedException("Tor did not reply within " + timeoutMs + " ms");
+            }
+            if (reply.isEmpty()) {
+                // Leave the end marker for the other callers.
+                replies.offer(reply);
+                throw new ControlCommandFailedException("The connection to the Tor control port has ended");
+            }
+            return reply.get();
         } catch (InterruptedException e) {
-            log.warn("Thread got interrupted at readLine method", e);
             Thread.currentThread().interrupt(); // Restore interrupted state
-            throw new RuntimeException(e);
+            // The reply may still arrive. The caller closes the connection on this exception, so that the reply is
+            // not taken as the reply to the next command.
+            throw new ControlCommandFailedException("The wait for the reply of Tor was interrupted", e);
         }
     }
 
@@ -144,6 +190,11 @@ public class TorControlReader implements AutoCloseable {
     private boolean isEventWithCode_650(String line) {
         // 650 STATUS_CLIENT NOTICE CIRCUIT_ESTABLISHED
         return line.startsWith("650");
+    }
+
+    // DataReplyLine = StatusCode "+" ReplyLine CmdData, for example "250+config-text=" or "650+NEWCONSENSUS"
+    private static boolean isDataLine(String line) {
+        return DATA_LINE_PATTERN.matcher(line).matches();
     }
 
     private static boolean isStatusClientEvent(String eventType) {

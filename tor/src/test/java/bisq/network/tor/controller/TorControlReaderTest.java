@@ -23,11 +23,15 @@ import bisq.network.tor.controller.events.listener.BootstrapEventListener;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.PipedInputStream;
+import java.io.PipedOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class TorControlReaderTest {
     @Test
@@ -75,5 +79,65 @@ class TorControlReaderTest {
 
         assertThat(reader.readLine()).isEqualTo("250 OK");
         assertThat(events).hasSize(1);
+    }
+
+    @Test
+    void theDataOfAReplyIsNotTakenForEvents() {
+        // control-spec: the data of a "250+" line follows until a line with a single dot. A data line can start with
+        // 650, for example a line of a document, and is still part of the reply.
+        List<TorBootstrapEvent> events = new CopyOnWriteArrayList<>();
+        TorControlReader reader = new TorControlReader();
+        reader.addBootstrapEventListener(new BootstrapEventListener(EventType.STATUS_CLIENT) {
+            @Override
+            public void onBootstrapStatusEvent(TorBootstrapEvent torBootstrapEvent) {
+                events.add(torBootstrapEvent);
+            }
+        });
+        String doneEvent = "650 STATUS_CLIENT NOTICE BOOTSTRAP PROGRESS=100 TAG=done SUMMARY=\"Done\"\r\n";
+        String lines = "250+x=\r\n" + doneEvent + ".\r\n250 OK\r\n" + doneEvent + "250 OK\r\n";
+
+        reader.start(new ByteArrayInputStream(lines.getBytes(StandardCharsets.US_ASCII)));
+
+        assertThat(reader.readLine()).isEqualTo("250+x=");
+        assertThat(reader.readLine()).startsWith("650 STATUS_CLIENT");
+        assertThat(reader.readLine()).isEqualTo(".");
+        assertThat(reader.readLine()).isEqualTo("250 OK");
+        // The event after the data is still an event
+        assertThat(reader.readLine()).isEqualTo("250 OK");
+        assertThat(events).hasSize(1);
+    }
+
+    @Test
+    void theDataOfAnEventBelongsToNoCommand() {
+        TorControlReader reader = new TorControlReader();
+        String lines = "650+NEWCONSENSUS\r\n250 OK\r\n.\r\n250 OK\r\n";
+
+        reader.start(new ByteArrayInputStream(lines.getBytes(StandardCharsets.US_ASCII)));
+
+        assertThat(reader.readLine()).isEqualTo("250 OK");
+        assertThatThrownBy(reader::readLine).isInstanceOf(ControlCommandFailedException.class);
+    }
+
+    @Test
+    void theEndOfTheStreamWakesUpWaitingCallers() {
+        TorControlReader reader = new TorControlReader();
+
+        reader.start(new ByteArrayInputStream("250 OK\r\n".getBytes(StandardCharsets.US_ASCII)));
+
+        assertThat(reader.readLine()).isEqualTo("250 OK");
+        assertThatThrownBy(reader::readLine).isInstanceOf(ControlCommandFailedException.class);
+        assertThatThrownBy(reader::readLine).isInstanceOf(ControlCommandFailedException.class);
+    }
+
+    @Test
+    void aMissingReplyEndsTheWait() throws IOException {
+        TorControlReader reader = new TorControlReader();
+        // A connection that stays open without a reply
+        reader.start(new PipedInputStream(new PipedOutputStream()));
+
+        assertThatThrownBy(() -> reader.readLine(100))
+                .isInstanceOf(ControlCommandFailedException.class)
+                .hasMessageContaining("did not reply");
+        reader.close();
     }
 }

@@ -6,6 +6,7 @@ import bisq.network.tor.controller.exceptions.CannotConnectWithTorException;
 import bisq.network.tor.controller.exceptions.CannotSendCommandToTorException;
 import bisq.network.tor.onionservice.OnionServiceKey;
 import com.google.common.io.BaseEncoding;
+import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
@@ -17,13 +18,35 @@ import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ScheduledThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+/**
+ * Sends commands to the control port of Tor and reads their replies. Tor answers the commands of a connection in
+ * order, so each method which sends a command holds the lock of this object until it has read the reply. Otherwise a
+ * thread could take the reply to the command of another thread. The methods which add or remove an event listener
+ * hold the lock as well, from the change of the listeners until Tor has confirmed the SETEVENTS which follows from it:
+ * otherwise two threads could send their SETEVENTS in the wrong order, and Tor would stop reporting the events which
+ * a listener waits for. {@link #close()} does not take the lock, so that it can end a command which waits for its
+ * reply.
+ * <p>
+ * A thread which is interrupted while it waits for a reply fails its command with a
+ * {@link ControlCommandFailedException} and closes the connection, as a reply which does not arrive in time does: the
+ * late reply would be taken as the reply to the next command. Every later command of this object fails, and Tor
+ * removes the onion services which this connection added. A Tor whose ownership this connection took
+ * ({@link #takeOwnership()}, which Bisq does for the Tor that it starts) exits then. Callers which interrupt a thread
+ * that sends a command, for example on a shutdown, therefore end the use of this Tor.
+ */
 @Slf4j
 public class TorControlProtocol implements AutoCloseable {
     private static final int MAX_CONNECTION_ATTEMPTS = 10;
+    // Closes a connection whose write does not end in time. One daemon thread for all connections.
+    private static final ScheduledThreadPoolExecutor WRITE_TIMEOUT_SCHEDULER = createWriteTimeoutScheduler();
 
     private Socket controlSocket;
     private final TorControlReader torControlReader;
@@ -32,9 +55,29 @@ public class TorControlProtocol implements AutoCloseable {
     // MidReplyLine = StatusCode "-" ReplyLine
     // DataReplyLine = StatusCode "+" ReplyLine CmdData
     private final Pattern multiLineReplyPattern = Pattern.compile("^\\d+[-+].+");
+    // CmdData = *DataLine "." CRLF. The data follows the DataReplyLine, until a line with a single dot.
+    private static final Pattern DATA_REPLY_PATTERN = Pattern.compile("^\\d{3}\\+.*");
+    private static final String DATA_END = ".";
     private volatile boolean closeInProgress;
+    // The time in which Tor must send the whole reply to a command
+    private final long replyTimeoutMs;
 
     public TorControlProtocol() {
+        this(TorControlReader.REPLY_TIMEOUT_MS);
+    }
+
+    private static ScheduledThreadPoolExecutor createWriteTimeoutScheduler() {
+        ScheduledThreadPoolExecutor scheduler = new ScheduledThreadPoolExecutor(1, new ThreadFactoryBuilder()
+                .setNameFormat("TorControlProtocol-write-timeout")
+                .setDaemon(true)
+                .build());
+        // A write which ends in time cancels its timeout; the timeout must not stay queued for its whole delay.
+        scheduler.setRemoveOnCancelPolicy(true);
+        return scheduler;
+    }
+
+    TorControlProtocol(long replyTimeoutMs) {
+        this.replyTimeoutMs = replyTimeoutMs;
         torControlReader = new TorControlReader();
     }
 
@@ -91,37 +134,26 @@ public class TorControlProtocol implements AutoCloseable {
 
     public void authenticate(PasswordDigest passwordDigest) {
         byte[] secret = passwordDigest.getSecret();
-        String secretHex = BaseEncoding.base16().lowerCase().encode(secret);
-        String command = "AUTHENTICATE " + secretHex + "\r\n";
-
-        sendCommand(command);
-        String reply = receiveReply().findFirst().orElseThrow();
-
-        if (isSuccessReply(reply)) {
-            return;
-        }
-
-        if (reply.startsWith("515 Authentication failed")) {
-            throw new TorControlAuthenticationFailed(reply);
-        }
+        authenticate(BaseEncoding.base16().lowerCase().encode(secret));
     }
 
     public void authenticate(byte[] authCookie) {
-        String authCookieAsHex = BaseEncoding.base16().lowerCase().encode(authCookie);
-        String command = "AUTHENTICATE " + authCookieAsHex + "\r\n";
+        authenticate(BaseEncoding.base16().lowerCase().encode(authCookie));
+    }
+
+    private synchronized void authenticate(String secretAsHex) {
+        String command = "AUTHENTICATE " + secretAsHex + "\r\n";
         sendCommand(command);
         String reply = receiveReply().findFirst().orElseThrow();
 
-        if (isSuccessReply(reply)) {
-            return;
-        }
-
-        if (reply.startsWith("515 Authentication failed")) {
+        // Tor answers "515 Authentication failed" to a wrong secret, but any reply other than "250 OK" means that
+        // the connection is not authenticated, for example "514 Authentication required".
+        if (!isSuccessReply(reply)) {
             throw new TorControlAuthenticationFailed(reply);
         }
     }
 
-    public void addOnion(OnionServiceKey onionServiceKey, int onionPort, int localPort) {
+    public synchronized void addOnion(OnionServiceKey onionServiceKey, int onionPort, int localPort) {
         String base64SecretScalar = onionServiceKey.getBase64SecretScalar();
         String command = "ADD_ONION " + "ED25519-V3:" + base64SecretScalar + " Port=" + onionPort + "," + localPort + "\r\n";
 
@@ -130,14 +162,14 @@ public class TorControlProtocol implements AutoCloseable {
         validateReply(replyStream, "ADD_ONION");
     }
 
-    public String getInfo(String keyword) {
+    public synchronized String getInfo(String keyword) {
         String command = "GETINFO " + keyword + "\r\n";
         sendCommand(command);
         Stream<String> replyStream = receiveReply();
         return validateReply(replyStream, "GETINFO");
     }
 
-    public void hsFetch(String hsAddress) {
+    public synchronized void hsFetch(String hsAddress) {
         String command = "HSFETCH " + hsAddress + "\r\n";
         sendCommand(command);
         String reply = receiveReply().findFirst().orElseThrow();
@@ -146,7 +178,7 @@ public class TorControlProtocol implements AutoCloseable {
         }
     }
 
-    public void resetConf(String configName) {
+    public synchronized void resetConf(String configName) {
         String command = "RESETCONF " + configName + "\r\n";
         sendCommand(command);
         String reply = receiveReply().findFirst().orElseThrow();
@@ -155,7 +187,7 @@ public class TorControlProtocol implements AutoCloseable {
         }
     }
 
-    public void setConfig(String configName, String configValue) {
+    public synchronized void setConfig(String configName, String configValue) {
         String command = "SETCONF " + configName + "=" + configValue + "\r\n";
         sendCommand(command);
         String reply = receiveReply().findFirst().orElseThrow();
@@ -165,7 +197,7 @@ public class TorControlProtocol implements AutoCloseable {
         }
     }
 
-    public void takeOwnership() {
+    public synchronized void takeOwnership() {
         String command = "TAKEOWNERSHIP\r\n";
         sendCommand(command);
         String reply = receiveReply().findFirst().orElseThrow();
@@ -174,7 +206,7 @@ public class TorControlProtocol implements AutoCloseable {
         }
     }
 
-    public void addBootstrapEventListener(BootstrapEventListener listener) {
+    public synchronized void addBootstrapEventListener(BootstrapEventListener listener) {
         Set<String> previous = getEventTypesOfBootstrapEventListeners();
         torControlReader.addBootstrapEventListener(listener);
         String newEventType = listener.getEventType().name();
@@ -185,7 +217,7 @@ public class TorControlProtocol implements AutoCloseable {
         }
     }
 
-    public void removeBootstrapEventListener(BootstrapEventListener listener) {
+    public synchronized void removeBootstrapEventListener(BootstrapEventListener listener) {
         Set<String> previous = getEventTypesOfBootstrapEventListeners();
         String newEventType = listener.getEventType().name();
         if (!previous.contains(newEventType)) {
@@ -206,7 +238,7 @@ public class TorControlProtocol implements AutoCloseable {
                 .collect(Collectors.toSet());
     }
 
-    public void addHsDescEventListener(HsDescEventListener listener) {
+    public synchronized void addHsDescEventListener(HsDescEventListener listener) {
         Set<String> previous = getEventTypesOfHsDescEventListeners();
         torControlReader.addHsDescEventListener(listener);
         String newEventType = listener.getEventType().name();
@@ -217,7 +249,7 @@ public class TorControlProtocol implements AutoCloseable {
         }
     }
 
-    public void removeHsDescEventListener(HsDescEventListener listener) {
+    public synchronized void removeHsDescEventListener(HsDescEventListener listener) {
         Set<String> previous = getEventTypesOfHsDescEventListeners();
         String newEventType = listener.getEventType().name();
         if (!previous.contains(newEventType) && !closeInProgress) {
@@ -238,13 +270,19 @@ public class TorControlProtocol implements AutoCloseable {
                 .collect(Collectors.toSet());
     }
 
-    public void refreshEventRegistration() {
-        Set<String> allEvents = Stream.concat(getEventTypesOfBootstrapEventListeners().stream(), getEventTypesOfHsDescEventListeners().stream())
-                .collect(Collectors.toSet());
-        registerEvents(allEvents);
+    public synchronized void refreshEventRegistration() {
+        registerEvents(eventTypesOfListeners());
     }
 
-    private void registerEvents(Set<String> events) {
+    /**
+     * @return the event types of the registered listeners, which Tor must report (SETEVENTS)
+     */
+    Set<String> eventTypesOfListeners() {
+        return Stream.concat(getEventTypesOfBootstrapEventListeners().stream(), getEventTypesOfHsDescEventListeners().stream())
+                .collect(Collectors.toSet());
+    }
+
+    private synchronized void registerEvents(Set<String> events) {
         if (events.isEmpty()) {
             log.info("Clear registered Events");
         } else {
@@ -319,40 +357,94 @@ public class TorControlProtocol implements AutoCloseable {
         if (outputStream.isEmpty()) {
             throw new IllegalStateException("TorControlProtocol output stream not initialized. Cannot send command.");
         }
+        log.info("Send Tor control command: {}", TorControlLogFormat.toLoggableCommand(command));
+        @SuppressWarnings("resource") OutputStream os = this.outputStream.orElseThrow();
+        byte[] commandBytes = command.getBytes(StandardCharsets.US_ASCII);
+        // A write blocks while Tor does not read, and it holds the lock of this object, which every command needs. A
+        // socket has no timeout for writes, so the connection is closed if the write takes longer than a reply may.
+        AtomicBoolean hasWriteTimedOut = new AtomicBoolean();
+        ScheduledFuture<?> writeTimeout = WRITE_TIMEOUT_SCHEDULER.schedule(() -> {
+            hasWriteTimedOut.set(true);
+            close();
+        }, replyTimeoutMs, TimeUnit.MILLISECONDS);
         try {
-            log.info("Send Tor control command: {}", TorControlLogFormat.toLoggableCommand(command));
-            @SuppressWarnings("resource") OutputStream os = this.outputStream.orElseThrow();
-            byte[] commandBytes = command.getBytes(StandardCharsets.US_ASCII);
             os.write(commandBytes);
             os.flush();
         } catch (IOException e) {
+            if (hasWriteTimedOut.get()) {
+                throw new ControlCommandFailedException("Tor did not take the command within " + replyTimeoutMs +
+                        " ms");
+            }
             throw new CannotSendCommandToTorException(e);
+        } finally {
+            writeTimeout.cancel(false);
         }
     }
 
+    /**
+     * @return the lines of the reply. A data reply line (for example "250+config-text=") carries the lines of its
+     * data after a line feed, without the line with the single dot which ends the data.
+     */
     private Stream<String> receiveReply() {
-        String reply = tryReadNextReply();
         var streamBuilder = Stream.<String>builder();
-        streamBuilder.add(reply);
-
-        while (isMultilineReply(reply)) {
-            reply = tryReadNextReply();
-            streamBuilder.add(reply);
-        }
+        // One deadline for the whole reply: a Tor which sends one line at a time, each just before the timeout of
+        // a line, must not hold the command forever. The monotonic clock, so that a change of the system time does
+        // not shorten or extend it.
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(replyTimeoutMs);
+        String reply;
+        do {
+            reply = tryReadNextReply(deadline);
+            if (isDataReply(reply)) {
+                StringBuilder dataReply = new StringBuilder(reply);
+                String dataLine;
+                while (!(dataLine = readLineOfReply(deadline)).equals(DATA_END)) {
+                    // A line of the data which starts with a dot is sent with a second dot in front.
+                    dataReply.append('\n').append(dataLine.startsWith("..") ? dataLine.substring(1) : dataLine);
+                }
+                streamBuilder.add(dataReply.toString());
+            } else {
+                streamBuilder.add(reply);
+            }
+        } while (isMultilineReply(reply));
 
         return streamBuilder.build();
     }
 
-    private String tryReadNextReply() {
-        String reply = torControlReader.readLine();
+
+    private String tryReadNextReply(long deadline) {
+        String reply = readLineOfReply(deadline);
         if (reply.equals("510 Command filtered")) {
             throw new TorCommandFilteredException();
         }
         return reply;
     }
 
+    /**
+     * @param deadline the value of {@link System#nanoTime()} until which the whole reply must have arrived
+     */
+    private String readLineOfReply(long deadline) {
+        long remainingNanos = deadline - System.nanoTime();
+        if (remainingNanos <= 0) {
+            // A late line would be taken as the reply to the next command.
+            close();
+            throw new ControlCommandFailedException("Tor did not send the whole reply within " + replyTimeoutMs + " ms");
+        }
+        try {
+            // Rounded up, so that less than a millisecond left still waits.
+            return torControlReader.readLine(TimeUnit.NANOSECONDS.toMillis(remainingNanos) + 1);
+        } catch (ControlCommandFailedException e) {
+            // A late reply would be taken as the reply to the next command.
+            close();
+            throw e;
+        }
+    }
+
     private boolean isMultilineReply(String reply) {
         return multiLineReplyPattern.matcher(reply).matches();
+    }
+
+    private static boolean isDataReply(String reply) {
+        return DATA_REPLY_PATTERN.matcher(reply).matches();
     }
 
     // TODO check if this change is correct
@@ -362,18 +454,20 @@ public class TorControlProtocol implements AutoCloseable {
     // [250-ServiceID=bedb3wpuybkuwvjat2zq5odtqbajq7x3ovllvh7l2kbxakbgkzgikqyd, 250 OK]
     // [250-ServiceID=bedb3wpuybkuwvjat2zq5odtqbajq7x3ovllvh7l2kbxakbgkzgikqyd, 250-ServiceID=xjlwqzk6n4i5co574jrljsigelx6itzya32cfb7sfofqn7wueyhjj4id, 250 OK]
     private String validateReply(Stream<String> replyStream, String commandName) {
-        List<String> replies = replyStream.toList();
+        List<String> replies = replyStream.collect(Collectors.toList());
 
         String OK250 = "250 OK";
         boolean hasOK250 = replies.stream().anyMatch(e -> e.equals(OK250));
-        List<String> listOf250WithData = replies.stream().filter(e -> e.startsWith("250-")).toList();
+        List<String> listOf250WithData = replies.stream()
+                .filter(e -> e.startsWith("250-") || e.startsWith("250+"))
+                .collect(Collectors.toList());
         if (!listOf250WithData.isEmpty()) {
             // TODO are there use cases where we need all 250WithData entries?
             return listOf250WithData.get(0);
         } else if (hasOK250) {
             return OK250;
         } else {
-            List<String> loggableReplies = replies.stream().map(TorControlLogFormat::toLoggableReply).toList();
+            List<String> loggableReplies = replies.stream().map(TorControlLogFormat::toLoggableReply).collect(Collectors.toList());
             throw new ControlCommandFailedException("Invalid " + commandName + " reply: " + loggableReplies);
         }
 
