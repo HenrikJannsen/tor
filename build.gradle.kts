@@ -31,4 +31,9 @@ tasks.named("check") {
     dependsOn("verifyGradleWrapperSecurity")
     dependsOn("verifyGithubActionsSecurity")
     dependsOn("verifyDependencySignaturePolicy")
+    // The tests of the Gradle plugins. Run from here, their dependencies are verified with the metadata of this build.
+    // An app which includes this build has its own build-logic, so the build is found by its directory, not its name.
+    dependsOn(gradle.includedBuilds
+        .filter { it.projectDir.canonicalFile == file("build-logic").canonicalFile }
+        .map { it.task(":check") })
 }

@@ -115,3 +115,14 @@ cp "$tor_key_dir/tor-key.asc" \
 
 The Gradle task must finish successfully. Keep the pinned primary fingerprint
 unchanged when refreshing its subkeys. Never bypass a failed signature check.
+
+## Offline builds and the key messages
+
+The download tasks honour `--offline`: a downloaded bundle is kept, and a
+missing one fails the build with a message instead of opening a connection.
+Run the build once online after a change of `tor.version`.
+
+`verifyTorBinary` prints a line such as "Subkey ... is revoked or not bound
+as signing key. We do not trust it." for the revoked 2015 subkey of the Tor
+Browser developers key and then verifies the bundle with a current subkey.
+The line is expected.
