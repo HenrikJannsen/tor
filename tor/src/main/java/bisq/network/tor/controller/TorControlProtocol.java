@@ -173,6 +173,14 @@ public class TorControlProtocol implements AutoCloseable {
     }
 
     /**
+     * Authenticates with the plain password of the HashedControlPassword of Tor. The password is sent to the
+     * process on the control port, which cannot prove that it is Tor.
+     */
+    public void authenticateWithPassword(String password) {
+        authenticate(BaseEncoding.base16().lowerCase().encode(password.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    /**
      * Authenticates with the SAFECOOKIE method of the control protocol (control-spec, AUTHCHALLENGE). Unlike the
      * COOKIE method, it never sends the cookie: Tor first proves that it knows the cookie, so a process which only
      * listens on the control port gets neither the cookie nor the commands which follow.

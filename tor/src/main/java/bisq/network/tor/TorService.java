@@ -42,6 +42,7 @@ import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -65,6 +66,7 @@ public class TorService {
     private static final long CONTROL_PORT_FILE_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(30);
     private static final long CONTROL_PORT_FILE_POLL_INTERVAL_MS = 100;
     private static final String GEOIP_FILE = "GeoIPFile";
+    private static final int AUTH_COOKIE_LENGTH = 32;
     private static final String GEOIP_V6_FILE = "GeoIPv6File";
     // Environment variable to not launch the embedded Tor process
     public static final String TOR_SKIP_LAUNCH = "TOR_SKIP_LAUNCH";
@@ -332,6 +334,11 @@ public class TorService {
     // anything else. A process which listens on the port instead of Tor gets no secret. Bisq never falls back to
     // another method, because each fallback would send the commands to a process which did not prove anything.
     private void authenticateToExternalTor(ExternalTorConfig externalTorConfig) {
+        if (externalTorConfig.getControlPassword().isPresent()) {
+            // As with netlayer: for an external Tor which has a HashedControlPassword instead of a cookie
+            torController.authenticateWithPassword(externalTorConfig.getControlPassword().get());
+            return;
+        }
         if (!externalTorConfig.isCookieAuthentication()) {
             // No authentication required, but we still need to send an empty
             // AUTHENTICATE call to be able to send control commands
@@ -342,10 +349,19 @@ public class TorService {
                 .orElseThrow(() -> new TorControlAuthenticationFailed("CookieAuthentication is 1, but CookieAuthFile " +
                         "is not set"));
         byte[] authCookie;
-        try {
-            authCookie = Files.readAllBytes(authCookiePath);
+        // At most one byte more than a cookie: a large file, or a device such as /dev/zero, must not fill the memory
+        // of Bisq or block its start.
+        try (InputStream inputStream = Files.newInputStream(authCookiePath)) {
+            authCookie = inputStream.readNBytes(AUTH_COOKIE_LENGTH + 1);
         } catch (IOException e) {
             throw new TorControlAuthenticationFailed("Could not read the cookie file " + authCookiePath + ": " + e);
+        }
+        if (authCookie.length != AUTH_COOKIE_LENGTH) {
+            String length = authCookie.length > AUTH_COOKIE_LENGTH ?
+                    "more than " + AUTH_COOKIE_LENGTH :
+                    String.valueOf(authCookie.length);
+            throw new TorControlAuthenticationFailed("The cookie file " + authCookiePath + " has " + length +
+                    " bytes, but Tor writes " + AUTH_COOKIE_LENGTH + ". Check CookieAuthFile.");
         }
         torController.authenticateWithSafeCookie(authCookie);
     }

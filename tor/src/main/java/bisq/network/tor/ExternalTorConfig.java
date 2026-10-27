@@ -33,6 +33,7 @@ import java.util.Optional;
 import static bisq.network.tor.common.torrc.Torrc.Keys.CONTROL_PORT;
 import static bisq.network.tor.common.torrc.Torrc.Keys.COOKIE_AUTHENTICATION;
 import static bisq.network.tor.common.torrc.Torrc.Keys.COOKIE_AUTH_FILE;
+import static bisq.network.tor.common.torrc.Torrc.Keys.HASHED_CONTROL_PASSWORD;
 import static bisq.network.tor.common.torrc.Torrc.Values.ExternalTor.DEFAULT_CONTROL_PORT;
 
 /**
@@ -46,6 +47,8 @@ import static bisq.network.tor.common.torrc.Torrc.Values.ExternalTor.DEFAULT_CON
 @EqualsAndHashCode
 public final class ExternalTorConfig {
     static final String USE_EXTERNAL_TOR = "UseExternalTor";
+    // Not an option of a torrc: the plain password for the HashedControlPassword of the external Tor
+    static final String CONTROL_PASSWORD = "ControlPassword";
 
     // Empty if the file does not set it
     private final Optional<Boolean> useExternalTor;
@@ -53,17 +56,21 @@ public final class ExternalTorConfig {
     private final int controlPort;
     private final boolean cookieAuthentication;
     private final Optional<Path> cookieAuthFile;
+    @ToString.Exclude
+    private final Optional<String> controlPassword;
 
     private ExternalTorConfig(Optional<Boolean> useExternalTor,
                               String controlHost,
                               int controlPort,
                               boolean cookieAuthentication,
-                              Optional<Path> cookieAuthFile) {
+                              Optional<Path> cookieAuthFile,
+                              Optional<String> controlPassword) {
         this.useExternalTor = useExternalTor;
         this.controlHost = controlHost;
         this.controlPort = controlPort;
         this.cookieAuthentication = cookieAuthentication;
         this.cookieAuthFile = cookieAuthFile;
+        this.controlPassword = controlPassword;
     }
 
     /**
@@ -90,6 +97,24 @@ public final class ExternalTorConfig {
                 .orElse(false);
         Optional<Path> cookieAuthFile = Optional.ofNullable(valueByLowerCaseKey.remove(toKey(COOKIE_AUTH_FILE)))
                 .map(ExternalTorConfig::parsePath);
+        Optional<String> controlPassword = Optional.ofNullable(valueByLowerCaseKey.remove(toKey(CONTROL_PASSWORD)))
+                .map(ExternalTorConfig::removeQuotes)
+                .filter(password -> !password.isEmpty());
+        if (cookieAuthentication && controlPassword.isPresent()) {
+            throw new IllegalArgumentException("Set either " + COOKIE_AUTHENTICATION + " 1 or " + CONTROL_PASSWORD +
+                    ", not both");
+        }
+        if (valueByLowerCaseKey.remove(toKey(HASHED_CONTROL_PASSWORD)) != null) {
+            // The user copied the torrc of the external Tor. Without a cookie or a password, Bisq must not go on,
+            // because the authentication would fail later with a message which does not say why.
+            if (!cookieAuthentication && controlPassword.isEmpty()) {
+                throw new IllegalArgumentException(HASHED_CONTROL_PASSWORD + " is the hash in the torrc of the " +
+                        "external Tor. Set " + CONTROL_PASSWORD + " to the password itself, or " +
+                        COOKIE_AUTHENTICATION + " 1 if the external Tor uses a cookie.");
+            }
+            log.warn("Bisq ignores {} of the external Tor configuration and authenticates with {}",
+                    HASHED_CONTROL_PASSWORD, cookieAuthentication ? "the cookie" : CONTROL_PASSWORD);
+        }
         valueByLowerCaseKey.keySet().forEach(key -> log.warn("Bisq ignores the unknown option {} of the external " +
                 "Tor configuration", key));
 
@@ -98,7 +123,8 @@ public final class ExternalTorConfig {
                 controlHostAndPort.host(),
                 controlHostAndPort.port(),
                 cookieAuthentication,
-                cookieAuthFile);
+                cookieAuthFile,
+                controlPassword);
     }
 
     private static String toKey(String key) {
@@ -113,10 +139,14 @@ public final class ExternalTorConfig {
         };
     }
 
-    private static Path parsePath(String value) {
-        String path = value.length() >= 2 && value.startsWith("\"") && value.endsWith("\"") ?
+    private static String removeQuotes(String value) {
+        return value.length() >= 2 && value.startsWith("\"") && value.endsWith("\"") ?
                 value.substring(1, value.length() - 1) :
                 value;
+    }
+
+    private static Path parsePath(String value) {
+        String path = removeQuotes(value);
         try {
             return Paths.get(path);
         } catch (InvalidPathException e) {

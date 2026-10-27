@@ -74,6 +74,37 @@ class ExternalTorConfigTest {
     }
 
     @Test
+    void aPasswordIsReadButNeverPrinted() {
+        ExternalTorConfig config = ExternalTorConfig.parse("ControlPassword \"pass word\"\nCookieAuthentication 0");
+
+        assertThat(config.getControlPassword()).contains("pass word");
+        assertThat(config.toString()).doesNotContain("pass word");
+        assertThat(ExternalTorConfig.parse("ControlPort 9051").getControlPassword()).isEmpty();
+    }
+
+    @Test
+    void theHashOfTheTorrcIsNotThePassword() {
+        assertThatThrownBy(() -> ExternalTorConfig.parse("UseExternalTor 1\nHashedControlPassword " +
+                "16:872860B76453A77D60CA2BB8C1A7042072093276A3D701AD684053EC4C"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("ControlPassword")
+                .hasMessageContaining("CookieAuthentication")
+                .hasMessageNotContaining("872860B7");
+        // With a cookie or a password, the hash is only ignored
+        assertThat(ExternalTorConfig.parse("CookieAuthentication 1\nHashedControlPassword 16:00")
+                .isCookieAuthentication()).isTrue();
+        assertThat(ExternalTorConfig.parse("ControlPassword secret\nHashedControlPassword 16:00")
+                .getControlPassword()).contains("secret");
+    }
+
+    @Test
+    void aPasswordAndACookieAreAmbiguous() {
+        assertThatThrownBy(() -> ExternalTorConfig.parse("CookieAuthentication 1\nControlPassword secret"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("either");
+    }
+
+    @Test
     void invalidValuesStopTheStart() {
         assertThatThrownBy(() -> ExternalTorConfig.parse("UseExternalTor yes"))
                 .isInstanceOf(IllegalArgumentException.class)

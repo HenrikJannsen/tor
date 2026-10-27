@@ -21,6 +21,8 @@ import bisq.network.tor.controller.FakeTorControlServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
@@ -97,6 +99,35 @@ class TorServiceExternalTorTest {
                     .hasMessageContaining("CookieAuthFile");
         }
         assertThat(torDir.resolve("torrc")).doesNotExist();
+    }
+
+    @Test
+    void aCookieFileOfAnotherLengthStopsTheStart() throws IOException {
+        Path cookieFile = Files.write(torDir.resolve("not_a_cookie"), new byte[]{1, 2, 3});
+        try (ServerSocket fakeControlPort = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) {
+            Files.writeString(torDir.resolve("external_tor.config"), "UseExternalTor 1\nCookieAuthentication 1\n" +
+                    "CookieAuthFile " + cookieFile + "\nControlPort 127.0.0.1:" + fakeControlPort.getLocalPort());
+            torService = new TorService(createTransportConfig(), PLATFORM_SERVICES);
+
+            assertThatThrownBy(() -> torService.initialize())
+                    .isInstanceOf(ExternalTorUnavailableException.class)
+                    .hasMessageContaining("has 3 bytes");
+        }
+    }
+
+    // A read of the whole file would never end, and fill the memory on the way.
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void aCookieFileIsReadOnlyUpToTheLengthOfACookie() throws IOException {
+        try (ServerSocket fakeControlPort = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) {
+            Files.writeString(torDir.resolve("external_tor.config"), "UseExternalTor 1\nCookieAuthentication 1\n" +
+                    "CookieAuthFile /dev/zero\nControlPort 127.0.0.1:" + fakeControlPort.getLocalPort());
+            torService = new TorService(createTransportConfig(), PLATFORM_SERVICES);
+
+            assertThatThrownBy(() -> torService.initialize())
+                    .isInstanceOf(ExternalTorUnavailableException.class)
+                    .hasMessageContaining("has more than 32 bytes");
+        }
     }
 
     @Test

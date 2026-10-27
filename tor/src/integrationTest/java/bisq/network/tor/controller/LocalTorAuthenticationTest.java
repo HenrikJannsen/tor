@@ -45,7 +45,9 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 class LocalTorAuthenticationTest {
     @TempDir
     static Path torDir;
-    private static final PasswordDigest PASSWORD_DIGEST = PasswordDigest.generateDigest();
+    private static final String PASSWORD = "bisq test password";
+    // GETCONF HashedControlPassword must report one value, so the embedded and the external case share it.
+    private static final PasswordDigest PASSWORD_DIGEST = new PasswordDigest(PASSWORD.getBytes(StandardCharsets.UTF_8));
     private static Process torProcess;
     private static int controlPort;
 
@@ -119,6 +121,23 @@ class LocalTorAuthenticationTest {
         assertThatThrownBy(() -> torControlProtocol.authenticateWithSafeCookie(new byte[32]))
                 .isInstanceOf(TorControlAuthenticationFailed.class)
                 .hasMessageContaining("does not know the authentication cookie");
+    }
+
+    @Test
+    void aPasswordIsAccepted() {
+        torControlProtocol.initialize(controlPort);
+
+        torControlProtocol.authenticateWithPassword(PASSWORD);
+
+        assertThat(torControlProtocol.getInfo("version")).startsWith("250-version=");
+    }
+
+    @Test
+    void aWrongPasswordIsRefused() {
+        torControlProtocol.initialize(controlPort);
+
+        assertThatThrownBy(() -> torControlProtocol.authenticateWithPassword("wrong"))
+                .isInstanceOf(TorControlAuthenticationFailed.class);
     }
 
     @Test
