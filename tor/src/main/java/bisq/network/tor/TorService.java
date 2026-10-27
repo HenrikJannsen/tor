@@ -24,6 +24,7 @@ import bisq.network.tor.common.file.FileUtils;
 import bisq.network.tor.common.platform.LinuxDistribution;
 import bisq.network.tor.common.platform.OS;
 import bisq.network.tor.common.platform.Platform;
+import bisq.network.tor.common.torrc.DirectoryAuthority;
 import bisq.network.tor.common.torrc.TorrcFileGenerator;
 import bisq.network.tor.common.torrc.TorrcSyntax;
 import bisq.network.tor.controller.PasswordDigest;
@@ -45,6 +46,7 @@ import bisq.network.tor.process.TorDirectoryMigration;
 import bisq.network.tor.process.TorListenerPorts;
 import bisq.network.tor.process.TorListenerPorts.PortMapping;
 import bisq.network.tor.process.TorStartupFailedException;
+import bisq.network.tor.sandbox.EgressReach;
 import bisq.network.tor.sandbox.PluggableTransportsNotAllowedException;
 import bisq.network.tor.sandbox.SandboxUnavailableException;
 import bisq.network.tor.sandbox.SandboxedTransports;
@@ -327,6 +329,8 @@ public class TorService {
             // after the check, for the level which sandy selected.
             createTorrcConfigFile(hashedControlPassword, listenerPorts, bridgeEntries, true, OptionalInt.empty());
             SandboxedStart sandboxedStart = checkSandbox(torBinaryPath, listenerPorts, sandboxConfig, transports);
+            refuseDestinationsOutsideTheEgress(sandboxedStart.level(), transportConfig.getDirectoryAuthorities(),
+                    bridgeEntries, sandboxConfig.getOptOutHint());
             createTorrcConfigFile(hashedControlPassword, listenerPorts, bridgeEntries, true,
                     sandboxedStart.socks5ProxyPort(listenerPorts));
             embeddedTorProcess = createSandboxedTorProcess(torBinaryPath, sandboxedStart);
@@ -407,6 +411,14 @@ public class TorService {
                     ". In its sandbox Tor connects out only through the egress broker of sandy, which Bisq sets as " +
                     "its proxy. Remove these overrides to run Tor in the sandbox.", sandboxConfig.getOptOutHint());
         }
+        // Tor reads the value as a file name, with quotes, "~" and paths relative to its working directory, so a
+        // grant of the path could miss the file which Tor opens. Its country selectors would then match no relay.
+        List<String> geoIpFileKeys = TorrcClientConfigFactory.geoIpFileKeys(transportConfig.getTorrcOverrides().keySet());
+        if (!geoIpFileKeys.isEmpty()) {
+            throw new SandboxUnavailableException("The torrc overrides set " + String.join(", ", geoIpFileKeys) +
+                    ", but in its sandbox Tor reads only the GeoIP files of its installation. Remove these overrides " +
+                    "to run Tor in the sandbox.", sandboxConfig.getOptOutHint());
+        }
         List<String> processStartingKeys = TorrcClientConfigFactory.processStartingKeys(
                 transportConfig.getTorrcOverrides().keySet(), bridgeConfig.isUsed());
         if (!processStartingKeys.isEmpty()) {
@@ -420,6 +432,44 @@ public class TorService {
                     String.join(", ", transportNames) + ", programs which Tor starts. Its sandbox lets Tor start " +
                     "them only if allowPluggableTransports of the sandbox configuration is true.",
                     sandboxConfig.getOptOutHint(), transportNames);
+        }
+    }
+
+    /**
+     * In a level with the egress broker, Tor connects out only through the broker of sandy, which reaches public
+     * addresses only (reach = "public" of the templates). A destination on an address of this host or of the local
+     * network would fail only at the bootstrap timeout, without a word about the sandbox.
+     */
+    @VisibleForTesting
+    static void refuseDestinationsOutsideTheEgress(Sandy.Level level,
+                                                   Set<DirectoryAuthority> directoryAuthorities,
+                                                   List<Map.Entry<String, String>> bridgeEntries,
+                                                   String optOutHint) {
+        if (!level.enforces(Sandy.EGRESS_BROKERED)) {
+            return;
+        }
+        String egress = "In the level " + level.name() + " of its sandbox Tor connects out only through the egress " +
+                "broker of sandy, which reaches public addresses only.";
+        if (!directoryAuthorities.isEmpty()) {
+            throw new SandboxUnavailableException("The directory authorities of the test network listen on " +
+                    "127.0.0.1, an address of this host. " + egress, optOutHint);
+        }
+        // Tor uses every bridge it reaches. The addresses are not named: a private bridge is blocked once it is known.
+        List<String> bridgeLines = bridgeEntries.stream()
+                .filter(entry -> entry.getKey().equals(BridgeTorrcEntries.BRIDGE))
+                .map(Map.Entry::getValue)
+                .toList();
+        long unreachableBridges = bridgeLines.stream()
+                .filter(line -> BridgeTorrcEntries.findAddress(line).filter(EgressReach::isOfThisHostOrLocalNetwork)
+                        .isPresent())
+                .count();
+        if (unreachableBridges > 0 && unreachableBridges == bridgeLines.size()) {
+            throw new SandboxUnavailableException("The bridges of the configuration are on addresses of this host " +
+                    "or of the local network. " + egress, optOutHint);
+        }
+        if (unreachableBridges > 0) {
+            log.warn("{} of the {} bridges are on addresses of this host or of the local network, which Tor cannot " +
+                    "reach in its sandbox. {}", unreachableBridges, bridgeLines.size(), egress);
         }
     }
 

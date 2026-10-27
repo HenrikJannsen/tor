@@ -18,6 +18,7 @@
 package bisq.network.tor.bridges;
 
 import bisq.network.tor.BridgeConfig;
+import com.google.common.net.InetAddresses;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -158,5 +159,18 @@ class BridgeTorrcEntriesTest {
         assertThat(BridgeTorrcEntries.findTransport("[2001:db8::1]:443")).isEmpty();
         assertThatThrownBy(() -> BridgeTorrcEntries.findTransport("obfs-4 192.0.2.1:443"))
                 .isInstanceOf(BridgesUnavailableException.class);
+    }
+
+    @Test
+    void findsTheIpAddressOfABridgeLine() {
+        assertThat(BridgeTorrcEntries.findAddress("192.0.2.1:443 0123456789ABCDEF0123456789ABCDEF01234567"))
+                .contains(InetAddresses.forString("192.0.2.1"));
+        assertThat(BridgeTorrcEntries.findAddress(" obfs4  10.0.0.2:443 FINGERPRINT cert=x iat-mode=0"))
+                .contains(InetAddresses.forString("10.0.0.2"));
+        assertThat(BridgeTorrcEntries.findAddress("obfs4 [fd00::2]:443 FINGERPRINT"))
+                .contains(InetAddresses.forString("fd00::2"));
+        // A host name is not looked up.
+        assertThat(BridgeTorrcEntries.findAddress("obfs4 bridge.example:443 FINGERPRINT")).isEmpty();
+        assertThat(BridgeTorrcEntries.findAddress("obfs4")).isEmpty();
     }
 }

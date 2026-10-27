@@ -77,6 +77,9 @@ public class TorrcClientConfigFactory {
             "socks5proxypassword", "httpsproxy", "httpsproxyauthenticator", "httpproxy", "httpproxyauthenticator",
             "tcpproxy");
 
+    // The options which name the GeoIP files of Tor. In its sandbox Tor reads only the files of its installation.
+    private static final Set<String> GEOIP_FILE_KEYS = Set.of("geoipfile", "geoipv6file");
+
     private static final Set<String> BRIDGE_KEYS = BridgeTorrcEntries.KEYS.stream()
             .map(key -> key.toLowerCase(Locale.ROOT))
             .collect(Collectors.toUnmodifiableSet());
@@ -163,6 +166,13 @@ public class TorrcClientConfigFactory {
 
     // Tor reads the hidden options __ControlPort and __SocksPort, also abbreviated, as ControlPort and SocksPort. The
     // other keys of Bisq have no hidden form: Tor refuses __DataDirectory, for example, as an unknown option.
+    /**
+     * The keys of {@code torrcKeys} that name a GeoIP file, also as an abbreviation, which Tor accepts.
+     */
+    public static List<String> geoIpFileKeys(Collection<String> torrcKeys) {
+        return torrcKeys.stream().filter(key -> isPrefixOfAny(key, GEOIP_FILE_KEYS)).sorted().toList();
+    }
+
     private static boolean isOwnedByBisq(String key) {
         return isPrefixOfAny(key.replaceFirst("^_+", ""), KEYS_OWNED_BY_BISQ);
     }

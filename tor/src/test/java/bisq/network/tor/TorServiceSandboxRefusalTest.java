@@ -17,9 +17,11 @@
 
 package bisq.network.tor;
 
+import bisq.network.tor.common.torrc.DirectoryAuthority;
 import bisq.network.tor.sandbox.PluggableTransportsNotAllowedException;
 import bisq.network.tor.sandbox.SandboxUnavailableException;
 import bisq.network.tor.sandbox.SandboxedTransports;
+import bisq.network.tor.sandbox.Sandy;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -83,6 +85,76 @@ class TorServiceSandboxRefusalTest {
                 SandboxedTransports.NONE))
                 .isInstanceOf(SandboxUnavailableException.class)
                 .isNotInstanceOf(PluggableTransportsNotAllowedException.class);
+    }
+
+    // The sandbox does not grant the file, so Tor would run without country data and its country selectors would
+    // match no relay.
+    @Test
+    void aGeoIpFileOfTheTorrcOverridesIsRefused() {
+        TorSandboxConfig sandboxConfig = new TorSandboxConfig(true, true, false, 1, "bisq1", OPT_OUT_HINT);
+        TorService torService = createTorService(Map.of("GeoIPFile", "/home/user/geoip",
+                "ExcludeNodes", "{us}"), sandboxConfig);
+
+        assertThatThrownBy(() -> torService.refuseWhatTheSandboxCannotRun(sandboxConfig, BridgeConfig.NONE,
+                SandboxedTransports.NONE))
+                .isInstanceOf(SandboxUnavailableException.class)
+                .hasMessageContaining("GeoIPFile")
+                .hasMessageContaining(OPT_OUT_HINT);
+    }
+
+    // The authorities of a test network listen on 127.0.0.1, which the egress broker of sandy does not reach.
+    @Test
+    void aTestNetworkIsRefusedInALevelWithTheEgressBroker() {
+        DirectoryAuthority authority = DirectoryAuthority.builder()
+                .nickname("A0")
+                .orPort(19001)
+                .dirPort(19002)
+                .v3Ident("0123456789ABCDEF0123456789ABCDEF01234567")
+                .relayFingerprint("89ABCDEF0123456789ABCDEF0123456789ABCDEF")
+                .build();
+        var base = new Sandy.Level("base", Set.of(Sandy.EGRESS_BROKERED, Sandy.IP_NETWORK_PRIVATE));
+        var hostNetwork = new Sandy.Level("host-network", Set.of(Sandy.ENDS_WITH_PARENT));
+
+        assertThatThrownBy(() -> TorService.refuseDestinationsOutsideTheEgress(base, Set.of(authority), List.of(),
+                OPT_OUT_HINT))
+                .isInstanceOf(SandboxUnavailableException.class)
+                .hasMessageContaining("directory authorities of the test network")
+                .hasMessageContaining("level base")
+                .hasMessageContaining(OPT_OUT_HINT);
+        // With the network of the host Tor reaches 127.0.0.1, and without a test network there is nothing to refuse.
+        TorService.refuseDestinationsOutsideTheEgress(hostNetwork, Set.of(authority), List.of(), OPT_OUT_HINT);
+        TorService.refuseDestinationsOutsideTheEgress(base, Set.of(), List.of(), OPT_OUT_HINT);
+    }
+
+    // The egress broker of sandy reaches public addresses only, so Tor could reach none of these bridges.
+    @Test
+    void bridgesOnlyOnAddressesOfThisHostOrTheLocalNetworkAreRefusedInALevelWithTheEgressBroker() {
+        var base = new Sandy.Level("base", Set.of(Sandy.EGRESS_BROKERED, Sandy.IP_NETWORK_PRIVATE));
+        List<Map.Entry<String, String>> localBridges = List.of(Map.entry("UseBridges", "1"),
+                Map.entry("Bridge", "127.0.0.1:9001 0123456789ABCDEF0123456789ABCDEF01234567"),
+                Map.entry("Bridge", "obfs4 192.168.1.20:443 0123456789ABCDEF0123456789ABCDEF01234567 cert=x"));
+
+        assertThatThrownBy(() -> TorService.refuseDestinationsOutsideTheEgress(base, Set.of(), localBridges,
+                OPT_OUT_HINT))
+                .isInstanceOf(SandboxUnavailableException.class)
+                .hasMessageContaining("bridges of the configuration are on addresses of this host or of the local")
+                .hasMessageNotContaining("192.168.1.20")
+                .hasMessageContaining(OPT_OUT_HINT);
+    }
+
+    // Tor uses the bridges it reaches; one on a public address is enough.
+    @Test
+    void bridgesWithOneOnAPublicAddressStartInEveryLevel() {
+        var base = new Sandy.Level("base", Set.of(Sandy.EGRESS_BROKERED, Sandy.IP_NETWORK_PRIVATE));
+        var hostNetwork = new Sandy.Level("host-network", Set.of(Sandy.ENDS_WITH_PARENT));
+        List<Map.Entry<String, String>> localBridges = List.of(
+                Map.entry("Bridge", "10.0.0.2:9001 0123456789ABCDEF0123456789ABCDEF01234567"));
+        List<Map.Entry<String, String>> mixedBridges = List.of(
+                Map.entry("Bridge", "10.0.0.2:9001 0123456789ABCDEF0123456789ABCDEF01234567"),
+                Map.entry("Bridge", "obfs4 [2001:4860:4860::8888]:443 0123456789ABCDEF0123456789ABCDEF01234567"));
+
+        TorService.refuseDestinationsOutsideTheEgress(base, Set.of(), mixedBridges, OPT_OUT_HINT);
+        TorService.refuseDestinationsOutsideTheEgress(hostNetwork, Set.of(), localBridges, OPT_OUT_HINT);
     }
 
     private TorService createTorService(Map<String, String> torrcOverrides, TorSandboxConfig sandboxConfig) {

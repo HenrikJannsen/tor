@@ -18,7 +18,9 @@
 package bisq.network.tor.bridges;
 
 import bisq.network.tor.BridgeConfig;
+import com.google.common.net.InetAddresses;
 
+import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -131,6 +133,28 @@ public final class BridgeTorrcEntries {
                 .orElseThrow(() -> new BridgesUnavailableException("The bundled Tor has no built-in bridges of the " +
                         "type " + name + ". It has built-in bridges of the types " +
                         String.join(", ", pluggableTransportConfig.getBuiltInBridgesNames()) + "."));
+    }
+
+    /**
+     * @return the IP address of a bridge line, which follows the name of its transport, or empty if the line names
+     * none, for example a host name. Nothing is looked up.
+     */
+    public static Optional<InetAddress> findAddress(String bridgeLine) {
+        String[] tokens = bridgeLine.trim().split("\\s+");
+        int addressIndex = findTransport(bridgeLine).isPresent() ? 1 : 0;
+        if (tokens.length <= addressIndex) {
+            return Optional.empty();
+        }
+        String addressAndPort = tokens[addressIndex];
+        int portSeparator = addressAndPort.lastIndexOf(':');
+        if (portSeparator <= 0) {
+            return Optional.empty();
+        }
+        String address = addressAndPort.substring(0, portSeparator);
+        if (address.startsWith("[") && address.endsWith("]")) {
+            address = address.substring(1, address.length() - 1);
+        }
+        return InetAddresses.isInetAddress(address) ? Optional.of(InetAddresses.forString(address)) : Optional.empty();
     }
 
     /**

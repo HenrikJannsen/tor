@@ -79,6 +79,13 @@ class TorSandboxConfigTest {
     }
 
     @Test
+    void findsTheGeoIpFileOptionsOfTheTorrcOverrides() {
+        assertThat(TorrcClientConfigFactory.geoIpFileKeys(List.of("GeoIPFile", "geoipv6file", "GeoIPv6",
+                "GeoIPExcludeUnknown", "ExcludeNodes")))
+                .containsExactly("GeoIPFile", "GeoIPv6", "geoipv6file");
+    }
+
+    @Test
     void onlyThePluggableTransportsLetTorStartProcesses() {
         assertThat(TorrcClientConfigFactory.processStartingKeys(List.of("UseBridges", "Bridge",
                 "ClientTransportPlugin"), false)).containsExactly("ClientTransportPlugin");
