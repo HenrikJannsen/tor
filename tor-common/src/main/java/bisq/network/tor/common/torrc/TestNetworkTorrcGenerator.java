@@ -60,13 +60,14 @@ public class TestNetworkTorrcGenerator implements TorrcConfigGenerator {
         torConfigMap.put("SafeLogging", "0");
         torConfigMap.put("LogTimeGranularity", "1");
 
-        orPort.ifPresent(orPort -> torConfigMap.put("OrPort", String.valueOf(orPort)));
+        // The nodes listen on the address which they advertise only, so other hosts cannot reach the test network
+        orPort.ifPresent(orPort -> torConfigMap.put("OrPort", "127.0.0.1:" + orPort));
         torConfigMap.put("Address", "127.0.0.1");
         torConfigMap.put("ServerDNSDetectHijacking", "0");
 
         torConfigMap.put("ServerDNSTestAddresses", "");
 
-        dirPort.ifPresent(dirPort -> torConfigMap.put("DirPort", String.valueOf(dirPort)));
+        dirPort.ifPresent(dirPort -> torConfigMap.put("DirPort", "127.0.0.1:" + dirPort));
 
         return torConfigMap;
     }

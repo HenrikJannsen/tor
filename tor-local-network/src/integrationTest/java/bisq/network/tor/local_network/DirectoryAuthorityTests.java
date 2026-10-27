@@ -40,7 +40,7 @@ public class DirectoryAuthorityTests {
     public void createOneDA(@TempDir Path tempDirPath) throws IOException, InterruptedException {
         var firstDirectoryAuthority = TorNode.builder()
                 .type(TorNode.Type.DIRECTORY_AUTHORITY)
-                .nickname("DA_1")
+                .nickname("DA1")
                 .dataDirPath(tempDirPath)
                 .orPort(FreePorts.find())
                 .dirPort(FreePorts.find())
@@ -58,7 +58,7 @@ public class DirectoryAuthorityTests {
         Path firstDaDataDirPath = tempDirPath.resolve("da_1");
         var firstDirectoryAuthority = TorNode.builder()
                 .type(TorNode.Type.DIRECTORY_AUTHORITY)
-                .nickname("DA_1")
+                .nickname("DA1")
                 .dataDirPath(firstDaDataDirPath)
                 .orPort(FreePorts.find())
                 .dirPort(FreePorts.find())
@@ -68,7 +68,7 @@ public class DirectoryAuthorityTests {
         Path secondDaDataDirPath = tempDirPath.resolve("da_2");
         var secondDirectoryAuthority = TorNode.builder()
                 .type(TorNode.Type.DIRECTORY_AUTHORITY)
-                .nickname("DA_2")
+                .nickname("DA2")
                 .dataDirPath(secondDaDataDirPath)
                 .orPort(FreePorts.find())
                 .dirPort(FreePorts.find())
@@ -78,7 +78,7 @@ public class DirectoryAuthorityTests {
         Path thirdDaDataDirPath = tempDirPath.resolve("da_3");
         var thirdDirectoryAuthority = TorNode.builder()
                 .type(TorNode.Type.DIRECTORY_AUTHORITY)
-                .nickname("DA_3")
+                .nickname("DA3")
                 .dataDirPath(thirdDaDataDirPath)
                 .orPort(FreePorts.find())
                 .dirPort(FreePorts.find())
