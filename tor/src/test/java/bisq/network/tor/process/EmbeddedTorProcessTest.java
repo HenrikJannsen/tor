@@ -27,6 +27,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -58,6 +59,37 @@ class EmbeddedTorProcessTest {
         process.waitUntilExited();
 
         assertThat(Files.readString(stdoutLogPath).trim()).isEqualTo(workingDir.toRealPath().toString());
+    }
+
+    @Test
+    void torRunsInASessionOfItsOwnSoThatCtrlCInTheTerminalOfBisqDoesNotReachIt() throws IOException {
+        // The session ID is the sixth field of /proc/<pid>/stat on Linux
+        Path jvmStat = Path.of("/proc/self/stat");
+        assumeTrue(Files.isReadable(jvmStat));
+        assumeTrue(EmbeddedTorProcess.findExecutableInPath(System.getenv("PATH"), "setsid").isPresent());
+        Path stdoutLogPath = tempDir.resolve("tor-stdout.log");
+
+        runToCompletion("echo $$ $(cut -d ' ' -f 6 /proc/$$/stat)", stdoutLogPath);
+
+        String[] pidAndSession = Files.readString(stdoutLogPath).trim().split(" ");
+        assertThat(pidAndSession[1]).isEqualTo(pidAndSession[0]);
+        assertThat(pidAndSession[1]).isNotEqualTo(Files.readString(jvmStat).split(" ")[5]);
+    }
+
+    @Test
+    void setsidPrecedesTheCommandWhereTheSystemHasIt() {
+        List<String> command = List.of("/usr/bin/tor", "-f", "torrc");
+
+        assertThat(EmbeddedTorProcess.inSessionOfItsOwn(command, Optional.of(Path.of("/usr/bin/setsid"))))
+                .containsExactly("/usr/bin/setsid", "/usr/bin/tor", "-f", "torrc");
+        assertThat(EmbeddedTorProcess.inSessionOfItsOwn(command, Optional.empty())).isEqualTo(command);
+    }
+
+    private void runToCompletion(String shellCommand, Path stdoutLogPath) {
+        var process = new EmbeddedTorProcess(List.of("/bin/sh", "-c", shellCommand), tempDir, environment -> {
+        }, stdoutLogPath, tempDir.resolve("tor-stderr.log"));
+        process.start();
+        process.waitUntilExited();
     }
 
     @Test
