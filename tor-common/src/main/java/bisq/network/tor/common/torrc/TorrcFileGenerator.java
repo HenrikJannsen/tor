@@ -24,6 +24,8 @@ import java.nio.file.Path;
 import java.util.Map;
 import java.util.Set;
 
+import static com.google.common.base.Preconditions.checkArgument;
+
 public class TorrcFileGenerator {
     private final Path torrcPath;
     private final Map<String, String> torrcConfigMap;
@@ -37,28 +39,36 @@ public class TorrcFileGenerator {
         this.customDirectoryAuthorities = customDirectoryAuthorities;
     }
 
+    /**
+     * @throws IllegalArgumentException if a key or a value would not stay one entry of the torrc
+     */
     public void generate() {
         StringBuilder torrcStringBuilder = new StringBuilder();
-        torrcConfigMap.forEach((key, value) ->
-                torrcStringBuilder.append(key)
-                        .append(" ")
-                        .append(value)
-                        .append("\n")
-        );
+        torrcConfigMap.forEach((key, value) -> appendEntry(torrcStringBuilder, key, value));
 
+        // The fields of an authority are checked by toTorrcValue, and the entry passes the value rules as well.
         customDirectoryAuthorities.forEach(dirAuthority ->
-                torrcStringBuilder.append("DirAuthority ").append(dirAuthority.getNickname())
-                        .append(" orport=").append(dirAuthority.getOrPort())
-                        .append(" v3ident=").append(dirAuthority.getV3Ident())
-                        .append(" 127.0.0.1:").append(dirAuthority.getDirPort())
-                        .append(" ").append(dirAuthority.getRelayFingerprint())
-                        .append("\n"));
-
+                appendEntry(torrcStringBuilder, "DirAuthority", dirAuthority.toTorrcValue()));
 
         try {
             FileUtils.writeToPath(torrcStringBuilder.toString(), torrcPath);
         } catch (IOException e) {
             throw new IllegalStateException("Couldn't create torrc file: " + torrcPath.toAbsolutePath());
         }
+    }
+
+    private static void appendEntry(StringBuilder torrcStringBuilder, String key, String value) {
+        // A key which is not an option name would change the torrc in a way which the caller does not see: "+Key"
+        // appends to a list option, "/Key" clears it, "Key#x" resets it, and "%include" reads another file. A value
+        // which Tor does not read as one entry with this value would add entries, for example one which the caller
+        // ignores as an override of its own keys, or drop entries, for example everything after a NUL.
+        checkArgument(TorrcSyntax.isOptionName(key), "Invalid torrc key: '%s'", key);
+        TorrcSyntax.findValueProblem(value).ifPresent(problem -> {
+            throw new IllegalArgumentException("The value of the torrc key " + key + " " + problem);
+        });
+        torrcStringBuilder.append(key)
+                .append(" ")
+                .append(value)
+                .append("\n");
     }
 }

@@ -22,7 +22,6 @@ import bisq.network.tor.common.torrc.DirectoryAuthority;
 import bisq.network.tor.common.torrc.TorrcConfigGenerator;
 import bisq.network.tor.common.torrc.TorrcFileGenerator;
 import bisq.network.tor.local_network.torrc.TestNetworkTorrcGeneratorFactory;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -36,7 +35,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.spy;
 
-@Disabled
 public class RelayTorrcGeneratorTests {
     @Test
     void basicTest(@TempDir Path tempDirPath) throws IOException {
@@ -55,11 +53,11 @@ public class RelayTorrcGeneratorTests {
                         .build()
         );
 
-        doReturn(Optional.of("AAAA_fp"))
+        doReturn(Optional.of("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"))
                 .when(firstRelay)
                 .getAuthorityIdentityKeyFingerprint();
 
-        doReturn(Optional.of("AAAA_v3"))
+        doReturn(Optional.of("1111111111111111111111111111111111111111"))
                 .when(firstRelay)
                 .getRelayKeyFingerprint();
 
@@ -75,11 +73,11 @@ public class RelayTorrcGeneratorTests {
                         .build()
         );
 
-        doReturn(Optional.of("BBBB_fp"))
+        doReturn(Optional.of("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"))
                 .when(secondRelay)
                 .getAuthorityIdentityKeyFingerprint();
 
-        doReturn(Optional.of("BBBB_v3"))
+        doReturn(Optional.of("2222222222222222222222222222222222222222"))
                 .when(secondRelay)
                 .getRelayKeyFingerprint();
 
@@ -98,11 +96,11 @@ public class RelayTorrcGeneratorTests {
                         .build()
         );
 
-        doReturn(Optional.of("AAAA_fp"))
+        doReturn(Optional.of("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"))
                 .when(dirAuth)
                 .getAuthorityIdentityKeyFingerprint();
 
-        doReturn(Optional.of("AAAA_v3"))
+        doReturn(Optional.of("1111111111111111111111111111111111111111"))
                 .when(dirAuth)
                 .getRelayKeyFingerprint();
 

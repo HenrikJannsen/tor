@@ -22,6 +22,7 @@ import bisq.network.tor.common.platform.LinuxDistribution;
 import bisq.network.tor.common.platform.OS;
 import bisq.network.tor.common.torrc.BaseTorrcGenerator;
 import bisq.network.tor.common.torrc.TorrcFileGenerator;
+import bisq.network.tor.common.torrc.TorrcSyntax;
 import bisq.network.tor.controller.PasswordDigest;
 import bisq.network.tor.controller.TorControlAuthenticationFailed;
 import bisq.network.tor.controller.TorController;
@@ -700,7 +701,7 @@ public class TorService {
         if (!Files.exists(filePath)) {
             log.warn("The Tor bundle has no {}. Tor runs without its country data.", filePath);
         }
-        torrcConfigMap.put(key, filePath.toAbsolutePath().toString());
+        torrcConfigMap.put(key, TorrcSyntax.toValue(filePath.toAbsolutePath().toString()));
     }
 
     private void createEmptyOpenSslConfig() {

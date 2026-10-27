@@ -23,9 +23,11 @@ import org.junit.jupiter.api.Test;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class TorrcClientConfigFactoryTest {
     private static final Path DATA_DIR = Paths.get("").toAbsolutePath().resolve("tor");
@@ -97,6 +99,17 @@ class TorrcClientConfigFactoryTest {
                 .containsEntry("ControlPort", "127.0.0.1:auto")
                 .containsEntry("HashedControlPassword", passwordDigest.getHashedPassword())
                 .doesNotContainKeys(overrides.keySet().toArray(String[]::new));
+    }
+
+    @Test
+    void anOverrideWhoseKeyIsNotAnOptionNameStopsTheStart() {
+        // Tor reads "+ControlPort" as a second control port, "/ControlPort" as the removal of the control port and
+        // "ControlPort#x" as ControlPort without value, which resets it. None is a prefix of a key of Bisq.
+        for (String key : List.of("+ControlPort", "/ControlPort", "ControlPort#x", "+SocksPort", "%include")) {
+            assertThatThrownBy(() -> factory.torrcClientConfigMap(Map.of(key, "127.0.0.1:19051")))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining(key);
+        }
     }
 
     @Test

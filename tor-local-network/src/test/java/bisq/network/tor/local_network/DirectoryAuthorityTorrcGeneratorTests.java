@@ -22,11 +22,11 @@ import bisq.network.tor.common.torrc.DirectoryAuthority;
 import bisq.network.tor.common.torrc.TorrcConfigGenerator;
 import bisq.network.tor.common.torrc.TorrcFileGenerator;
 import bisq.network.tor.local_network.torrc.TestNetworkTorrcGeneratorFactory;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.Optional;
@@ -37,7 +37,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.spy;
 
-@Disabled
 public class DirectoryAuthorityTorrcGeneratorTests {
     @Test
     void basicTest(@TempDir Path tempDirPath) throws IOException {
@@ -56,11 +55,11 @@ public class DirectoryAuthorityTorrcGeneratorTests {
                         .build()
         );
 
-        doReturn(Optional.of("AAAA_fp"))
+        doReturn(Optional.of("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"))
                 .when(firstDirAuth)
                 .getAuthorityIdentityKeyFingerprint();
 
-        doReturn(Optional.of("AAAA_v3"))
+        doReturn(Optional.of("1111111111111111111111111111111111111111"))
                 .when(firstDirAuth)
                 .getRelayKeyFingerprint();
 
@@ -76,11 +75,11 @@ public class DirectoryAuthorityTorrcGeneratorTests {
                         .build()
         );
 
-        doReturn(Optional.of("BBBB_fp"))
+        doReturn(Optional.of("BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"))
                 .when(secondDirAuth)
                 .getAuthorityIdentityKeyFingerprint();
 
-        doReturn(Optional.of("BBBB_v3"))
+        doReturn(Optional.of("2222222222222222222222222222222222222222"))
                 .when(secondDirAuth)
                 .getRelayKeyFingerprint();
 
@@ -99,5 +98,9 @@ public class DirectoryAuthorityTorrcGeneratorTests {
 
         assertThat(firstDirAuth.getTorrcPath())
                 .isNotEmptyFile();
+        // Every value stays one entry: the contact is one line, and the authorities follow
+        assertThat(Files.readString(torrcPath))
+                .contains("ContactInfo auth-A@test.test\n")
+                .contains("DirAuthority ");
     }
 }

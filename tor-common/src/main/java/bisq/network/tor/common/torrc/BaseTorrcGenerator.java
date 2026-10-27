@@ -45,15 +45,17 @@ public class BaseTorrcGenerator implements TorrcConfigGenerator {
     @Override
     public Map<String, String> generate() {
         Map<String, String> torConfigMap = new HashMap<>();
-        torConfigMap.put(DATA_DIRECTORY, dataDirPath.toAbsolutePath().toString());
+        // A data directory can hold "#", for example from the data directory of the application.
+        torConfigMap.put(DATA_DIRECTORY, TorrcSyntax.toValue(dataDirPath.toAbsolutePath().toString()));
 
         torConfigMap.put(CONTROL_PORT, CONTROL_PORT_AUTO);
-        torConfigMap.put(CONTROL_PORT_WRITE_TO_FILE, controlPortWriteFilePath.toAbsolutePath().toString());
+        torConfigMap.put(CONTROL_PORT_WRITE_TO_FILE,
+                TorrcSyntax.toValue(controlPortWriteFilePath.toAbsolutePath().toString()));
         torConfigMap.put(HASHED_CONTROL_PASSWORD, hashedControlPassword);
 
         String logLevel = isTestNetwork ? "debug" : "notice";
         torConfigMap.put("Log",
-                logLevel + " file " + dataDirPath.resolve("debug.log").toAbsolutePath()
+                TorrcSyntax.toValue(logLevel + " file " + dataDirPath.resolve("debug.log").toAbsolutePath())
         );
 
         torConfigMap.put(SOCKS_PORT, SOCKS_PORT_DISABLED);

@@ -21,6 +21,7 @@ import bisq.network.tor.common.torrc.BaseTorrcGenerator;
 import bisq.network.tor.common.torrc.ClientTorrcGenerator;
 import bisq.network.tor.common.torrc.TestNetworkTorrcGenerator;
 import bisq.network.tor.common.torrc.TorrcConfigGenerator;
+import bisq.network.tor.common.torrc.TorrcSyntax;
 import bisq.network.tor.controller.PasswordDigest;
 import lombok.Builder;
 import lombok.extern.slf4j.Slf4j;
@@ -38,6 +39,7 @@ import static bisq.network.tor.common.torrc.Torrc.Keys.DATA_DIRECTORY;
 import static bisq.network.tor.common.torrc.Torrc.Keys.DISABLE_NETWORK;
 import static bisq.network.tor.common.torrc.Torrc.Keys.HASHED_CONTROL_PASSWORD;
 import static bisq.network.tor.common.torrc.Torrc.Keys.SOCKS_PORT;
+import static com.google.common.base.Preconditions.checkArgument;
 
 @Slf4j
 @Builder
@@ -78,6 +80,10 @@ public class TorrcClientConfigFactory {
         // Tor writes its state less often, as in Tor Browser and in netlayer. A torrc override can change it.
         torrcClientConfig.put(AVOID_DISK_WRITES, "1");
         torrcOverrides.forEach((key, value) -> {
+            // The rules below compare option names. Tor reads "+Key", "/Key" and "Key#x" as a change of the option
+            // Key, which they would bypass.
+            checkArgument(TorrcSyntax.isOptionName(key), "The key of the torrc override '%s' is not the name of a " +
+                    "Tor option. The forms +Key, /Key and Key#comment of a torrc are not supported.", key);
             if (isOwnedByBisq(key)) {
                 log.warn("We ignore the torrc override of {}, because Bisq sets it for the embedded Tor", key);
             } else if (isControlAccessKey(key)) {

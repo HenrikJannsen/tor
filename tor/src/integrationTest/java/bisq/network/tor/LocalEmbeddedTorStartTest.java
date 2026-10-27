@@ -96,6 +96,25 @@ class LocalEmbeddedTorStartTest {
         assertThatNoTorOfThisTestRuns();
     }
 
+    // The data directory of the application can hold "#", which starts a comment in an unquoted torrc value.
+    @Test
+    void aStartWithAHashInTheTorDirectoryReachesTheBootstrap() throws Exception {
+        assumeTrue(OS.isLinux(), "Only Linux runs the tor of the system");
+        assumeTrue(EmbeddedTorProcess.getSystemTorPath().isPresent(), "No tor in PATH");
+        Path hashTorDir = torDir.resolve("Bisq#1").resolve("tor");
+        var transportConfig = new TorTransportConfig(hashTorDir, 3000, 1000, false, Set.of(),
+                Map.of("Socks5Proxy", "127.0.0.1:1"), false);
+        var torService = new TorService(transportConfig, new LocalPlatformServices());
+
+        assertThatThrownBy(() -> torService.initialize())
+                .satisfies(e -> assertThat(Throwables.getRootCause(e)).isInstanceOf(TorBootstrapFailedException.class));
+
+        assertThat(Files.readString(hashTorDir.resolve("torrc")))
+                .contains("DataDirectory \"" + hashTorDir.toAbsolutePath() + "\"\n");
+        assertThat(hashTorDir.resolve("state")).exists();
+        assertThatNoTorOfThisTestRuns(hashTorDir);
+    }
+
     private void assertThatNoTorOfThisTestRuns() {
         assertThatNoTorOfThisTestRuns(torDir);
     }
