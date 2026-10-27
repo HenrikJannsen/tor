@@ -247,7 +247,10 @@ public class TorControlProtocol implements AutoCloseable {
         sendCommand(command);
         String reply = receiveReply().findFirst().orElseThrow();
         if (!isSuccessReply(reply)) {
-            throw new ControlCommandFailedException("Couldn't initiate HSFETCH for : " + serviceId);
+            // The service ID is the address of a peer, so only at debug level: the apps log the exception, and a log
+            // which a user shares must not name the peers of the user. The reply of Tor can name the address as well.
+            log.debug("Couldn't initiate HSFETCH for {}: {}", serviceId, reply);
+            throw new ControlCommandFailedException("Couldn't initiate HSFETCH");
         }
     }
 
@@ -256,7 +259,8 @@ public class TorControlProtocol implements AutoCloseable {
         sendCommand(command);
         String reply = receiveReply().findFirst().orElseThrow();
         if (!isSuccessReply(reply)) {
-            throw new ControlCommandFailedException("Couldn't reset config: " + configName);
+            throw new ControlCommandFailedException("Couldn't reset config: " +
+                    TorControlLogFormat.toLoggableOptionArgument(configName));
         }
     }
 
@@ -467,7 +471,8 @@ public class TorControlProtocol implements AutoCloseable {
         if (outputStream.isEmpty()) {
             throw new IllegalStateException("TorControlProtocol output stream not initialized. Cannot send command.");
         }
-        log.info("Send Tor control command: {}", TorControlLogFormat.toLoggableCommand(command));
+        // Debug level: the commands name onion addresses, which link the identities of a user in a shared log.
+        log.debug("Send Tor control command: {}", TorControlLogFormat.toLoggableCommand(command));
         @SuppressWarnings("resource") OutputStream os = this.outputStream.orElseThrow();
         byte[] commandBytes = command.getBytes(StandardCharsets.US_ASCII);
         // A write blocks while Tor does not read, and it holds the lock of this object, which every command needs. A

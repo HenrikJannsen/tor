@@ -71,7 +71,9 @@ public class TorControlReader implements AutoCloseable {
                 boolean isDataBlockOfEvent = false;
                 while (!isStopped && (line = readBoundedLine(bufferedReader)) != null && !Thread.currentThread().isInterrupted()) {
 
-                    log.info("Received reply from Tor control server: {}", TorControlLogFormat.toLoggableReply(line));
+                    // Debug level: replies and events name onion addresses, which link the identities of a user
+                    // in a shared log.
+                    log.debug("Received reply from Tor control server: {}", TorControlLogFormat.toLoggableReply(line));
                     if (isInDataBlock) {
                         if (!isDataBlockOfEvent) {
                             replies.put(Optional.of(line));
@@ -145,12 +147,13 @@ public class TorControlReader implements AutoCloseable {
             }
         } catch (RuntimeException e) {
             // A malformed event must not end the reader. Otherwise every later command would wait forever.
-            log.warn("Could not handle Tor event: {}", TorControlLogFormat.toLoggableReply(line), e);
+            log.warn("Could not handle a Tor event: {}", e.getClass().getSimpleName());
+            logEventAtDebugLevel("Could not handle the Tor event", line, e);
             return;
         }
 
         if (!parsedEvent) {
-            log.info("Unknown Tor event: {}", TorControlLogFormat.toLoggableReply(line));
+            log.debug("Unknown Tor event: {}", TorControlLogFormat.toLoggableReply(line));
         }
     }
 
@@ -167,8 +170,15 @@ public class TorControlReader implements AutoCloseable {
         try {
             notification.run();
         } catch (RuntimeException e) {
-            log.warn("A listener could not handle the Tor event: {}", TorControlLogFormat.toLoggableReply(line), e);
+            log.warn("A listener could not handle a Tor event: {}", e.getClass().getSimpleName());
+            logEventAtDebugLevel("A listener could not handle the Tor event", line, e);
         }
+    }
+
+    // An event names onion addresses, for example HS_DESC, which link the identities of a user in a log that the user
+    // shares. So the event, and the exception, whose message can quote it, only at debug level.
+    private static void logEventAtDebugLevel(String message, String line, RuntimeException e) {
+        log.debug("{}: {}", message, TorControlLogFormat.toLoggableReply(line), e);
     }
 
     /**

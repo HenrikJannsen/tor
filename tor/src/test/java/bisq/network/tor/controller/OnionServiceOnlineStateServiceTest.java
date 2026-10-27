@@ -52,6 +52,20 @@ class OnionServiceOnlineStateServiceTest {
     }
 
     @Test
+    void theThreadNameCarriesACounterInsteadOfTheOnionAddress() {
+        // The thread name is in every log line of the thread, and the address of a peer must not appear in a log
+        // which a user shares.
+        Thread first = OnionServiceOnlineStateService.createThreadFactory().newThread(() -> {
+        });
+        Thread second = OnionServiceOnlineStateService.createThreadFactory().newThread(() -> {
+        });
+
+        assertThat(first.getName()).matches("OnionServiceOnlineStateService-\\d+-\\d+");
+        assertThat(second.getName()).matches("OnionServiceOnlineStateService-\\d+-\\d+").isNotEqualTo(first.getName());
+        assertThat(first.isDaemon()).isTrue();
+    }
+
+    @Test
     void aReceivedDescriptorMeansOnline() throws Exception {
         connect(command -> command.startsWith("HSFETCH") ?
                 "250 OK\r\n650 HS_DESC RECEIVED " + serviceId + " NO_AUTH " + HS_DIR + " descriptorId\r\n" :
@@ -174,6 +188,22 @@ class OnionServiceOnlineStateServiceTest {
                 .isInstanceOf(CompletionException.class)
                 .hasMessageContaining("ended");
         assertThat(System.currentTimeMillis() - start).isLessThan(5000);
+    }
+
+    @Test
+    void aRefusedLookupDoesNotNameThePeerInTheMessage() throws Exception {
+        // Bisq 2 logs the failure at error level, and the address of a peer must not appear in a log which a user
+        // shares. Tor names the address in some refusals.
+        connect(command -> command.startsWith("HSFETCH") ?
+                "513 Invalid argument \"" + serviceId + "\"\r\n" :
+                "250 OK\r\n");
+
+        CompletableFuture<Boolean> lookup = torController.isOnionServiceOnlineAsync(onionAddress);
+
+        assertThatThrownBy(lookup::join)
+                .hasCauseInstanceOf(ControlCommandFailedException.class)
+                .hasMessageContaining("HSFETCH")
+                .hasMessageNotContaining(serviceId);
     }
 
     @Test

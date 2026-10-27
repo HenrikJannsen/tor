@@ -30,14 +30,15 @@ import java.util.stream.Stream;
  * Commands and replies can carry secrets: the private key of an onion service ({@code ADD_ONION}), the control
  * password or the auth cookie ({@code AUTHENTICATE}), and keys which Tor generates for a reply. Users share their log
  * files, for example in bug reports. So the log form keeps only parts which are known to be public. The arguments of a
- * command which is not listed here are hidden. See {@code docs/specifications/security/secrets-in-logs.md}.
+ * command which is not listed here are hidden. The rules are specified in the Bisq 2 repository, not in this one:
+ * {@code docs/specifications/security/secrets-in-logs.md} there.
  */
 final class TorControlLogFormat {
     static final String HIDDEN = "[hidden]";
 
     // The arguments of these commands are info keys, onion service IDs, option names and event names.
-    private static final Set<String> COMMANDS_WITH_PUBLIC_ARGUMENTS = Set.of("GETINFO", "HSFETCH", "RESETCONF",
-            "SETEVENTS", "TAKEOWNERSHIP");
+    private static final Set<String> COMMANDS_WITH_PUBLIC_ARGUMENTS = Set.of("GETINFO", "HSFETCH", "SETEVENTS",
+            "TAKEOWNERSHIP");
     private static final Set<String> ADD_ONION_KEY_TYPES = Set.of("NEW", "RSA1024", "ED25519-V3");
     // Tor returns generated keys as reply data, for example "250-PrivateKey=...". Only these keys have public values.
     private static final Set<String> REPLY_DATA_KEYS_WITH_PUBLIC_VALUE = Set.of("ServiceID", "net/listeners/socks");
@@ -58,6 +59,11 @@ final class TorControlLogFormat {
         }
         if (keyword.equals("ADD_ONION")) {
             return keyword + " " + toLoggableAddOnionArguments(arguments);
+        }
+        if (keyword.equals("RESETCONF")) {
+            // RESETCONF Key[=Value] ...: the option names are public, a value can be a password. A quoted value can
+            // contain spaces and escaped quotes, so everything after the first value starts is hidden.
+            return keyword + " " + toLoggableOptionArgument(String.join(" ", arguments));
         }
         // For example AUTHENTICATE (password or auth cookie) and SETCONF (an option value can be a password)
         return keyword + " " + HIDDEN;
@@ -80,6 +86,11 @@ final class TorControlLogFormat {
         return REPLY_DATA_KEYS_WITH_PUBLIC_VALUE.contains(key)
                 ? replyLine
                 : statusCodeAndSeparator + key + "=" + HIDDEN;
+    }
+
+    static String toLoggableOptionArgument(String argument) {
+        int valueStart = argument.indexOf('=');
+        return valueStart < 0 ? argument : argument.substring(0, valueStart) + "=" + HIDDEN;
     }
 
     // ADD_ONION KeyType:KeyBlob [Flags=...] [MaxStreams=...] Port=... [ClientAuth=Name:Blob]

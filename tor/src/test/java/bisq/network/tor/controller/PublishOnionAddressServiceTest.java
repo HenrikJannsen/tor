@@ -158,9 +158,12 @@ class PublishOnionAddressServiceTest {
                 addOnionReply(otherServiceId) + uploadEvents(otherServiceId) :
                 "250 OK\r\n");
 
+        // The message names no onion address, because the apps log it.
         assertThatThrownBy(() -> torController.publish(onionServiceKey, 9999, 12345))
                 .hasRootCauseInstanceOf(HsDescUploadFailedException.class)
-                .hasMessageContaining(otherServiceId);
+                .hasMessageContaining("another onion address")
+                .hasMessageNotContaining(serviceId)
+                .hasMessageNotContaining(otherServiceId);
         assertThat(server.getCommands()).contains("DEL_ONION " + otherServiceId);
     }
 

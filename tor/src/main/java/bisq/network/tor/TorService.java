@@ -411,15 +411,18 @@ public class TorService {
 
     public CompletableFuture<String> publishOnionService(int localPort, int onionServicePort, OnionServiceKey onionServiceKey) {
         long ts = System.currentTimeMillis();
+        String onionAddress = onionServiceKey.getOnionAddress();
         try {
-            String onionAddress = onionServiceKey.getOnionAddress();
-            log.info("Publish onion service for address {}:{} (localPort={})", onionAddress, onionServicePort, localPort);
+            // The onion address only at debug level: a log which a user shares must not list the onion services of
+            // the user together.
+            log.debug("Publish onion service {}:{} (localPort={})", onionAddress, onionServicePort, localPort);
             int torTargetPort = onionServiceTargets.targetPortOf(onionAddress, localPort);
             // The controller publishes each onion address once per connection to Tor, also for concurrent calls.
             torController.publish(onionServiceKey, onionServicePort, torTargetPort);
 
-            log.info("Tor onion service Ready. Took {} ms. Onion address={}:{} (localPort={})",
-                    System.currentTimeMillis() - ts, onionAddress, onionServicePort, localPort);
+            log.info("Tor onion service ready. Took {} ms (onionServicePort={}, localPort={})",
+                    System.currentTimeMillis() - ts, onionServicePort, localPort);
+            log.debug("Onion service {} is ready", onionAddress);
 
             return CompletableFuture.completedFuture(onionAddress);
         } catch (InterruptedException e) {
@@ -427,11 +430,11 @@ public class TorService {
             Thread.currentThread().interrupt(); // Restore interrupted state
             return CompletableFuture.failedFuture(e);
         } catch (IOException e) {
-            log.error("Can't create onion service", e);
+            logPublicationFailure(onionAddress, e);
             return CompletableFuture.failedFuture(e);
         } catch (RuntimeException e) {
             Throwable cause = unwrapCompletionException(e);
-            log.error("Can't create onion service", cause);
+            logPublicationFailure(onionAddress, cause);
             return CompletableFuture.failedFuture(cause);
         }
     }
@@ -443,17 +446,17 @@ public class TorService {
         try {
             target = onionServiceTargets.bindServerSocket(onionAddress);
         } catch (IOException e) {
-            log.error("Can't create onion service", e);
+            logPublicationFailure(onionAddress, e);
             return CompletableFuture.failedFuture(e);
         }
 
         try {
-            log.info("Publish onion service for onion address {}:{}", onionAddress, port);
+            log.debug("Publish onion service {}:{}", onionAddress, port);
             // The controller publishes each onion address once per connection to Tor, also for concurrent calls.
             torController.publish(onionServiceKey, port, target.torTargetPort());
 
-            log.info("Tor onion service Ready. Took {} ms. Onion address={}:{}",
-                    System.currentTimeMillis() - ts, onionAddress, port);
+            log.info("Tor onion service ready. Took {} ms (onionServicePort={})", System.currentTimeMillis() - ts, port);
+            log.debug("Onion service {} is ready", onionAddress);
 
             return CompletableFuture.completedFuture(target.serverSocket());
         } catch (InterruptedException e) {
@@ -464,9 +467,16 @@ public class TorService {
         } catch (RuntimeException e) {
             closeQuietly(target.serverSocket());
             Throwable cause = unwrapCompletionException(e);
-            log.error("Can't create onion service", cause);
+            logPublicationFailure(onionAddress, cause);
             return CompletableFuture.failedFuture(cause);
         }
+    }
+
+    // The message of a failure can name onion addresses, which link the identities of a user in a log that the user
+    // shares. Above debug level only a fixed text and the type of the failure.
+    private static void logPublicationFailure(String onionAddress, Throwable cause) {
+        log.error("Can't create onion service: {}", cause.getClass().getSimpleName());
+        log.debug("Can't create onion service {}", onionAddress, cause);
     }
 
     // TorController.publish reports a failed publication as a CompletionException with the failure as its cause. The
