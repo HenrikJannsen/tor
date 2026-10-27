@@ -17,6 +17,7 @@
 
 package bisq.network.tor.sandbox;
 
+import com.google.common.util.concurrent.Uninterruptibles;
 import com.typesafe.config.Config;
 import com.typesafe.config.ConfigException;
 import com.typesafe.config.ConfigFactory;
@@ -40,7 +41,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ForkJoinPool;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.stream.Collectors;
@@ -62,9 +63,18 @@ public final class Sandy {
     public static final String EGRESS_BROKERED = "egress-brokered";
     public static final String IP_NETWORK_PRIVATE = "ip-network-private";
     public static final String SIGNALS_ISOLATED = "signals-isolated";
+    public static final String ENDS_WITH_PARENT = "ends-with-parent";
 
     private static final long CHECK_TIMEOUT_SEC = 30;
+    private static final long STOP_TIMEOUT_SEC = 5;
     private static final int MAX_CHECK_OUTPUT_BYTES = 256 * 1024;
+    // A thread of its own for each reader of sandy check: a reader blocks until sandy closes its output, which must
+    // not hold a worker of the common pool, which the application shares.
+    private static final Executor READER_THREADS = reader -> {
+        Thread thread = new Thread(reader, "sandy-check-output");
+        thread.setDaemon(true);
+        thread.start();
+    };
 
     /**
      * The level that sandy selected, and the requirements it enforces there.
@@ -113,26 +123,61 @@ public final class Sandy {
 
         ProcessBuilder processBuilder = new ProcessBuilder(command);
         removeLoaderVariables(processBuilder.environment());
+        Process process;
         try {
-            Process process = processBuilder.start();
+            process = processBuilder.start();
+        } catch (IOException e) {
+            throw new IllegalStateException("Bisq could not run " + binaryPath.toAbsolutePath() + ": " + e.getMessage(), e);
+        }
+        try {
             CompletableFuture<String> output = CompletableFuture.supplyAsync(() -> readLimited(process.getInputStream()),
-                    ForkJoinPool.commonPool());
+                    READER_THREADS);
             CompletableFuture<String> errors = CompletableFuture.supplyAsync(() -> readLimited(process.getErrorStream()),
-                    ForkJoinPool.commonPool());
-            writePolicy(process.getOutputStream(), policy);
+                    READER_THREADS);
+            boolean isPolicyWritten = writePolicy(process.getOutputStream(), policy);
             if (!process.waitFor(CHECK_TIMEOUT_SEC, TimeUnit.SECONDS)) {
-                process.destroyForcibly();
                 return new CheckResult(-1, Optional.empty(),
                         "sandy check did not finish within " + CHECK_TIMEOUT_SEC + " seconds.");
             }
-            return parseCheck(process.exitValue(),
-                    output.get(CHECK_TIMEOUT_SEC, TimeUnit.SECONDS),
-                    errors.get(CHECK_TIMEOUT_SEC, TimeUnit.SECONDS));
-        } catch (IOException | ExecutionException | TimeoutException e) {
+            String errorOutput = errors.get(CHECK_TIMEOUT_SEC, TimeUnit.SECONDS);
+            if (!isPolicyWritten) {
+                // sandy ended before it read the whole policy, for example because it refused an argument. Its status
+                // and its standard error tell why, not the broken pipe of the write, and no level counts.
+                return new CheckResult(process.exitValue(), Optional.empty(),
+                        "sandy check ended before it read the policy.\n" + errorOutput);
+            }
+            return parseCheck(process.exitValue(), output.get(CHECK_TIMEOUT_SEC, TimeUnit.SECONDS), errorOutput);
+        } catch (ExecutionException | TimeoutException e) {
             throw new IllegalStateException("Bisq could not run " + binaryPath.toAbsolutePath() + ": " + e.getMessage(), e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("Interrupted while waiting for sandy check.", e);
+        } finally {
+            stop(process);
+        }
+    }
+
+    /**
+     * Ends a check which still runs, because it did not finish in time or the caller was interrupted, and waits until
+     * it has ended, also when the caller was interrupted. Closing the streams ends the readers of its output.
+     */
+    private static void stop(Process process) {
+        if (process.isAlive()) {
+            process.destroyForcibly();
+            try {
+                Uninterruptibles.getUninterruptibly(process.onExit(), STOP_TIMEOUT_SEC, TimeUnit.SECONDS);
+            } catch (ExecutionException | TimeoutException e) {
+                log.warn("sandy check did not end within {} seconds after it was killed", STOP_TIMEOUT_SEC);
+            }
+        }
+        closeQuietly(process.getInputStream());
+        closeQuietly(process.getErrorStream());
+    }
+
+    private static void closeQuietly(InputStream inputStream) {
+        try {
+            inputStream.close();
+        } catch (IOException ignore) {
         }
     }
 
@@ -141,7 +186,12 @@ public final class Sandy {
      * writes the policy to the standard input of the process ({@link #policyInput}). {@code --level} makes sandy
      * refuse the start, instead of taking another level, if the host changed since the check, so Tor never runs with
      * a torrc that Bisq wrote for another level. On Linux and macOS sandy replaces itself with the program, so the
-     * process is the program. On Windows sandy stays the parent of the program and ends it when sandy ends.
+     * process is the program, unless the level has {@code children = "contained"}. Then, and on Windows in every
+     * level, sandy stays the parent of the program, ends it when sandy ends and exits with its status.
+     * <p>
+     * Bisq names itself as the parent only for a level that ends with it. With {@code --level}, sandy checks
+     * {@code --parent-pid} against that level alone and refuses it for a level without {@code end_with_parent}, such
+     * as {@code host-network-signals} of the Linux templates, while {@code check} accepts it for the whole policy.
      */
     public List<String> runCommand(SandyPolicy policy, Level level, List<String> programCommand) {
         List<String> command = new ArrayList<>();
@@ -153,7 +203,9 @@ public final class Sandy {
         command.add(level.name());
         command.add("--cwd");
         command.add(policy.workingDirPath().toAbsolutePath().normalize().toString());
-        command.addAll(parentOptions());
+        if (level.enforces(ENDS_WITH_PARENT)) {
+            command.addAll(parentOptions());
+        }
         command.add("--");
         command.addAll(programCommand);
         return command;
@@ -172,9 +224,10 @@ public final class Sandy {
     }
 
     /**
-     * Names Bisq as the parent that Tor ends with. sandy refuses to start if its parent is another process, for
-     * example because Bisq ended in between. On Linux the start time of Bisq tells it from a process that got its ID
-     * later (sandy {@code docs/linux.md}, "Naming the caller").
+     * Names Bisq as the parent that Tor ends with. Without {@code --parent-start}, sandy refuses to start if its parent
+     * is another process, for example because Bisq ended in between. On Linux {@code --parent-start}, the start time of
+     * Bisq, names Bisq instead of the parent and tells it from a process that got its ID later (sandy
+     * {@code docs/linux.md}, "Naming the caller").
      */
     private List<String> parentOptions() {
         List<String> options = new ArrayList<>(List.of("--parent-pid", parentPid));
@@ -248,9 +301,14 @@ public final class Sandy {
         }
     }
 
-    private static void writePolicy(OutputStream outputStream, SandyPolicy policy) throws IOException {
+    // Returns false if sandy closed its standard input before it read the whole policy.
+    private static boolean writePolicy(OutputStream outputStream, SandyPolicy policy) {
         try (outputStream) {
             outputStream.write(policyInput(policy));
+            return true;
+        } catch (IOException e) {
+            log.warn("Bisq could not write the policy to sandy check: {}", e.getMessage());
+            return false;
         }
     }
 

@@ -92,6 +92,20 @@ class TorServiceStartFailureTest {
                 .hasMessageContaining("exited before it answered");
     }
 
+    // sandy refuses an argument before it reads the policy, so the write of the policy fails with a broken pipe.
+    @Test
+    void aSandyWhichEndsBeforeItReadsThePolicyIsASandboxFailureWithItsReason() {
+        // Larger than a pipe buffer, so that the write fails once the process has ended
+        byte[] policy = new byte[1024 * 1024];
+        EmbeddedTorProcess process = start("echo 'sandy: unknown option --frobnicate' >&2; exit 125",
+                Optional.of(policy));
+
+        assertThatThrownBy(() -> TorService.waitUntilControlPortAnswers(closedPort, process, Optional.of(OPT_OUT_HINT)))
+                .isInstanceOf(SandboxUnavailableException.class)
+                .hasMessageContaining("unknown option --frobnicate")
+                .hasMessageContaining(OPT_OUT_HINT);
+    }
+
     // Bisq 2 shows only the root cause of a failed start, so the exception which names the reason has no cause.
     @Test
     void aFailureToCreateTheTorDirectoryIsTheRootCause() throws IOException {
@@ -162,8 +176,12 @@ class TorServiceStartFailureTest {
     }
 
     private EmbeddedTorProcess start(String shellCommand) {
+        return start(shellCommand, Optional.empty());
+    }
+
+    private EmbeddedTorProcess start(String shellCommand, Optional<byte[]> standardInput) {
         var process = new EmbeddedTorProcess(List.of("/bin/sh", "-c", shellCommand), tempDir, environment -> {
-        }, tempDir.resolve("tor-stdout.log"), tempDir.resolve("tor-stderr.log"));
+        }, tempDir.resolve("tor-stdout.log"), tempDir.resolve("tor-stderr.log"), standardInput);
         process.start();
         process.waitUntilExited();
         return process;

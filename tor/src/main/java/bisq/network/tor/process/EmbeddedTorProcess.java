@@ -70,7 +70,9 @@ public class EmbeddedTorProcess {
 
     /**
      * @param standardInput written to the standard input of the process, which is then closed. sandy reads its
-     *                      policy there ({@code --policy -}) and gives the program the null device instead.
+     *                      policy there ({@code --policy -}) and gives the program the null device instead. If the
+     *                      process ends before it read the input, {@link #start} returns, and its exit status and
+     *                      standard error tell why.
      */
     public EmbeddedTorProcess(List<String> command,
                               Path workingDirPath,
@@ -87,15 +89,25 @@ public class EmbeddedTorProcess {
     }
 
     /**
-     * The command line of Tor itself.
+     * The command line of Tor itself. Tor exits when the process {@code ownerPid} ends, until its controller resets
+     * the option.
      */
     public static List<String> torCommand(Path torBinaryPath, Path torrcPath, String ownerPid) {
+        List<String> command = new ArrayList<>(torCommand(torBinaryPath, torrcPath));
+        command.add(ARG_OWNER_PID);
+        command.add(ownerPid);
+        return List.copyOf(command);
+    }
+
+    /**
+     * The command line of Tor without an owner process, for a Tor which another process ends when Bisq ends.
+     */
+    public static List<String> torCommand(Path torBinaryPath, Path torrcPath) {
         String absoluteTorrcPathAsString = torrcPath.toAbsolutePath().toString();
         // -f instead of --torrc-file, which Tor only knows since 0.4.6.2-alpha
         return List.of(torBinaryPath.toAbsolutePath().toString(),
                 "-f", absoluteTorrcPathAsString,
-                "--defaults-torrc", absoluteTorrcPathAsString,
-                ARG_OWNER_PID, ownerPid);
+                "--defaults-torrc", absoluteTorrcPathAsString);
     }
 
     public void start() {
@@ -109,18 +121,28 @@ public class EmbeddedTorProcess {
         rotateStdoutLogIfTooLarge();
         processBuilder.redirectOutput(ProcessBuilder.Redirect.appendTo(stdoutLogPath.toFile()));
 
+        Process torProcess;
         try {
-            Process torProcess = processBuilder.start();
-            process = Optional.of(torProcess);
-            if (standardInput.isPresent()) {
-                try (OutputStream input = torProcess.getOutputStream()) {
-                    input.write(standardInput.get());
-                }
-            }
+            torProcess = processBuilder.start();
         } catch (IOException e) {
             String program = processBuilder.command().get(0);
             log.warn("Could not start {}", program, e);
             throw new TorStartupFailedException("Could not start " + program + ": " + e);
+        }
+        process = Optional.of(torProcess);
+        standardInput.ifPresent(input -> writeStandardInput(torProcess, input));
+    }
+
+    /**
+     * A process which ends before it read its whole input, for example sandy, which refused an argument, makes the
+     * write fail with a broken pipe. The exit status and the standard error of the process tell why
+     * ({@link #getStartupDiagnostics}), so the caller reports the ended process instead of the failed write.
+     */
+    private static void writeStandardInput(Process process, byte[] input) {
+        try (OutputStream outputStream = process.getOutputStream()) {
+            outputStream.write(input);
+        } catch (IOException e) {
+            log.warn("Could not write the standard input of the process: {}", e.getMessage());
         }
     }
 

@@ -253,6 +253,8 @@ public class TorService {
 
     private void start() {
         refuseWhonixGateway();
+        // A failed start before may have left the status of its Tor, which does not run.
+        sandboxStatus = TorSandboxStatus.NOT_STARTED;
         makeTorDir();
 
         ExternalTorConfig externalTorConfig = readExternalTorConfig();
@@ -319,6 +321,7 @@ public class TorService {
         createEmptyOpenSslConfig();
 
         EmbeddedTorProcess embeddedTorProcess;
+        Optional<Sandy.Level> sandboxLevel;
         if (isSandboxed) {
             // The policy names the torrc, which must exist when sandy checks the policy. Tor reads the torrc written
             // after the check, for the level which sandy selected.
@@ -327,16 +330,19 @@ public class TorService {
             createTorrcConfigFile(hashedControlPassword, listenerPorts, bridgeEntries, true,
                     sandboxedStart.socks5ProxyPort(listenerPorts));
             embeddedTorProcess = createSandboxedTorProcess(torBinaryPath, sandboxedStart);
+            sandboxLevel = Optional.of(sandboxedStart.level());
         } else {
             createTorrcConfigFile(hashedControlPassword, listenerPorts, bridgeEntries, false, OptionalInt.empty());
             embeddedTorProcess = createTorProcess(torBinaryPath);
+            sandboxLevel = Optional.empty();
         }
         torProcess = Optional.of(embeddedTorProcess);
-        embeddedTorProcess.start();
 
         int controlPort = listenerPorts.control().outerPort();
         Optional<String> sandboxOptOutHint = isSandboxed ? Optional.of(sandboxConfig.getOptOutHint()) : Optional.empty();
         try {
+            // Inside the try, so that a failed start also stops the process and releases the ports.
+            embeddedTorProcess.start();
             waitUntilControlPortAnswers(controlPort, embeddedTorProcess, sandboxOptOutHint);
 
             torController.initialize(controlPort);
@@ -344,6 +350,8 @@ public class TorService {
             // Bisq released the chosen ports before Tor bound them. Before Bisq sends any secret (the onion service
             // keys), it checks that the process on the port is the Tor of this start.
             torController.verifyHashedControlPassword(hashedControlPassword);
+            // Only now is it known that sandy started the Tor of this start in the level of the check.
+            sandboxLevel.ifPresent(this::reportSandboxLevel);
             torController.bootstrap();
             if (!embeddedTorProcess.isAlive()) {
                 throw new TorStartupFailedException("Embedded Tor exited during bootstrap. " +
@@ -493,13 +501,8 @@ public class TorService {
             Sandy.CheckResult checkResult = sandy.check(policy, torBinaryPath);
             Sandy.Level level = checkResult.selectedLevel()
                     .orElseThrow(() -> new SandboxUnavailableException(describeRefusal(checkResult), optOutHint));
-            sandboxStatus = TorSandboxStatus.sandboxed(level.name(),
-                    level.enforces(Sandy.IP_NETWORK_PRIVATE),
-                    level.enforces(Sandy.SIGNALS_ISOLATED));
-            if (sandboxStatus.isHostNetwork() || sandboxStatus.isSignalsNotIsolated()) {
-                log.warn(sandboxStatus.getDescription());
-            }
-            log.info("Tor runs in the level {} of its sandbox. sandy check:\n{}", level.name(), checkResult.report());
+            log.info("sandy selected the level {} of the sandbox of Tor. sandy check:\n{}", level.name(),
+                    checkResult.report());
             return new SandboxedStart(sandy, policy, level);
         } catch (SandboxUnavailableException e) {
             throw e;
@@ -508,6 +511,16 @@ public class TorService {
             // so that the user sees the reason and the hint.
             log.warn("Tor cannot run in the sandbox", e);
             throw new SandboxUnavailableException(e.getMessage(), optOutHint);
+        }
+    }
+
+    private void reportSandboxLevel(Sandy.Level level) {
+        sandboxStatus = TorSandboxStatus.sandboxed(level.name(),
+                level.enforces(Sandy.IP_NETWORK_PRIVATE),
+                level.enforces(Sandy.SIGNALS_ISOLATED));
+        log.info("Tor runs in the level {} of its sandbox", level.name());
+        if (sandboxStatus.isHostNetwork() || sandboxStatus.isSignalsNotIsolated()) {
+            log.warn(sandboxStatus.getDescription());
         }
     }
 
@@ -524,7 +537,8 @@ public class TorService {
     private EmbeddedTorProcess createSandboxedTorProcess(Path torBinaryPath, SandboxedStart sandboxedStart) {
         return new EmbeddedTorProcess(sandboxedStart.sandy().runCommand(sandboxedStart.policy(),
                 sandboxedStart.level(),
-                createTorCommand(torBinaryPath)),
+                sandboxedTorCommand(torBinaryPath, torDirectories.getTorrcPath(), sandboxedStart.level(),
+                        platformServices.getMyPid())),
                 torDirectories.getBinaryDirPath(),
                 Sandy::removeLoaderVariables,
                 torDirectories.getStdoutLogPath(),
@@ -576,6 +590,20 @@ public class TorService {
     private List<String> createTorCommand(Path torBinaryPath) {
         String ownerPid = platformServices.getMyPid();
         return EmbeddedTorProcess.torCommand(torBinaryPath, torDirectories.getTorrcPath(), ownerPid);
+    }
+
+    /**
+     * In a level that ends with its parent, sandy ends Tor when Bisq ends, so Tor gets no owner process. Its own check
+     * of the owner would fail where Tor runs in a PID namespace of its own (the Linux level contained and the base
+     * levels of the Linux transport templates): Bisq's process ID does not exist there, so Tor exits at its first
+     * check, about 15 seconds after its start, unless the bootstrap has reset the option before. In the templates, a
+     * level without end_with_parent has no PID namespace, so the owner check works there.
+     */
+    @VisibleForTesting
+    static List<String> sandboxedTorCommand(Path torBinaryPath, Path torrcPath, Sandy.Level level, String ownerPid) {
+        return level.enforces(Sandy.ENDS_WITH_PARENT) ?
+                EmbeddedTorProcess.torCommand(torBinaryPath, torrcPath) :
+                EmbeddedTorProcess.torCommand(torBinaryPath, torrcPath, ownerPid);
     }
 
     private void stopEmbeddedTor(EmbeddedTorProcess embeddedTorProcess) {

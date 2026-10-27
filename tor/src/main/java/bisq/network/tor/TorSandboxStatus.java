@@ -23,7 +23,9 @@ import lombok.ToString;
 
 /**
  * Whether the Tor of the current start runs in the sandbox, and if not, why. TorService sets it during the start, so
- * that the application can tell the user.
+ * that the application can tell the user. It reports {@link State#SANDBOXED} only once the Tor of the start answers on
+ * its control port, with the level in which sandy started it; a start which fails before keeps
+ * {@link State#NOT_STARTED}.
  */
 @Getter
 @ToString

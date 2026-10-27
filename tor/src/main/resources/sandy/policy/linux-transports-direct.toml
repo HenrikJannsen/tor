@@ -38,8 +38,9 @@ name = "host-network"
 filesystem.view = "all"
 
 # As host-network, below Landlock ABI 6: sandy cannot contain the transports there, so they can
-# outlive Tor until their standard input closes; Tor can signal the processes of this user, and it
-# does not end with Bisq (__OwningControllerProcess still ends it).
+# outlive Tor until their standard input closes; Tor can signal the processes of this user, and
+# sandy does not end it with Bisq (Tor's owner check, and from the bootstrap on Bisq's ownership of
+# the control connection, still do).
 [[fallback]]
 name = "host-network-signals"
 filesystem.view = "all"

@@ -18,16 +18,22 @@
 package bisq.network.tor.sandbox;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.DisabledOnOs;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -89,7 +95,7 @@ class SandyTest {
     void runsTheSelectedLevelWithThePolicyOnStandardInput() {
         Sandy sandy = new Sandy(SANDY, "4711");
         SandyPolicy policy = new SandyPolicy("version = 1\n", DATA);
-        Sandy.Level level = new Sandy.Level("contained", Set.of());
+        Sandy.Level level = new Sandy.Level("contained", Set.of(Sandy.ENDS_WITH_PARENT));
 
         List<String> command = sandy.runCommand(policy, level, List.of("/usr/bin/tor", "-f", "torrc"));
 
@@ -97,6 +103,77 @@ class SandyTest {
                 "--level", "contained", "--cwd", DATA.toAbsolutePath().toString(), "--parent-pid", "4711");
         assertThat(command).endsWith("--", "/usr/bin/tor", "-f", "torrc");
         assertThat(Sandy.policyInput(policy)).isEqualTo("version = 1\n".getBytes());
+    }
+
+    // sandy refuses --parent-pid for a level without end_with_parent, such as host-network-signals.
+    @Test
+    void namesNoParentForALevelThatDoesNotEndWithIt() {
+        Sandy sandy = new Sandy(SANDY, "4711");
+        SandyPolicy policy = new SandyPolicy("version = 1\n", DATA);
+        Sandy.Level level = new Sandy.Level("host-network-signals", Set.of("filesystem-confined"));
+
+        List<String> command = sandy.runCommand(policy, level, List.of("/usr/bin/tor", "-f", "torrc"));
+
+        assertThat(command).containsExactly(SANDY.toAbsolutePath().toString(), "run", "--policy", "-",
+                "--level", "host-network-signals", "--cwd", DATA.toAbsolutePath().toString(),
+                "--", "/usr/bin/tor", "-f", "torrc");
+    }
+
+    // sandy refuses an argument before it reads the policy. Its reason counts, not the broken pipe of the write.
+    @Test
+    @DisabledOnOs(OS.WINDOWS)
+    void reportsTheReasonOfASandyThatEndsBeforeItReadsThePolicy(@TempDir Path tempDir) throws IOException {
+        Path fakeSandy = tempDir.resolve("sandy");
+        Files.writeString(fakeSandy, "#!/bin/sh\necho 'sandy: unknown option --frobnicate' >&2\nexit 125\n");
+        Files.setPosixFilePermissions(fakeSandy, PosixFilePermissions.fromString("rwx------"));
+        // Larger than a pipe buffer, so that the write fails once sandy has ended
+        SandyPolicy policy = new SandyPolicy("#" + "x".repeat(1024 * 1024) + "\n", DATA);
+
+        Sandy.CheckResult result = new Sandy(fakeSandy, "4711").check(policy, Paths.get("/usr/bin/tor"));
+
+        assertThat(result.exitCode()).isEqualTo(Sandy.EXIT_STATUS_NOT_STARTED);
+        assertThat(result.selectedLevel()).isEmpty();
+        assertThat(result.report()).contains("ended before it read the policy", "unknown option --frobnicate");
+    }
+
+    // A check that the caller interrupts must not leave sandy running.
+    @Test
+    @DisabledOnOs(OS.WINDOWS)
+    void anInterruptedCheckEndsSandy(@TempDir Path tempDir) throws Exception {
+        Path pidFile = tempDir.resolve("pid");
+        Path fakeSandy = tempDir.resolve("sandy");
+        Files.writeString(fakeSandy, "#!/bin/sh\necho $$ > '" + pidFile + "'\nexec sleep 60\n");
+        Files.setPosixFilePermissions(fakeSandy, PosixFilePermissions.fromString("rwx------"));
+        Sandy sandy = new Sandy(fakeSandy, "4711");
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread checkThread = new Thread(() -> {
+            try {
+                sandy.check(new SandyPolicy("version = 1\n", DATA), Paths.get("/usr/bin/tor"));
+            } catch (RuntimeException e) {
+                failure.set(e);
+            }
+        });
+        checkThread.start();
+        long sandyPid = awaitPid(pidFile);
+
+        checkThread.interrupt();
+        checkThread.join(10_000);
+
+        assertThat(checkThread.isAlive()).isFalse();
+        assertThat(failure.get()).isInstanceOf(IllegalStateException.class).hasMessageContaining("Interrupted");
+        assertThat(ProcessHandle.of(sandyPid).filter(ProcessHandle::isAlive)).isEmpty();
+    }
+
+    private static long awaitPid(Path pidFile) throws Exception {
+        long deadline = System.currentTimeMillis() + 10_000;
+        while (System.currentTimeMillis() < deadline) {
+            String pid = Files.exists(pidFile) ? Files.readString(pidFile).trim() : "";
+            if (pid.matches("[0-9]+")) {
+                return Long.parseLong(pid);
+            }
+            Thread.sleep(20);
+        }
+        throw new AssertionError("The stand-in for sandy did not start");
     }
 
     // The name in field 2 can hold spaces and parentheses, so the fields count from the last closing parenthesis.

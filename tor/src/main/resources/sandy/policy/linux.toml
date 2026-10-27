@@ -41,21 +41,25 @@ set = @environment@
 [linux]
 path_metadata = "deny"
 
-# Linux 5.13 to 6.11 with user namespaces: a PID namespace isolates the signals Landlock cannot.
+# Linux 5.13 to 6.11 with what the base needs besides the signal scope (user namespaces which
+# sandy may use, and the fix of Landlock erratum 3 for the view): a PID namespace isolates the
+# signals Landlock cannot. Tor may then start processes, which end with it.
 [[fallback]]
 name = "contained"
 process.children = "contained"
 
 # User namespaces restricted (Ubuntu 23.10 and newer, which Bisq never prepares with sandy setup)
-# or turned off: the network of the host, without the egress broker and without the view.
+# or turned off, or no fix of Landlock erratum 3: the network of the host, without the egress
+# broker and without the view.
 [[fallback]]
 name = "host-network"
 network.ip = "all"
 network.egress = "none"
 filesystem.view = "all"
 
-# As host-network, below Landlock ABI 6: Tor can signal the processes of this user, and it does not
-# end with Bisq (__OwningControllerProcess still ends it).
+# As host-network, below Landlock ABI 6: Tor can signal the processes of this user, and sandy does
+# not end it with Bisq (Tor's owner check, and from the bootstrap on Bisq's ownership of the
+# control connection, still do).
 [[fallback]]
 name = "host-network-signals"
 network.ip = "all"
