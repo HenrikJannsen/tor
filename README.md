@@ -18,7 +18,11 @@ The Tor build does not depend on other Bisq modules or on the `build-logic` buil
 dependency.
 
 - `build-logic` contains the Gradle plugins of the Tor build. `tor-binary` and `gradle-tasks` exist only here. The
-  other plugins are unchanged copies of plugins in the `build-logic` of Bisq and keep their plugin IDs.
+  other plugins are copies of plugins in the `build-logic` of Bisq 2 and keep their plugin IDs. `commons` only has
+  the two convention plugins which the Tor build applies, and `COMPOSITE_PROJECTS_TO_INCLUDE` of `maven-publisher`
+  names only `tor`. The copies were taken from Bisq 2 main 7767b8b319. This repository has changed
+  `bisq.java-conventions`, `LocalMavenPublishPlugin` and `BisqToolchainResolver` since, so these differ from their
+  originals: compare a change of a plugin in Bisq 2 with the copy here before copying it.
 - The classes in the packages `bisq.network.tor.common.*`, except `torrc`, are copies of classes of `bisq.common`.
   A copy keeps the sub-package and the class name: `bisq.common.util.StringUtils` becomes
   `bisq.network.tor.common.util.StringUtils`. A copy only contains the members which the Tor build uses. A change of
