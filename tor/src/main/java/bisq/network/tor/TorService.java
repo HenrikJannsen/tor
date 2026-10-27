@@ -30,6 +30,7 @@ import bisq.network.tor.onionservice.OnionServiceKey;
 import bisq.network.tor.onionservice.OnionServiceTargets;
 import bisq.network.tor.process.EmbeddedTorProcess;
 import bisq.network.tor.process.LdPreload;
+import bisq.network.tor.process.TorDirectories;
 import bisq.network.tor.process.TorStartupFailedException;
 import bisq.network.tor.process.control_port.ControlPortFileParser;
 import com.runjva.sourceforge.jsocks.protocol.Socks5Proxy;
@@ -73,7 +74,7 @@ public class TorService {
 
     private final TorTransportConfig transportConfig;
     private final PlatformServices platformServices;
-    private final Path torDataDirPath;
+    private final TorDirectories torDirectories;
 
     private TorController torController;
     private final Set<String> publishedOnionServices = new CopyOnWriteArraySet<>();
@@ -90,7 +91,7 @@ public class TorService {
     public TorService(TorTransportConfig transportConfig, PlatformServices platformServices) {
         this.transportConfig = transportConfig;
         this.platformServices = platformServices;
-        this.torDataDirPath = transportConfig.getDataDirPath();
+        this.torDirectories = new TorDirectories(transportConfig.getDataDirPath());
     }
 
     public CompletableFuture<Boolean> initialize() {
@@ -124,7 +125,7 @@ public class TorService {
 
         Path torBinaryPath = getTorBinaryPath();
         if (!isTorRunning(torBinaryPath.toString())) {
-            Path lockFilePath = torDataDirPath.resolve("lock");
+            Path lockFilePath = torDirectories.getDataDirPath().resolve("lock");
             try {
                 Files.deleteIfExists(lockFilePath);
             } catch (IOException e) {
@@ -138,11 +139,11 @@ public class TorService {
         torController = new TorController(transportConfig.getBootstrapTimeout(), transportConfig.getHsUploadTimeout());
 
         PasswordDigest hashedControlPassword = PasswordDigest.generateDigest();
-        Map<String, String> torrcConfigMap = createTorrcConfigFile(torDataDirPath, hashedControlPassword);
+        Map<String, String> torrcConfigMap = createTorrcConfigFile(hashedControlPassword);
 
         // remove the control port file before we launch tor, just in case it exists from
         // a previous run
-        Path controlDirPath = torDataDirPath.resolve(BaseTorrcGenerator.CONTROL_DIR_NAME);
+        Path controlDirPath = torDirectories.getDataDirPath().resolve(BaseTorrcGenerator.CONTROL_DIR_NAME);
         Path controlPortFilePath = controlDirPath.resolve("control");
         try {
             FileUtils.deleteFileAndWait(controlPortFilePath, 5000);
@@ -185,24 +186,24 @@ public class TorService {
     }
 
     private EmbeddedTorProcess createTorProcess(Path torBinaryPath) {
-        Consumer<Map<String, String>> environmentAdjuster = torBinaryPath.startsWith(torDataDirPath) ?
-                environment -> LdPreload.applyToEnvironment(environment, torDataDirPath) :
+        Consumer<Map<String, String>> environmentAdjuster = torDirectories.isBundledTor(torBinaryPath) ?
+                environment -> LdPreload.applyToEnvironment(environment, torDirectories.getBinaryDirPath()) :
                 environment -> {
                 };
         return new EmbeddedTorProcess(createTorCommand(torBinaryPath),
-                torDataDirPath,
+                torDirectories.getBinaryDirPath(),
                 environmentAdjuster,
-                torDataDirPath.resolve("tor-stdout.log"),
-                torDataDirPath.resolve("tor-stderr.log"));
+                torDirectories.getStdoutLogPath(),
+                torDirectories.getStderrLogPath());
     }
 
     private List<String> createTorCommand(Path torBinaryPath) {
         String ownerPid = platformServices.getMyPid();
-        return EmbeddedTorProcess.torCommand(torBinaryPath, torDataDirPath.resolve("torrc"), ownerPid);
+        return EmbeddedTorProcess.torCommand(torBinaryPath, torDirectories.getTorrcPath(), ownerPid);
     }
 
     private void createTorControlDirectory() {
-        Path controlDirFilePath = torDataDirPath.resolve(BaseTorrcGenerator.CONTROL_DIR_NAME);
+        Path controlDirFilePath = torDirectories.getDataDirPath().resolve(BaseTorrcGenerator.CONTROL_DIR_NAME);
         if (!Files.exists(controlDirFilePath)) {
             try {
                 FileUtils.createDirectories(controlDirFilePath);
@@ -405,11 +406,10 @@ public class TorService {
 
     private void readExternalTorConfigMap() {
         try {
-            String torConfigFileName = "external_tor.config";
-            Path torConfigFilePath = transportConfig.getDataDirPath().resolve(torConfigFileName);
+            Path torConfigFilePath = torDirectories.getExternalTorConfigPath();
             String torConfig;
             if (!Files.exists(torConfigFilePath)) {
-                torConfig = FileUtils.readStringFromResource("tor/" + torConfigFileName);
+                torConfig = FileUtils.readStringFromResource("tor/" + TorDirectories.EXTERNAL_TOR_CONFIG_FILE_NAME);
                 FileUtils.writeToPath(torConfig, torConfigFilePath, platformServices.supportsPosixPermissions());
             } else {
                 torConfig = FileUtils.readUTF8String(torConfigFilePath);
@@ -444,8 +444,7 @@ public class TorService {
 
     private void makeTorDir() {
         try {
-            Path torDataDirPath = transportConfig.getDataDirPath();
-            FileUtils.createDirectories(torDataDirPath, platformServices.supportsPosixPermissions());
+            FileUtils.createDirectories(torDirectories.getBaseDirPath(), platformServices.supportsPosixPermissions());
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
@@ -472,7 +471,7 @@ public class TorService {
             Optional<Path> systemTorBinaryPath = EmbeddedTorProcess.getSystemTorPath();
             return systemTorBinaryPath.orElseThrow(TorNotInstalledException::new);
         }
-        return torDataDirPath.resolve("tor");
+        return torDirectories.getBundledTorBinaryPath();
     }
 
     private boolean isTorRunning(String absoluteTorBinaryPath) {
@@ -480,23 +479,21 @@ public class TorService {
     }
 
     private void installTorIfNotUpToDate() {
-        Path torDataDirPath = transportConfig.getDataDirPath();
-        var torInstaller = new TorInstaller(torDataDirPath);
+        var torInstaller = new TorInstaller(torDirectories.getBinaryDirPath());
         torInstaller.installIfNotUpToDate();
     }
 
-    private Map<String, String> createTorrcConfigFile(Path dataDirPath, PasswordDigest hashedControlPassword) {
+    private Map<String, String> createTorrcConfigFile(PasswordDigest hashedControlPassword) {
         TorrcClientConfigFactory torrcClientConfigFactory = TorrcClientConfigFactory.builder()
                 .isTestNetwork(transportConfig.isTestNetwork())
-                .dataDirPath(dataDirPath)
+                .dataDirPath(torDirectories.getDataDirPath())
                 .hashedControlPassword(hashedControlPassword)
                 .build();
 
         Map<String, String> torrcOverrideConfigs = transportConfig.getTorrcOverrides();
         Map<String, String> torrcConfigMap = torrcClientConfigFactory.torrcClientConfigMap(torrcOverrideConfigs);
 
-        Path torrcPath = dataDirPath.resolve("torrc");
-        var torrcFileGenerator = new TorrcFileGenerator(torrcPath,
+        var torrcFileGenerator = new TorrcFileGenerator(torDirectories.getTorrcPath(),
                 torrcConfigMap,
                 transportConfig.getDirectoryAuthorities());
         torrcFileGenerator.generate();
