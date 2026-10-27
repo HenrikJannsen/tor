@@ -83,7 +83,9 @@ public class EmbeddedTorProcess {
             Process torProcess = processBuilder.start();
             process = Optional.of(torProcess);
         } catch (IOException e) {
-            throw new TorStartupFailedException(e);
+            String program = processBuilder.command().get(0);
+            log.warn("Could not start {}", program, e);
+            throw new TorStartupFailedException("Could not start " + program + ": " + e);
         }
     }
 

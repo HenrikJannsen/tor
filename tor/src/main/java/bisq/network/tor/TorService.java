@@ -154,7 +154,8 @@ public class TorService {
             try {
                 Files.deleteIfExists(lockFilePath);
             } catch (IOException e) {
-                throw new IllegalStateException("Couldn't remove tor lock file.", e);
+                log.warn("Couldn't remove the Tor lock file", e);
+                throw new IllegalStateException("Couldn't remove the Tor lock file: " + e);
             }
         }
 
@@ -512,7 +513,9 @@ public class TorService {
         try {
             FileUtils.createDirectories(torDirectories.getBaseDirPath(), platformServices.supportsPosixPermissions());
         } catch (IOException e) {
-            throw new RuntimeException(e);
+            log.warn("Couldn't create the Tor directory", e);
+            throw new TorStartupFailedException("Couldn't create the Tor directory " +
+                    torDirectories.getBaseDirPath() + ": " + e);
         }
     }
 
