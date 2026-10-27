@@ -2,10 +2,11 @@
 
 The Tor build contains the Tor integration of Bisq:
 
-- `tor`: starts, controls and connects to Tor, and publishes onion services (`TorService`).
+- `tor`: starts, controls and connects to Tor, and publishes onion services (`TorService`). Its `PasswordDigest`
+  is a copy of the one class of jtorctl, the Java library of the Tor control protocol, which the Tor build used. It
+  keeps the 3-clause BSD license of jtorctl in its header.
 - `tor-common`: the torrc generation and the copies of Bisq utilities which the Tor build uses.
-- `jsocks`, `jtorctl`: copies of the SOCKS library and of the Tor control protocol library. They keep their own
-  licenses, the LGPL and a 3-clause BSD license. See their READMEs.
+- `jsocks`: a copy of the SOCKS library. It keeps its own license, the LGPL. See its README.
 - `tor-local-network`: a tool which starts a private Tor network for tests.
 - `tor-platform`: the dependency constraints of the Tor build.
 

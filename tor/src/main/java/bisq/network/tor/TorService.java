@@ -22,6 +22,7 @@ import bisq.network.tor.common.platform.LinuxDistribution;
 import bisq.network.tor.common.platform.OS;
 import bisq.network.tor.common.torrc.BaseTorrcGenerator;
 import bisq.network.tor.common.torrc.TorrcFileGenerator;
+import bisq.network.tor.controller.PasswordDigest;
 import bisq.network.tor.controller.TorControlAuthenticationFailed;
 import bisq.network.tor.controller.TorController;
 import bisq.network.tor.installer.TorInstaller;
@@ -36,7 +37,6 @@ import bisq.network.tor.process.control_port.ControlPortFileParser;
 import com.runjva.sourceforge.jsocks.protocol.Socks5Proxy;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
-import net.freehaven.tor.control.PasswordDigest;
 
 import java.io.IOException;
 import java.net.Inet4Address;

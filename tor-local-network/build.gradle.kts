@@ -13,7 +13,6 @@ dependencies {
 
     implementation(project(":tor-common"))
     implementation(project(":tor"))
-    implementation(project(":jtorctl"))
 
     // Main is a program of its own, so it brings the logging backend
     runtimeOnly(libs.logback.classic)
