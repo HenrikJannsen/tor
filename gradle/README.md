@@ -1,0 +1,192 @@
+# Gradle Notes
+
+## Gradle Wrapper Verification
+
+`verifyGradleWrapperSecurity` (part of the root `check`) and the CI workflow compare `gradlew`, `gradlew.bat`,
+`gradle/wrapper/gradle-wrapper.jar` and `gradle/wrapper/gradle-wrapper.properties` with the approved checksums in
+`gradle/wrapper/gradle-wrapper.sha256`. The task also requires `distributionUrl` to point to `services.gradle.org` for
+`releaseBuild.gradleVersion` with a pinned `distributionSha256Sum`.
+
+The checksums cover the committed bytes. `.gitattributes` disables line-ending conversion for `gradlew.bat` (`-text`),
+which is committed with CRLF line endings as Gradle generates it; the other files are committed with LF. Do not
+renormalize these files.
+
+After a reviewed wrapper change, for example `./gradlew wrapper --gradle-version <version>`, recompute and review the
+checksums and update `gradle/wrapper/gradle-wrapper.sha256`, `distributionSha256Sum` and `releaseBuild.gradleVersion`
+in the same change:
+
+```bash
+sha256sum gradlew gradlew.bat gradle/wrapper/gradle-wrapper.jar gradle/wrapper/gradle-wrapper.properties
+```
+
+A checksum mismatch means the working copy differs from the approved bytes. Review the difference; do not update the
+checksum file to match an unreviewed file.
+
+## Dependency Verification
+
+The build uses Gradle dependency verification with:
+
+- `verify-metadata`
+- `verify-signatures`
+- armored keyring format
+
+The committed verification files are:
+
+- `gradle/verification-metadata.xml`
+- `gradle/verification-keyring.keys`
+- `gradle/dependency-checksum-fallback-allowlist.tsv`
+
+The root `resolveAndVerifyDependencies` task resolves every resolvable configuration of the root build and the
+`build-logic` included build.
+
+Each build keeps its own `.gradle/dependency-verification/inventory.tsv` relative to its build root. These inventories
+survive `clean`. Unchanged inventories are `UP-TO-DATE`; they are regenerated when resolved modules, direct dependency
+scopes, artifact names or contents, verification metadata, or keyring change, or when an inventory is removed or
+modified. Java source changes alone do not invalidate them.
+
+Gradle still resolves and verifies dependencies when evaluating the inventory inputs, so graph changes from properties,
+resolution rules, dynamic versions, and local repositories stay visible. The signature policy remains part of `check`
+and is checked on each invocation. `--refresh-dependencies`, `--write-verification-metadata`, and `--rerun-tasks` force
+inventory generation. The audit fails when the verification mode is `off` or `lenient`, whether set with
+`--dependency-verification` or the `org.gradle.dependency.verification` property (for example in
+`~/.gradle/gradle.properties`), because Gradle would not verify artifacts in those modes.
+
+### Verifying build dependencies
+
+To verify the current metadata without rewriting it:
+
+```bash
+./gradlew resolveAndVerifyDependencies
+./gradlew verifyDependencySignaturePolicy
+```
+
+`./gradlew dependencySignatureReport` writes `docs/dependency-signature-report.md`.
+
+### Adding or updating a dependency
+
+```bash
+./gradlew resolveAndVerifyDependencies --write-verification-metadata pgp,sha256
+./gradlew verifyDependencySignaturePolicy
+./gradlew dependencySignatureReport
+```
+
+`--write-verification-metadata` only adds entries for the artifacts resolved in this run. It never removes entries,
+trusted keys, ignored keys or checksum-fallback reasons that the build no longer uses. With a warm Gradle user home it
+can also miss artifacts that a fresh CI run requests, for example `kotlinx-coroutines-bom`, which is reached only
+through Gradle module metadata. To catch them, run the command with an empty Gradle user home (see below).
+
+### Regenerating the metadata from scratch
+
+Use this to drop stale entries, for example after removing or upgrading dependencies.
+
+1. Reduce `gradle/verification-metadata.xml` to its configuration and keep only the entries Gradle cannot regenerate
+   (see [IDE import](#ide-import)):
+
+   ```xml
+   <?xml version="1.0" encoding="UTF-8"?>
+   <verification-metadata xmlns="https://schema.gradle.org/dependency-verification" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="https://schema.gradle.org/dependency-verification https://schema.gradle.org/dependency-verification/dependency-verification-1.3.xsd">
+      <configuration>
+         <verify-metadata>true</verify-metadata>
+         <verify-signatures>true</verify-signatures>
+         <keyring-format>armored</keyring-format>
+         <trusted-keys>
+            <!-- keep the manually maintained trusted keys here -->
+         </trusted-keys>
+      </configuration>
+      <components/>
+   </verification-metadata>
+   ```
+
+2. Regenerate the metadata and export the keyring with an empty Gradle user home. Copy the wrapper distribution to
+   avoid downloading it again:
+
+   ```bash
+   export GRADLE_USER_HOME=$(mktemp -d)
+   mkdir -p "$GRADLE_USER_HOME/wrapper/dists"
+   cp -a ~/.gradle/wrapper/dists/gradle-<version>-bin "$GRADLE_USER_HOME/wrapper/dists/"
+   ./gradlew --no-daemon --no-build-cache resolveAndVerifyDependencies \
+     --write-verification-metadata pgp,sha256 --export-keys
+   unset GRADLE_USER_HOME
+   ```
+
+   `--export-keys` writes the keys which the new metadata uses, but keeps the keys which are already in
+   `gradle/verification-keyring.keys`. Do not delete the keyring before this step: Gradle's signing key
+   (`E2F38302C8075E3D`, used for `gradle-kotlin-dsl-plugins`) is not published on any key server, so it is available
+   only from the committed keyring. To drop unused keys, first reduce the keyring to the `pub` blocks of the keys that
+   the new metadata references.
+
+3. Remove allowlist entries which are no longer checksum-only, then run the policy and the report:
+
+   ```bash
+   ./gradlew verifyDependencySignaturePolicy
+   ./gradlew dependencySignatureReport
+   ```
+
+Review the generated diff and verify new signatures or checksums before committing. Metadata generation records
+downloaded artifacts; it does not independently establish their trustworthiness.
+
+### Keyring
+
+```bash
+./gradlew refreshDependencyVerificationKeyring
+```
+
+refreshes the keys from the key servers and exports the armored keyring to `gradle/verification-keyring.keys`. It wraps
+`./gradlew help --refresh-keys --export-keys`. Like `--export-keys` above, it never removes a key from the keyring.
+The binary keyring `gradle/verification-keyring.gpg` is not used.
+
+Some Gradle/Bouncy Castle combinations may write the armored keyring and then fail while finishing key export. The
+wrapper task accepts that case only if `gradle/verification-keyring.keys` was updated.
+
+Run it before `--write-verification-metadata` when signing keys may have changed, so newly available keys are present
+before Gradle rewrites `gradle/verification-metadata.xml`. This avoids adding checksum fallbacks for artifacts whose
+signatures can now be verified.
+
+### IDE import
+
+IDE import can resolve artifacts that `resolveAndVerifyDependencies` does not request: `-sources.jar` and
+`-javadoc.jar` archives, and the sources of the Groovy modules that Gradle embeds. `--write-verification-metadata`
+records only what the run requests, so these entries are maintained by hand:
+
+- The `org.codehaus.groovy` modules of version 3.0.21 (embedded in Gradle 8.9) are trusted for key
+  `34441E504A937F43EB0DAEF96A65176A0FB1CD0B`. Update the version when Gradle upgrades its embedded Groovy.
+- Sources and Javadoc of a dependency are covered when its module is trusted through a `trusted-key` entry. A
+  dependency verified only by per-artifact entries needs entries for these archives as well.
+
+A successful build alone does not verify that IDE import has all required metadata.
+
+### Checksum fallbacks
+
+Checksum fallback artifacts must be reviewed in `gradle/dependency-checksum-fallback-allowlist.tsv`:
+
+```text
+<group:name:version>\t<artifact-file-name>\t<review-rationale>
+```
+
+Keep the allowlist exact and sorted. `verifyDependencySignaturePolicy` fails when a fallback artifact is missing from
+the allowlist, when an allowlist entry is stale, or when an entry has no rationale.
+
+Gradle verifies an artifact by its checksum only if the artifact has no signature or if every key which signed it is
+ignored. The policy treats a checksum as fallback if it has a reason (Gradle writes `Artifact is not signed`, `A key
+couldn't be downloaded` or `PGP signature verification failed!`) or if neither a `pgp` entry nor a `trusted-key` entry
+for the module names a key which is not ignored. This applies to every checksum kind which Gradle verifies (`md5`,
+`sha1`, `sha256` and `sha512`), also if the metadata of this repository uses only `sha256` today. It checks every entry
+in `gradle/verification-metadata.xml`, not only the resolved dependency graph, because Gradle also verifies parent
+POMs, imported BOMs and artifacts of other platforms against it. Entries for versions no build uses therefore also
+need an allowlist entry until they are removed.
+
+Gradle writes a reason once and keeps it when it regenerates the metadata. After a refreshed keyring adds a key,
+remove the key from `ignored-keys`, delete the component entries of the artifacts it signs and run
+`resolveAndVerifyDependencies --write-verification-metadata pgp,sha256` so Gradle writes them again with the current
+result. Do not remove reasons by hand: the policy cannot see which key signed an artifact, so a wrongly removed reason
+can hide a checksum-only artifact.
+
+`ignored-keys` is only for signing keys that no key server publishes. `verifyDependencySignaturePolicy` fails when a
+global or artifact-level ignored key is in `gradle/verification-keyring.keys`. Gradle never verifies a signature made
+with an ignored key, also when the keyring contains the key, so such an entry reduces the artifacts it signs to their
+checksums without need.
+
+Executable Maven artifacts (`.exe` files) must have explicit entries in `gradle/verification-metadata.xml` for the
+resolved classifier. `verifyDependencySignaturePolicy` fails when a resolved executable is covered only by a broad
+`trusted-key` rule or when executable metadata remains for an older unresolved version of the same tool. The build
+resolves no such artifact today.
