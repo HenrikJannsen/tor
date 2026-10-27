@@ -235,7 +235,8 @@ public class TorControlProtocol implements AutoCloseable {
 
     /**
      * @param listener called once when the connection to the control port has ended, at once if it has ended already.
-     *                 It is not called by {@link #close()} before the reader has noticed the closed socket.
+     *                 It is not called by {@link #close()} before the reader has noticed the closed socket. It runs on
+     *                 the reader thread, with the rules of {@link TorControlReader}.
      */
     public void addConnectionEndListener(Runnable listener) {
         torControlReader.addConnectionEndListener(listener);

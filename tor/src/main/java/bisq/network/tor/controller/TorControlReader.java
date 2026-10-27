@@ -21,6 +21,13 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
+/**
+ * The listeners of events and of the end of the connection run on the thread of this reader, which also delivers the
+ * replies to the commands. A listener must therefore return quickly and must not send a command or add or remove a
+ * listener: {@link TorControlProtocol} sends a command under its lock and waits for the reply, which this thread cannot
+ * deliver while it runs the listener. The command then fails after {@link #REPLY_TIMEOUT_MS}, and the connection is
+ * closed. A listener hands such work to another thread.
+ */
 @Slf4j
 public class TorControlReader implements AutoCloseable {
     // Tor answers the commands of Bisq at once. Slow operations, such as the upload of an onion service descriptor,
