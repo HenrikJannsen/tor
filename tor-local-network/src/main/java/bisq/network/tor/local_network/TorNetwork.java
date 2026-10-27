@@ -29,31 +29,55 @@ import bisq.network.tor.process.EmbeddedTorProcess;
 import bisq.network.tor.process.LdPreload;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
-public class TorNetwork {
+public class TorNetwork implements AutoCloseable {
+    private static final long SHUTDOWN_TIMEOUT_SEC = 10;
+    // The consensus which a directory authority published last, in its data directory
+    private static final String CONSENSUS_FILE_NAME = "cached-microdesc-consensus";
+    private static final long CONSENSUS_POLL_INTERVAL_MS = 1000;
 
     private final Path rootDataDirPath;
+    private final boolean endsWithThisProcess;
     private final DirectoryAuthorityFactory dirAuthFactory = new DirectoryAuthorityFactory();
     private final Set<TorNode> directoryAuthorities = new HashSet<>();
     private final Set<TorNode> relays = new HashSet<>();
     private final Set<TorNode> clients = new HashSet<>();
 
-    // TODO Never queried
     private final Set<Process> allTorProcesses = new HashSet<>();
 
     private int dirAuthIndex;
     private int relayIndex;
     private int clientIndex;
 
+    /**
+     * A network whose Tor processes keep running after this process ends, as Main needs.
+     */
     public TorNetwork(Path rootDataDirPath) {
+        this(rootDataDirPath, false);
+    }
+
+    /**
+     * @param endsWithThisProcess whether the Tor processes end when this process ends, also if it is killed, as a test
+     *                            needs
+     */
+    public TorNetwork(Path rootDataDirPath, boolean endsWithThisProcess) {
         this.rootDataDirPath = rootDataDirPath;
+        this.endsWithThisProcess = endsWithThisProcess;
     }
 
     public TorNetwork addDirAuth(String passphrase) throws IOException, InterruptedException {
@@ -117,6 +141,65 @@ public class TorNetwork {
         generateTorrcFiles();
         installTor();
         startProcesses();
+    }
+
+    /**
+     * The directory authorities, for the torrc of a Tor which connects to this network, for example the
+     * directoryAuthorities of a TorTransportConfig.
+     */
+    public Set<DirectoryAuthority> getDirectoryAuthorities() {
+        return directoryAuthorities.stream()
+                .map(TorNode::toDirectoryAuthority)
+                .collect(Collectors.toSet());
+    }
+
+    /**
+     * Waits until the directory authorities have published a consensus which lists every node of the network. The
+     * nodes join the consensus over its first rounds, and each round changes which relays store the descriptor of an
+     * onion service. A client which starts earlier can ask other relays for a descriptor than those to which the onion
+     * service uploaded it.
+     *
+     * @throws IllegalStateException if no such consensus was published within the timeout
+     */
+    public void awaitConsensusWithAllNodes(Duration timeout) throws InterruptedException {
+        int nodeCount = directoryAuthorities.size() + relays.size() + clients.size();
+        Path consensusPath = directoryAuthorities.iterator().next().getDataDirPath().resolve(CONSENSUS_FILE_NAME);
+        long deadline = System.nanoTime() + timeout.toNanos();
+        int listedNodeCount = countListedNodes(consensusPath);
+        while (listedNodeCount < nodeCount) {
+            if (System.nanoTime() > deadline) {
+                throw new IllegalStateException("The consensus lists " + listedNodeCount + " of the " + nodeCount +
+                        " nodes of the network after " + timeout + ". The logs of the nodes are in " +
+                        rootDataDirPath);
+            }
+            Thread.sleep(CONSENSUS_POLL_INTERVAL_MS);
+            listedNodeCount = countListedNodes(consensusPath);
+        }
+    }
+
+    // A consensus lists each relay in a line which starts with "r "
+    private static int countListedNodes(Path consensusPath) {
+        try (Stream<String> lines = Files.lines(consensusPath, StandardCharsets.US_ASCII)) {
+            return (int) lines.filter(line -> line.startsWith("r ")).count();
+        } catch (NoSuchFileException e) {
+            return 0;
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
+    }
+
+    /**
+     * Stops the Tor processes of the network.
+     */
+    @Override
+    public void close() throws InterruptedException {
+        allTorProcesses.forEach(Process::destroy);
+        for (Process process : allTorProcesses) {
+            if (!process.waitFor(SHUTDOWN_TIMEOUT_SEC, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+            }
+        }
+        allTorProcesses.clear();
     }
 
     private void createDataDirIfNotPresent(Path nodeDataDirPath) {
@@ -185,7 +268,12 @@ public class TorNetwork {
         String absoluteTorrcPathAsString = torNode.getTorrcPath()
                 .toAbsolutePath()
                 .toString();
-        var processBuilder = new ProcessBuilder(absoluteTorBinaryPath, "-f", absoluteTorrcPathAsString);
+        List<String> command = new ArrayList<>(List.of(absoluteTorBinaryPath, "-f", absoluteTorrcPathAsString));
+        if (endsWithThisProcess) {
+            command.add(EmbeddedTorProcess.ARG_OWNER_PID);
+            command.add(String.valueOf(ProcessHandle.current().pid()));
+        }
+        var processBuilder = new ProcessBuilder(command);
 
         Map<String, String> environment = processBuilder.environment();
         LdPreload.applyToEnvironment(environment, torBinaryDirPath);
