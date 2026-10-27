@@ -1,4 +1,6 @@
 import bisq.gradle.common.getPlatform
+import org.gradle.language.jvm.tasks.ProcessResources
+import java.security.MessageDigest
 import java.util.*
 
 // Function to read properties from a file - TODO find a way to reuse this code instead of copying when needed
@@ -59,6 +61,37 @@ val generateTorBuildVersionClass by tasks.registering {
     }
 }
 
+/**
+ * Packages the sandy binary of the platform of the build, which the sandbox of the embedded Tor needs, with its SHA-256
+ * hash. sandy has no published release yet, so the binary is packaged only if the Gradle property sandy.binary names
+ * one. See src/main/resources/sandy/README.md.
+ */
+val packageSandyBinary by tasks.registering {
+    val projectDirectory = layout.projectDirectory
+    // The content of the binary is the input, not its path: a rebuilt binary at the same path is packaged again.
+    val sandyBinaryFiles = objects.fileCollection().from(providers.gradleProperty("sandy.binary")
+        .map { listOf(projectDirectory.file(it)) }
+        .orElse(listOf()))
+    val outputDir = layout.buildDirectory.dir("generated/sandy")
+    val platformName = getPlatform().platformName
+    inputs.files(sandyBinaryFiles).withPathSensitivity(PathSensitivity.NONE)
+    inputs.property("platformName", platformName)
+    outputs.dir(outputDir)
+
+    doLast {
+        val sandyDir = outputDir.get().asFile.resolve("sandy")
+        sandyDir.deleteRecursively()
+        val sandyBinaryFile = sandyBinaryFiles.singleOrNull() ?: return@doLast
+        val fileName = if (platformName.startsWith("win")) "sandy.exe" else "sandy"
+        val target = sandyDir.resolve("$platformName/$fileName")
+        target.parentFile.mkdirs()
+        sandyBinaryFile.copyTo(target)
+        val sha256 = MessageDigest.getInstance("SHA-256").digest(target.readBytes())
+            .joinToString("") { "%02x".format(it) }
+        sandyDir.resolve("SHA256SUMS").writeText("$sha256  $platformName/$fileName\n")
+    }
+}
+
 sourceSets {
     main {
         java {
@@ -66,6 +99,17 @@ sourceSets {
         }
         resources {
             srcDir(layout.buildDirectory.file("generated/src/main/resources"))
+            srcDir(packageSandyBinary)
+        }
+    }
+}
+
+tasks.named<ProcessResources>("processResources") {
+    doFirst {
+        // Gradle cannot copy the checksum file over a stale directory from an earlier build.
+        val checksumPath = destinationDir.resolve("sandy/SHA256SUMS")
+        if (checksumPath.isDirectory && !checksumPath.deleteRecursively()) {
+            throw GradleException("Could not remove stale checksum directory: $checksumPath")
         }
     }
 }
