@@ -139,6 +139,13 @@ Run these commands in the repository root:
 
 - `./gradlew build` builds the Tor build and runs its tests and checks: the dependency verification, the Gradle wrapper
   checksums and the pinned GitHub Actions.
+- `./gradlew integrationTest` runs the integration tests, which start Tor; `build` does not run them. A test skips
+  itself if this host lacks what it needs. On Linux they use the tor of the system. `PrivateTorNetworkOnionServiceTest`
+  starts a private Tor network on this host, so it needs no internet, but tor and tor-gencert in `PATH` (on Debian and
+  Ubuntu the package `tor`). Two peers publish onion services and exchange messages, also after a restart, through the
+  SOCKS5 proxy and through an external Tor. `-Ptor.publicNetworkTests=true` adds `PublicTorNetworkOnionServiceTest`,
+  which runs these peers on the public Tor network; on macOS and Windows it is the only test which starts the bundled
+  Tor through `TorService`.
 - `./gradlew :tor:verifyTorBinary` downloads and verifies the Tor expert bundle. See
   [build-logic/tor-binary/README.md](build-logic/tor-binary/README.md).
 - `./gradlew dependencySignatureReport` writes [docs/dependency-signature-report.md](docs/dependency-signature-report.md)

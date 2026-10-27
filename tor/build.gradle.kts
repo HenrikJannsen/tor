@@ -73,4 +73,15 @@ dependencies {
     implementation(libs.typesafe.config)
 
     api(project(":jsocks"))
+
+    // The private Tor network of the integration tests. Not transitive: tor-local-network depends on this project,
+    // whose classes and dependencies the integration tests have already.
+    integrationTestImplementation(project(":tor-local-network")) {
+        isTransitive = false
+    }
+}
+
+tasks.named<Test>("integrationTest") {
+    // The tests on the public Tor network need the internet, so they run only with -Ptor.publicNetworkTests=true
+    systemProperty("tor.publicNetworkTests", providers.gradleProperty("tor.publicNetworkTests").getOrElse("false"))
 }
