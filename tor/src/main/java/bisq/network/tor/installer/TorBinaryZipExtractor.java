@@ -43,6 +43,9 @@ public class TorBinaryZipExtractor {
             zipFileExtractor.extractArchive();
             makeTorBinaryExecutable();
         }
+        if (OS.isMacOs()) {
+            MacOsCodeSignature.signUnsignedCode(destDirPath);
+        }
     }
 
     private InputStream openBinaryZipAsStream() {
