@@ -1,7 +1,9 @@
 package bisq.gradle.tasks.download
 
+import bisq.gradle.common.Platform
 import bisq.gradle.tasks.PerPlatformUrlProvider
 import bisq.gradle.tasks.signature.SignatureVerificationTask
+import org.gradle.api.GradleException
 import org.gradle.api.Project
 import org.gradle.api.provider.Property
 import org.gradle.api.provider.Provider
@@ -15,6 +17,10 @@ class SignedBinaryDownloader(
     private val binaryName: String,
     private val version: Property<String>,
 
+    // The platform of the binary to download
+    private val platform: Platform,
+    // The SHA-256 of the binary of that platform and version
+    private val sha256: Provider<String>,
     private val perPlatformUrlProvider: (String) -> PerPlatformUrlProvider,
     private val downloadDirectory: String,
 
@@ -24,7 +30,11 @@ class SignedBinaryDownloader(
     private val downloadTaskFactory = DownloadTaskFactory(project, downloadDirectory)
 
     fun registerTasks() {
-        val binaryDownloadUrl: Provider<String> = version.map { perPlatformUrlProvider(it).url }
+        // Evaluated when a task needs the binary, so a build for a platform without one fails only there
+        val binaryDownloadUrl: Provider<String> = version.map {
+            perPlatformUrlProvider(it).urlFor(platform)
+                ?: throw GradleException("There is no $binaryName binary for the platform ${platform.platformName}.")
+        }
         val binaryDownloadTask =
             downloadTaskFactory.registerDownloadTask("download${binaryName}Binary", binaryDownloadUrl)
 
@@ -36,6 +46,7 @@ class SignedBinaryDownloader(
             dependsOn(binaryDownloadTask)
 
             fileToVerify.set(binaryDownloadTask.flatMap { it.outputFile })
+            expectedSha256.set(sha256)
             detachedSignatureFile.set(signatureDownloadTask.flatMap { it.outputFile })
             pgpFingerprintToKeyUrl.set(pgpFingerprintToKeyUrlMap)
             pgpFingerprintToKeySha256.set(pgpFingerprintToKeyUrlMap.mapValues { (_, keyUrl) -> sha256Of(keyUrl) })

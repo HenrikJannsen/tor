@@ -102,6 +102,37 @@ The primary fingerprint check establishes which key is trusted here.
 For a key refresh, also repeat the bundle check with the previous release
 version to confirm its signing subkey remains available.
 
+## Pin the bundles of a release
+
+A valid signature alone would also accept the signed bundle of an older
+release. So `verifyTorBinary` first checks the SHA-256 of the bundle against
+the pin of its platform in `gradle.properties` (`tor.bundleSha256.<platform>`)
+and unpacks nothing on a mismatch. A change of `tor.version` needs new pins.
+Take them from the checksum file which the Tor Browser developers sign for
+the release, in the same Bash session:
+
+```bash
+tor_sums_url="https://archive.torproject.org/tor-package-archive/torbrowser/$tor_version/sha256sums-signed-build.txt"
+
+curl -fsSL "$tor_sums_url" -o "$tor_key_dir/sha256sums-signed-build.txt"
+curl -fsSL "$tor_sums_url.asc" -o "$tor_key_dir/sha256sums-signed-build.txt.asc"
+
+gpg --batch --no-options --homedir "$tor_key_dir" --no-auto-key-retrieve \
+    --status-fd 1 --verify "$tor_key_dir/sha256sums-signed-build.txt.asc" \
+    "$tor_key_dir/sha256sums-signed-build.txt"
+grep -E "tor-expert-bundle-(linux-x86_64|macos-x86_64|macos-aarch64|windows-x86_64)-$tor_version\.tar\.gz\$" \
+    "$tor_key_dir/sha256sums-signed-build.txt"
+```
+
+Require the same `Good signature` and `VALIDSIG` result as above. Set
+`tor.bundleSha256.linux_x86_64`, `tor.bundleSha256.macos_x86_64`,
+`tor.bundleSha256.macos_arm64` and `tor.bundleSha256.win_x86_64` to the
+hashes of the bundles `linux-x86_64`, `macos-x86_64`, `macos-aarch64` and
+`windows-x86_64`. Copy both files into
+`src/test/resources/torbrowser-<tor.version>/` of this plugin:
+`TorBundlePinsTest`, which `./gradlew build` runs, verifies the signature of
+the checksum file with the bundled key and compares the pins with it.
+
 ## Install the verified ASCII key and run the build check
 
 After the fingerprint and signature checks succeed, replace the resource
