@@ -30,6 +30,7 @@ import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 
 import static bisq.network.tor.common.torrc.Torrc.Keys.DISABLE_NETWORK;
 
@@ -38,16 +39,25 @@ public class BootstrapService extends BootstrapEventListener {
     private final TorControlProtocol torControlProtocol;
     private final CountDownLatch countDownLatch = new CountDownLatch(1);
     private final long timeout;
+    // The controller closes the connection before it shuts the service down, so an end of the connection during the
+    // shutdown of the controller is that shutdown.
+    private final BooleanSupplier isControllerShutDown;
     private final Runnable connectionEndListener = this::onConnectionEnd;
     private volatile boolean isShutdown;
     private volatile boolean hasConnectionEnded;
+    // Written by the thread which bootstraps, read by the controller in other threads
     @Getter
-    private Optional<CompletableFuture<Void>> future = Optional.empty();
+    private volatile Optional<CompletableFuture<Void>> future = Optional.empty();
 
     public BootstrapService(TorControlProtocol torControlProtocol, long timeout) {
+        this(torControlProtocol, timeout, () -> false);
+    }
+
+    BootstrapService(TorControlProtocol torControlProtocol, long timeout, BooleanSupplier isControllerShutDown) {
         super(EventType.STATUS_CLIENT);
         this.torControlProtocol = torControlProtocol;
         this.timeout = timeout;
+        this.isControllerShutDown = isControllerShutDown;
     }
 
     public CompletableFuture<Void> bootstrap() {
@@ -61,7 +71,7 @@ public class BootstrapService extends BootstrapEventListener {
 
                     try {
                         boolean isSuccess = countDownLatch.await(timeout, TimeUnit.MILLISECONDS);
-                        if (isShutdown) {
+                        if (isShutdown || isControllerShutDown.getAsBoolean()) {
                             throw new TorBootstrapFailedException("The Tor controller was shut down before Tor " +
                                     "bootstrapped");
                         }
@@ -91,9 +101,9 @@ public class BootstrapService extends BootstrapEventListener {
         countDownLatch.countDown();
     }
 
+    // The bootstrap, which the count down ends, removes its listeners when it completes.
     public void shutdown() {
         isShutdown = true;
-        torControlProtocol.removeBootstrapEventListener(this);
         if (countDownLatch.getCount() > 0) {
             countDownLatch.countDown();
         }

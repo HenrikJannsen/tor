@@ -35,6 +35,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 
 @Slf4j
 public class PublishOnionAddressService extends FilteredHsDescEventListener {
@@ -43,10 +44,20 @@ public class PublishOnionAddressService extends FilteredHsDescEventListener {
     private final OnionServiceKey onionServiceKey;
     private final CountDownLatch countDownLatch = new CountDownLatch(1);
     private final Runnable connectionEndListener = this::onConnectionEnd;
+    // The controller closes the connection before it shuts the service down, so an end of the connection during the
+    // shutdown of the controller is that shutdown.
+    private final BooleanSupplier isControllerShutDown;
     private volatile boolean isShutdown;
     private volatile boolean hasConnectionEnded;
 
     public PublishOnionAddressService(TorControlProtocol torControlProtocol, int timeout, OnionServiceKey onionServiceKey) {
+        this(torControlProtocol, timeout, onionServiceKey, () -> false);
+    }
+
+    PublishOnionAddressService(TorControlProtocol torControlProtocol,
+                               int timeout,
+                               OnionServiceKey onionServiceKey,
+                               BooleanSupplier isControllerShutDown) {
         // See completesThePublication
         super(EventType.HS_DESC, onionServiceKey.getOnionAddress(),
                 Set.of(HsDescEvent.Action.UPLOAD, HsDescEvent.Action.UPLOADED));
@@ -54,6 +65,7 @@ public class PublishOnionAddressService extends FilteredHsDescEventListener {
         this.torControlProtocol = torControlProtocol;
         this.timeout = timeout;
         this.onionServiceKey = onionServiceKey;
+        this.isControllerShutDown = isControllerShutDown;
     }
 
     public CompletableFuture<Void> publish(int onionServicePort, int localPort) {
@@ -114,7 +126,7 @@ public class PublishOnionAddressService extends FilteredHsDescEventListener {
         } catch (Exception e) {
             throw new HsDescUploadFailedException(e);
         }
-        if (isShutdown) {
+        if (isShutDown()) {
             throw new HsDescUploadFailedException("The Tor controller was shut down before the onion " +
                     "service was published");
         }
@@ -128,7 +140,7 @@ public class PublishOnionAddressService extends FilteredHsDescEventListener {
     }
 
     private void removeOnionServiceQuietly(String serviceId) {
-        if (isShutdown || hasConnectionEnded) {
+        if (isShutDown() || hasConnectionEnded) {
             // The control connection ends, and Tor removes the onion service with it.
             return;
         }
@@ -139,9 +151,13 @@ public class PublishOnionAddressService extends FilteredHsDescEventListener {
         }
     }
 
+    private boolean isShutDown() {
+        return isShutdown || isControllerShutDown.getAsBoolean();
+    }
+
+    // The publication, which the count down ends, removes its listeners when it completes.
     public void shutdown() {
         isShutdown = true;
-        torControlProtocol.removeHsDescEventListener(this);
         if (countDownLatch.getCount() > 0) {
             countDownLatch.countDown();
         }

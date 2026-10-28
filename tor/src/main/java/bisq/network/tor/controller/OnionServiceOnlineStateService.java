@@ -33,6 +33,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 
 @Slf4j
 public class OnionServiceOnlineStateService extends FilteredHsDescEventListener {
@@ -41,6 +42,9 @@ public class OnionServiceOnlineStateService extends FilteredHsDescEventListener 
     private final long timeout;
     private final CountDownLatch countDownLatch = new CountDownLatch(1);
     private final Runnable connectionEndListener = this::onConnectionEnd;
+    // The controller closes the connection before it shuts the service down, so an end of the connection during the
+    // shutdown of the controller is that shutdown.
+    private final BooleanSupplier isControllerShutDown;
     private volatile boolean isShutdown;
     private volatile boolean hasConnectionEnded;
     // The result of the lookup, written by the first HS_DESC event before it opens the latch
@@ -49,11 +53,19 @@ public class OnionServiceOnlineStateService extends FilteredHsDescEventListener 
     private final ExecutorService executor;
 
     public OnionServiceOnlineStateService(TorControlProtocol torControlProtocol, String onionAddress, long timeout) {
+        this(torControlProtocol, onionAddress, timeout, () -> false);
+    }
+
+    OnionServiceOnlineStateService(TorControlProtocol torControlProtocol,
+                                   String onionAddress,
+                                   long timeout,
+                                   BooleanSupplier isControllerShutDown) {
         super(EventType.HS_DESC, onionAddress, Set.of(HsDescEvent.Action.FAILED, HsDescEvent.Action.RECEIVED));
 
         this.torControlProtocol = torControlProtocol;
         this.onionAddress = onionAddress;
         this.timeout = timeout;
+        this.isControllerShutDown = isControllerShutDown;
         String name = "OnionServiceOnlineStateService-" + StringUtils.truncate(onionAddress, 12);
         executor = Executors.newSingleThreadExecutor(new ThreadFactoryBuilder()
                 .setNameFormat(name + "-%d")
@@ -79,7 +91,7 @@ public class OnionServiceOnlineStateService extends FilteredHsDescEventListener 
                     } catch (Exception e) {
                         throw new RuntimeException(e);
                     }
-                    if (isShutdown) {
+                    if (isShutdown || isControllerShutDown.getAsBoolean()) {
                         throw new RuntimeException("The Tor controller was shut down before the lookup of the onion " +
                                 "service completed");
                     }
@@ -123,10 +135,10 @@ public class OnionServiceOnlineStateService extends FilteredHsDescEventListener 
         countDownLatch.countDown();
     }
 
-    // The lookup fails then: without the flag, the open latch would answer "offline".
+    // The lookup fails then: without the flag, the open latch would answer "offline". The lookup, which the count down
+    // ends, removes its listeners when it completes.
     public void shutdown() {
         isShutdown = true;
-        torControlProtocol.removeHsDescEventListener(this);
         if (countDownLatch.getCount() > 0) {
             countDownLatch.countDown();
         }

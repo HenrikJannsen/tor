@@ -29,7 +29,8 @@ public class TorController {
     // The running operations per onion address, and the publications which succeeded on this connection
     private final Map<String, Operation<Void>> publications = new ConcurrentHashMap<>();
     private final Map<String, Operation<Boolean>> onlineChecks = new ConcurrentHashMap<>();
-    private Optional<BootstrapService> bootstrapService = Optional.empty();
+    // Written by the thread which bootstraps, and by the shutdown, which runs on another thread
+    private volatile Optional<BootstrapService> bootstrapService = Optional.empty();
     private volatile boolean isShutdownInProgress;
 
     /**
@@ -66,6 +67,7 @@ public class TorController {
         if (isShutdownInProgress) {
             return;
         }
+        // Before the connection closes: a service which the end of the connection wakes up reports the shutdown.
         isShutdownInProgress = true;
         // The connection first: a command which waits for the reply of a Tor that does not answer any more ends at
         // once, and the services send no SETEVENTS while they shut down, because Tor forgets the event registration
@@ -79,6 +81,10 @@ public class TorController {
         onlineChecks.values().forEach(operation ->
                 runQuietly(operation.shutdown(), "the shutdown of an onion service lookup"));
         onlineChecks.clear();
+    }
+
+    private boolean isShutdownInProgress() {
+        return isShutdownInProgress;
     }
 
     // One failing step must not keep the other steps of the shutdown from running.
@@ -114,11 +120,13 @@ public class TorController {
     }
 
     public CompletableFuture<Void> bootstrapAsync() {
-        if (bootstrapService.isPresent() && bootstrapService.get().getFuture().isPresent()) {
-            return bootstrapService.get().getFuture().get();
+        // One read: the shutdown can clear the field meanwhile.
+        Optional<CompletableFuture<Void>> runningBootstrap = bootstrapService.flatMap(BootstrapService::getFuture);
+        if (runningBootstrap.isPresent()) {
+            return runningBootstrap.get();
         }
 
-        BootstrapService service = new BootstrapService(torControlProtocol, bootstrapTimeout);
+        BootstrapService service = new BootstrapService(torControlProtocol, bootstrapTimeout, this::isShutdownInProgress);
         bootstrapService = Optional.of(service);
         CompletableFuture<Void> future = service.bootstrap();
         future.whenComplete((nil, throwable) -> bootstrapService = Optional.empty());
@@ -149,7 +157,8 @@ public class TorController {
     public CompletableFuture<Void> publishAsync(OnionServiceKey onionServiceKey,
                                                 int onionServicePort,
                                                 int localPort) {
-        PublishOnionAddressService service = new PublishOnionAddressService(torControlProtocol, hsUploadTimeout, onionServiceKey);
+        PublishOnionAddressService service = new PublishOnionAddressService(torControlProtocol, hsUploadTimeout,
+                onionServiceKey, this::isShutdownInProgress);
         return runOnce(publications, onionServiceKey.getOnionAddress(), true, service::shutdown,
                 () -> service.publish(onionServicePort, localPort));
     }
@@ -164,7 +173,7 @@ public class TorController {
         }
         String lowerCaseOnionAddress = onionAddress.toLowerCase(Locale.ROOT);
         OnionServiceOnlineStateService service = new OnionServiceOnlineStateService(torControlProtocol,
-                lowerCaseOnionAddress, isOnlineTimeout);
+                lowerCaseOnionAddress, isOnlineTimeout, this::isShutdownInProgress);
         return runOnce(onlineChecks, lowerCaseOnionAddress, false, service::shutdown, service::isOnionServiceOnlineAsync);
     }
 
