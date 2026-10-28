@@ -36,6 +36,8 @@ class DirectOnionServiceTargetsTest {
 
         assertThat(target.torTargetPort()).isEqualTo(target.serverSocket().getLocalPort());
         assertThat(targets.targetPortOf(ONION_B, 8090)).isEqualTo(8090);
+        // A server of the application listens on the address of the server sockets.
+        assertThat(targets.getBindAddress()).isEqualTo(target.serverSocket().getInetAddress());
         target.serverSocket().close();
     }
 

@@ -1,5 +1,6 @@
 package bisq.network.tor.controller;
 
+import bisq.network.tor.common.platform.LinuxDistribution;
 import bisq.network.tor.controller.events.listener.BootstrapEventListener;
 import bisq.network.tor.controller.events.listener.HsDescEventListener;
 import bisq.network.tor.controller.exceptions.CannotConnectWithTorException;
@@ -87,13 +88,21 @@ public class TorControlProtocol implements AutoCloseable {
     private static final String DATA_END = ".";
     // Set by close() and never reset: a TorControlProtocol serves one connection.
     private volatile boolean isClosed;
+    // The name of the command whose reply is read next. The command methods hold the lock of this object.
+    private String lastCommandName = "";
     // The time in which Tor must send the whole reply to a command
     private final long replyTimeoutMs;
     // The time in which the control port must accept the connection
     private final int connectTimeoutMs;
+    // A filtered command then names the onion-grater profile of Bisq.
+    private final boolean isWhonix;
 
     public TorControlProtocol() {
-        this(TorControlReader.REPLY_TIMEOUT_MS);
+        this(LinuxDistribution.isWhonix());
+    }
+
+    public TorControlProtocol(boolean isWhonix) {
+        this(TorControlReader.REPLY_TIMEOUT_MS, isWhonix);
     }
 
     private static ScheduledThreadPoolExecutor createWriteTimeoutScheduler() {
@@ -107,13 +116,22 @@ public class TorControlProtocol implements AutoCloseable {
     }
 
     TorControlProtocol(long replyTimeoutMs) {
-        this(replyTimeoutMs, CONNECT_TIMEOUT_MS);
+        this(replyTimeoutMs, false);
     }
 
     @VisibleForTesting
     TorControlProtocol(long replyTimeoutMs, int connectTimeoutMs) {
+        this(replyTimeoutMs, connectTimeoutMs, false);
+    }
+
+    private TorControlProtocol(long replyTimeoutMs, boolean isWhonix) {
+        this(replyTimeoutMs, CONNECT_TIMEOUT_MS, isWhonix);
+    }
+
+    private TorControlProtocol(long replyTimeoutMs, int connectTimeoutMs, boolean isWhonix) {
         this.replyTimeoutMs = replyTimeoutMs;
         this.connectTimeoutMs = connectTimeoutMs;
+        this.isWhonix = isWhonix;
         torControlReader = new TorControlReader();
     }
 
@@ -585,6 +603,8 @@ public class TorControlProtocol implements AutoCloseable {
         if (outputStream.isEmpty()) {
             throw new IllegalStateException("TorControlProtocol output stream not initialized. Cannot send command.");
         }
+        // Only the name: the arguments can contain onion addresses or secrets, and an error can end up in a log.
+        lastCommandName = command.trim().split(" ", 2)[0];
         // Debug level: the commands name onion addresses, which link the identities of a user in a shared log.
         log.debug("Send Tor control command: {}", TorControlLogFormat.toLoggableCommand(command));
         @SuppressWarnings("resource") OutputStream os = this.outputStream.orElseThrow();
@@ -672,7 +692,7 @@ public class TorControlProtocol implements AutoCloseable {
     private String tryReadNextReply(long deadline) {
         String reply = readLineOfReply(deadline);
         if (reply.equals("510 Command filtered")) {
-            throw new TorCommandFilteredException();
+            throw new TorCommandFilteredException(lastCommandName, isWhonix);
         }
         return reply;
     }

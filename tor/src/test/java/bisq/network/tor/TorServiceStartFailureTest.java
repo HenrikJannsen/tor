@@ -101,6 +101,6 @@ class TorServiceStartFailureTest {
             public boolean supportsPosixPermissions() {
                 return true;
             }
-        });
+        }, false);
     }
 }

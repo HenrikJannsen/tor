@@ -76,7 +76,21 @@ configuration, as onion-grater on Whonix does not, Bisq logs that it could not c
 A publication of an onion service completes once the first HSDir has stored its descriptor, which Tor reports with
 `HS_DESC UPLOADED`, not at the start of the upload (`HS_DESC UPLOAD`), when no peer could find the onion service yet. It
 fails if no HSDir has stored the descriptor within the upload timeout of `TorTransportConfig`. The exception is an
-`UPLOAD` which a filter in front of Tor shortened, as the onion-grater profiles of Whonix before September 2024 do.
+`UPLOAD` which a filter in front of Tor shortened, see "Whonix".
+
+## Whonix
+
+On Whonix, `TorService` always uses the Tor of the Whonix-Gateway and never starts its own Tor. The control port of the
+Gateway is filtered by onion-grater, so the Gateway needs an updated system and the onion-grater profile of Bisq, which
+Whonix ships: `sudo onion-grater-add 40_bisq`. The library authenticates without a secret, sends `ADD_ONION` with a bare
+local port as target, which onion-grater rewrites to the address of the Workstation, and listens on all addresses.
+Every profile delivers `HS_DESC UPLOADED` with the HSDir redacted, which completes a publication. Profiles before
+September 2024 shorten `HS_DESC UPLOAD` to `<address> <auth> redacted redacted`, without the `HSDIR_INDEX` which Tor
+sends with every upload of a v3 descriptor; there such an `UPLOAD` completes the publication, as before.
+`TorServiceWhonixTest` answers like onion-grater; there is no test on Whonix itself. Both Whonix systems have the
+markers by which `TorService` detects Whonix (`/usr/share/whonix/marker` and `/usr/share/anon-dist/marker`). On the
+Whonix-Gateway, which has `/usr/share/anon-gw-base-files/gateway` as well, `TorService` does not start and tells the
+user to run Bisq on a Whonix-Workstation.
 
 ## Embedded Tor
 

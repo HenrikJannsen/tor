@@ -19,6 +19,7 @@ package bisq.network.tor;
 
 import bisq.network.tor.controller.FakeTorControlServer;
 import bisq.network.tor.controller.TorController.SocksListener;
+import bisq.network.tor.process.LoopbackPorts;
 import bisq.network.tor.process.TorStartupFailedException;
 import com.runjva.sourceforge.jsocks.protocol.Socks5Proxy;
 import org.junit.jupiter.api.AfterEach;
@@ -142,6 +143,8 @@ class TorServiceExternalTorTest {
                     "ControlPort 127.0.0.1:" + externalTor.getPort());
             torService = new TorService(createTransportConfig(), PLATFORM_SERVICES);
             assertThat(torService.initialize().join()).isTrue();
+            // Outside Whonix, an external Tor connects to the servers of the application on the loopback address.
+            assertThat(torService.getOnionServiceBindAddress()).isEqualTo(LoopbackPorts.IPV4_LOOPBACK);
             torService.shutdown().join();
         }
 

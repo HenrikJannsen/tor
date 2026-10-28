@@ -24,6 +24,7 @@ import bisq.network.tor.common.torrc.BaseTorrcGenerator;
 import bisq.network.tor.common.torrc.TorrcFileGenerator;
 import bisq.network.tor.common.torrc.TorrcSyntax;
 import bisq.network.tor.controller.PasswordDigest;
+import bisq.network.tor.controller.TorCommandFilteredException;
 import bisq.network.tor.controller.TorControlAuthenticationFailed;
 import bisq.network.tor.controller.TorController;
 import bisq.network.tor.installer.TorInstaller;
@@ -77,6 +78,10 @@ public class TorService {
     private final TorTransportConfig transportConfig;
     private final PlatformServices platformServices;
     private final TorDirectories torDirectories;
+    // On Whonix, Bisq uses the Tor of the Whonix-Gateway through onion-grater.
+    private final boolean isWhonix;
+    // On the Whonix-Gateway itself, Bisq does not start.
+    private final boolean isWhonixGateway;
     // Creates the controller of each start, see createControllerOfTheStart
     private final Supplier<TorController> torControllerFactory;
 
@@ -101,17 +106,42 @@ public class TorService {
     private volatile OnionServiceTargets onionServiceTargets = new DirectOnionServiceTargets(LoopbackPorts.IPV4_LOOPBACK);
 
     public TorService(TorTransportConfig transportConfig, PlatformServices platformServices) {
-        this(transportConfig, platformServices, () -> new TorController(transportConfig.getBootstrapTimeout(),
-                transportConfig.getHsUploadTimeout()));
+        this(transportConfig, platformServices, LinuxDistribution.isWhonix(), LinuxDistribution.isWhonixGateway());
+    }
+
+    @VisibleForTesting
+    TorService(TorTransportConfig transportConfig, PlatformServices platformServices, boolean isWhonix) {
+        this(transportConfig, platformServices, isWhonix, false);
     }
 
     @VisibleForTesting
     TorService(TorTransportConfig transportConfig,
                PlatformServices platformServices,
+               boolean isWhonix,
+               boolean isWhonixGateway) {
+        this(transportConfig, platformServices, isWhonix, isWhonixGateway,
+                () -> new TorController(transportConfig.getBootstrapTimeout(), transportConfig.getHsUploadTimeout(),
+                        isWhonix));
+    }
+
+    @VisibleForTesting
+    TorService(TorTransportConfig transportConfig,
+               PlatformServices platformServices,
+               boolean isWhonix,
                Supplier<TorController> torControllerFactory) {
+        this(transportConfig, platformServices, isWhonix, false, torControllerFactory);
+    }
+
+    private TorService(TorTransportConfig transportConfig,
+                       PlatformServices platformServices,
+                       boolean isWhonix,
+                       boolean isWhonixGateway,
+                       Supplier<TorController> torControllerFactory) {
         this.transportConfig = transportConfig;
         this.platformServices = platformServices;
         this.torDirectories = new TorDirectories(transportConfig.getDataDirPath());
+        this.isWhonix = isWhonix;
+        this.isWhonixGateway = isWhonixGateway;
         this.torControllerFactory = () -> createControllerOfTheStart(torControllerFactory);
     }
 
@@ -199,6 +229,7 @@ public class TorService {
     }
 
     private void start() {
+        refuseWhonixGateway();
         makeTorDir();
 
         ExternalTorConfig externalTorConfig = readExternalTorConfig();
@@ -348,6 +379,15 @@ public class TorService {
             torController.authenticate();
             return;
         }
+        if (isWhonix) {
+            // onion-grater, which filters the control port of the Whonix-Gateway, offers only authentication without a
+            // secret and filters AUTHCHALLENGE, so SAFECOOKIE cannot work. The cookie file of a Whonix-Workstation
+            // holds a fixed dummy value. netlayer and Bisq 2 before the library sent it, and onion-grater accepted it.
+            log.warn("On Whonix, Bisq does not use the cookie of external_tor.config, because onion-grater on the " +
+                    "Whonix-Gateway only accepts authentication without a secret");
+            torController.authenticate();
+            return;
+        }
         Path authCookiePath = externalTorConfig.getCookieAuthFile()
                 .orElseThrow(() -> new TorControlAuthenticationFailed("CookieAuthentication is 1, but CookieAuthFile " +
                         "is not set"));
@@ -369,6 +409,18 @@ public class TorService {
         torController.authenticateWithSafeCookie(authCookie);
     }
 
+    /**
+     * The Whonix-Gateway has the markers of Whonix, so Bisq would take it for a Workstation and connect to the
+     * forwarded control port of the Gateway, which does not exist on the Gateway itself.
+     */
+    private void refuseWhonixGateway() {
+        if (isWhonixGateway) {
+            throw new TorStartupFailedException("Bisq does not run on a Whonix-Gateway, whose Tor serves the " +
+                    "Whonix-Workstations behind it. Run Bisq on a Whonix-Workstation, which uses the Tor of the " +
+                    "Gateway.");
+        }
+    }
+
     private void createTorControlDirectory() {
         Path controlDirFilePath = torDirectories.getDataDirPath().resolve(BaseTorrcGenerator.CONTROL_DIR_NAME);
         if (!Files.exists(controlDirFilePath)) {
@@ -381,7 +433,7 @@ public class TorService {
     }
 
     private boolean evaluateUseExternalTor(ExternalTorConfig externalTorConfig) {
-        if (LinuxDistribution.isWhonix()) {
+        if (isWhonix) {
             log.info("Bisq runs on a Whonix system and use the Whonix system Tor");
             return true;
         } else {
@@ -530,6 +582,16 @@ public class TorService {
         return e instanceof CompletionException && e.getCause() != null ? e.getCause() : e;
     }
 
+    /**
+     * @return the address on which a server of the application has to listen, which it publishes with
+     * {@link #publishOnionService}: the loopback address, except with the Tor of a Whonix-Gateway, which connects over
+     * the internal network of Whonix. It belongs to the running Tor, so it is known once {@link #initialize()} has
+     * returned.
+     */
+    public InetAddress getOnionServiceBindAddress() {
+        return onionServiceTargets.getBindAddress();
+    }
+
     public CompletableFuture<Boolean> isOnionServiceOnlineAsync(String onionUrl) {
         return torController.isOnionServiceOnlineAsync(onionUrl)
                 .orTimeout(1, TimeUnit.MINUTES);
@@ -646,11 +708,19 @@ public class TorService {
 
     private String getExternalTorUnavailableMessage(ExternalTorConfig externalTorConfig, RuntimeException cause) {
         String location = externalTorConfig.getControlHost() + ":" + externalTorConfig.getControlPort();
-        String hint = LinuxDistribution.isWhonix() ?
-                "Check the Tor of the Whonix-Gateway and " + torDirectories.getExternalTorConfigPath() + "." :
-                "Start the external Tor or correct " + torDirectories.getExternalTorConfigPath() + ". Bisq uses an " +
-                        "external Tor if UseExternalTor is 1 there, if the environment variable " + TOR_SKIP_LAUNCH +
-                        " is 1, or if the application is configured to use one.";
+        String hint;
+        if (!isWhonix) {
+            hint = "Start the external Tor or correct " + torDirectories.getExternalTorConfigPath() + ". Bisq uses an " +
+                    "external Tor if UseExternalTor is 1 there, if the environment variable " + TOR_SKIP_LAUNCH +
+                    " is 1, or if the application is configured to use one.";
+        } else if (cause instanceof TorCommandFilteredException) {
+            // Its message gives the advice for onion-grater already.
+            hint = "Check also " + torDirectories.getExternalTorConfigPath() + ".";
+        } else {
+            hint = "Check that the Tor of the Whonix-Gateway runs, that the system of the Whonix-Gateway is updated " +
+                    "and that the onion-grater profile of Bisq is enabled there with \"sudo onion-grater-add 40_bisq\". " +
+                    "Check also " + torDirectories.getExternalTorConfigPath() + ".";
+        }
         return "Bisq is configured to use a Tor which runs outside Bisq, but it cannot use the Tor at " + location +
                 ": " + withoutFinalPeriod(cause.getMessage()) + ". Bisq does not start its own Tor instead, because it " +
                 "would connect to the Tor network without the settings of the external Tor, for example its bridges. " +
@@ -781,8 +851,8 @@ public class TorService {
         return torrcConfigMap;
     }
 
-    private static InetAddress getExternalTorBindAddress() {
-        if (!LinuxDistribution.isWhonix()) {
+    private InetAddress getExternalTorBindAddress() {
+        if (!isWhonix) {
             return LoopbackPorts.IPV4_LOOPBACK;
         }
         try {

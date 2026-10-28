@@ -18,6 +18,7 @@
 package bisq.network.tor.onionservice;
 
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.ServerSocket;
 
 /**
@@ -37,12 +38,18 @@ public interface OnionServiceTargets extends AutoCloseable {
     Target bindServerSocket(String onionAddress) throws IOException;
 
     /**
-     * Makes the connections of the onion service reach a server of the application that listens on the loopback
-     * port {@code localPort}.
+     * Makes the connections of the onion service reach a server of the application that listens on the port
+     * {@code localPort} of {@link #getBindAddress()}.
      *
      * @return the port that Tor connects to
      */
     int targetPortOf(String onionAddress, int localPort) throws IOException;
+
+    /**
+     * @return the address on which a server of the application has to listen for {@link #targetPortOf}, so that Tor
+     * or the relay in front of Tor reaches it
+     */
+    InetAddress getBindAddress();
 
     @Override
     void close();

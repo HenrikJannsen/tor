@@ -32,7 +32,7 @@ public class TorController {
     private static final Pattern VERSION_PATTERN = Pattern.compile("\\d+(?:\\.\\d+)+(?:-[0-9A-Za-z]+)?");
     // A QuotedString of the control protocol, which escapes a quote and a backslash with a backslash
     private static final Pattern QUOTED_STRING = Pattern.compile("\"((?:[^\"\\\\]|\\\\.)*)\"");
-    private final TorControlProtocol torControlProtocol = new TorControlProtocol();
+    private final TorControlProtocol torControlProtocol;
     private final int bootstrapTimeout; // in ms
     private final int hsUploadTimeout; // in ms
     private final long isOnlineTimeout = TimeUnit.SECONDS.toMillis(30); // in ms
@@ -51,8 +51,20 @@ public class TorController {
     }
 
     public TorController(int bootstrapTimeout, int hsUploadTimeout) {
+        this(bootstrapTimeout, hsUploadTimeout, new TorControlProtocol());
+    }
+
+    /**
+     * @param isWhonix Bisq runs on a Whonix-Workstation, whose Gateway filters the control port with onion-grater
+     */
+    public TorController(int bootstrapTimeout, int hsUploadTimeout, boolean isWhonix) {
+        this(bootstrapTimeout, hsUploadTimeout, new TorControlProtocol(isWhonix));
+    }
+
+    private TorController(int bootstrapTimeout, int hsUploadTimeout, TorControlProtocol torControlProtocol) {
         this.bootstrapTimeout = bootstrapTimeout;
         this.hsUploadTimeout = hsUploadTimeout;
+        this.torControlProtocol = torControlProtocol;
     }
 
     public void initialize(int controlPort) {
