@@ -24,6 +24,7 @@ import lombok.ToString;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 import static com.google.common.base.Preconditions.checkArgument;
 
@@ -70,7 +71,7 @@ public final class BridgeConfig {
         bridgeLines.forEach(line -> TorrcSyntax.findValueProblem(line).ifPresent(problem -> {
             throw new IllegalArgumentException("A bridge line " + problem);
         }));
-        List<String> normalizedLines = bridgeLines.stream().map(BridgeConfig::normalize).toList();
+        List<String> normalizedLines = bridgeLines.stream().map(BridgeConfig::normalize).collect(Collectors.toList());
         normalizedLines.forEach(line -> checkArgument(!line.isEmpty(), "A bridge line is empty"));
         return new BridgeConfig(Optional.empty(), normalizedLines);
     }

@@ -342,12 +342,12 @@ public class TorControlProtocol implements AutoCloseable {
     public synchronized List<String> getConf(String key) {
         String command = "GETCONF " + key + "\r\n";
         sendCommand(command);
-        List<String> replies = receiveReply().toList();
+        List<String> replies = receiveReply().collect(Collectors.toList());
         Pattern valuePattern = Pattern.compile("^250[- ]" + Pattern.quote(key) + "(?:=(.*))?$", Pattern.CASE_INSENSITIVE);
         List<Matcher> valueMatchers = replies.stream()
                 .map(valuePattern::matcher)
                 .filter(Matcher::matches)
-                .toList();
+                .collect(Collectors.toList());
         if (valueMatchers.isEmpty() || !replies.get(replies.size() - 1).startsWith("250 ")) {
             throw invalidReply("GETCONF", replies);
         }

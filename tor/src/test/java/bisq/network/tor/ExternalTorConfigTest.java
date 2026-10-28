@@ -151,6 +151,13 @@ class ExternalTorConfigTest {
     }
 
     @Test
+    void theSocksPortOfTheTemplateIsAKnownOption() {
+        // bisq-mobile writes it. Bisq asks the external Tor for its SOCKS port.
+        assertThat(ExternalTorConfig.parse("UseExternalTor 1\nSocksPort 127.0.0.1:9050\nControlPort 9151"))
+                .isEqualTo(ExternalTorConfig.parse("UseExternalTor 1\nControlPort 9151"));
+    }
+
+    @Test
     void aPasswordIsReadButNeverPrinted() {
         ExternalTorConfig config = ExternalTorConfig.parse("ControlPassword \"pass word\"\nCookieAuthentication 0");
 

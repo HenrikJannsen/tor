@@ -44,11 +44,21 @@ dependency.
 ## Android
 
 The node app of bisq-mobile runs `TorService` with an external Tor on Android, from API level 33. Code which runs in
-this mode must only use Java APIs which Android 13 provides. This is `TorService.initialize` up to the connection to the
-external Tor, `TorController`, `TorControlProtocol` and `FileUtils`. If the connection fails, `TorService` fails with
-`ExternalTorUnavailableException`; it never starts its own Tor instead of a configured external Tor. For example,
-`java.util.HexFormat` needs API level 34, and `ProcessHandle` does not exist on Android. The Tor build uses Guava
-instead of `HexFormat`. The embedded Tor process and `tor-local-network` only run on desktop systems.
+this mode must only use Java APIs which Android 13 provides. This is all code which an external Tor needs:
+`TorService` without the start of the embedded Tor, `ExternalTorConfig`, `TorTransportConfig`, `BridgeConfig`,
+`TorDirectories`, `TorSocksProxyFactory` with `jsocks`, the packages `controller` (with the events and their parsers)
+and `onionservice`, and `OS`, `LinuxDistribution`, `StringUtils` and `FileUtils` of `tor-common`. Only the embedded Tor
+runs on desktop systems alone: `EmbeddedTorProcess`, `LdPreload`, the packages `installer` and `bridges`,
+`TorrcClientConfigFactory`, the torrc generators and `tor-local-network`. If the connection fails, `TorService` fails
+with `ExternalTorUnavailableException`; it never starts its own Tor instead of a configured external Tor. For example,
+`java.util.HexFormat` and `Stream.toList()` need API level 34, and `ProcessHandle` does not exist on Android. The Tor
+build uses Guava instead of `HexFormat` and `collect(Collectors.toList())` instead of `toList()`. Records and switch
+expressions can be used, because D8 desugars them for Android.
+
+`FileUtils` of `tor-common` reads and writes UTF-8 strictly on Android as well. The originals in `bisq.common` replace
+malformed input when the modern file API is turned off, as bisq-mobile does. With the copy, a damaged
+`external_tor.config` which is no valid UTF-8 fails `TorService.initialize()` with a message which names the file,
+instead of being read with replacement characters.
 
 ## External Tor
 

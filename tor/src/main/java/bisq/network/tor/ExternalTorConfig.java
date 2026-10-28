@@ -35,6 +35,7 @@ import static bisq.network.tor.common.torrc.Torrc.Keys.CONTROL_PORT;
 import static bisq.network.tor.common.torrc.Torrc.Keys.COOKIE_AUTHENTICATION;
 import static bisq.network.tor.common.torrc.Torrc.Keys.COOKIE_AUTH_FILE;
 import static bisq.network.tor.common.torrc.Torrc.Keys.HASHED_CONTROL_PASSWORD;
+import static bisq.network.tor.common.torrc.Torrc.Keys.SOCKS_PORT;
 import static bisq.network.tor.common.torrc.Torrc.Values.ExternalTor.DEFAULT_CONTROL_PORT;
 
 /**
@@ -116,6 +117,10 @@ public final class ExternalTorConfig {
             }
             log.warn("Bisq ignores {} of the external Tor configuration and authenticates with {}",
                     HASHED_CONTROL_PASSWORD, cookieAuthentication ? "the cookie" : CONTROL_PASSWORD);
+        }
+        if (valueByLowerCaseKey.remove(toKey(SOCKS_PORT)) != null) {
+            // The template describes it as not required, and bisq-mobile writes it.
+            log.debug("Bisq asks the external Tor for its SOCKS port and ignores {}", SOCKS_PORT);
         }
         valueByLowerCaseKey.keySet().forEach(key -> log.warn("Bisq ignores the unknown option {} of the external " +
                 "Tor configuration", key));
