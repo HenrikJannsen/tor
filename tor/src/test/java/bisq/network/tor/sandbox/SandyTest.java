@@ -39,6 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class SandyTest {
     private static final Path SANDY = Paths.get("/opt/app/tor/sandy/sandy");
+    private static final Path STATUS_RECORD = Paths.get("/opt/app/tor/sandy/run-status");
     private static final Path DATA = Paths.get("/opt/app/tor/data");
     // As sandy 2.2.0 prints it for a host that falls back to the second level, shortened
     private static final String FALLBACK_JSON = """
@@ -97,10 +98,11 @@ class SandyTest {
         SandyPolicy policy = new SandyPolicy("version = 1\n", DATA);
         Sandy.Level level = new Sandy.Level("contained", Set.of(Sandy.ENDS_WITH_PARENT));
 
-        List<String> command = sandy.runCommand(policy, level, List.of("/usr/bin/tor", "-f", "torrc"));
+        List<String> command = sandy.runCommand(policy, level, STATUS_RECORD, List.of("/usr/bin/tor", "-f", "torrc"));
 
         assertThat(command).startsWith(SANDY.toAbsolutePath().toString(), "run", "--policy", "-",
-                "--level", "contained", "--cwd", DATA.toAbsolutePath().toString(), "--parent-pid", "4711");
+                "--level", "contained", "--status-file", STATUS_RECORD.toAbsolutePath().toString(),
+                "--cwd", DATA.toAbsolutePath().toString(), "--parent-pid", "4711");
         assertThat(command).endsWith("--", "/usr/bin/tor", "-f", "torrc");
         assertThat(Sandy.policyInput(policy)).isEqualTo("version = 1\n".getBytes());
     }
@@ -112,11 +114,55 @@ class SandyTest {
         SandyPolicy policy = new SandyPolicy("version = 1\n", DATA);
         Sandy.Level level = new Sandy.Level("host-network-signals", Set.of("filesystem-confined"));
 
-        List<String> command = sandy.runCommand(policy, level, List.of("/usr/bin/tor", "-f", "torrc"));
+        List<String> command = sandy.runCommand(policy, level, STATUS_RECORD, List.of("/usr/bin/tor", "-f", "torrc"));
 
         assertThat(command).containsExactly(SANDY.toAbsolutePath().toString(), "run", "--policy", "-",
-                "--level", "host-network-signals", "--cwd", DATA.toAbsolutePath().toString(),
-                "--", "/usr/bin/tor", "-f", "torrc");
+                "--level", "host-network-signals", "--status-file", STATUS_RECORD.toAbsolutePath().toString(),
+                "--cwd", DATA.toAbsolutePath().toString(), "--", "/usr/bin/tor", "-f", "torrc");
+    }
+
+    @Test
+    void sandyStaysTheParentOfTheProgramOnWindowsAndWhereItContainsTheChildren() {
+        var contained = new Sandy.Level("contained", Set.of(Sandy.CHILD_PROCESSES_CONTAINED));
+        var base = new Sandy.Level("base", Set.of("child-processes-denied", Sandy.ENDS_WITH_PARENT));
+
+        assertThat(Sandy.staysParent(bisq.network.tor.common.platform.OS.LINUX, contained)).isTrue();
+        assertThat(Sandy.staysParent(bisq.network.tor.common.platform.OS.MAC_OS, contained)).isTrue();
+        assertThat(Sandy.staysParent(bisq.network.tor.common.platform.OS.WINDOWS, base)).isTrue();
+        assertThat(Sandy.staysParent(bisq.network.tor.common.platform.OS.LINUX, base)).isFalse();
+        assertThat(Sandy.staysParent(bisq.network.tor.common.platform.OS.MAC_OS, base)).isFalse();
+    }
+
+    /**
+     * A program can exit with the status of sandy, but only sandy writes the status record. The records are those
+     * which sandy 2.4.1 wrote on Linux, where it replaces itself with the program in the level base of the probe and
+     * stays its parent in the level contained.
+     */
+    @Test
+    void onlyTheStatusRecordTellsARefusalOfSandyFromAnExitOfTheProgram() {
+        // Another process held a port of the policy.
+        assertThat(endedBeforeTheProgramRan(false, 125, "level base\nfailed\n")).isTrue();
+        assertThat(endedBeforeTheProgramRan(true, 125, "level contained\nfailed\n")).isTrue();
+        // The program exited with 125 itself.
+        assertThat(endedBeforeTheProgramRan(false, 125, "level base\npid 35743\n")).isFalse();
+        assertThat(endedBeforeTheProgramRan(true, 125, "level contained\npid 35756\nexited 125\n")).isFalse();
+        // sandy writes the process ID before it confines itself and executes the program, and stays the parent only
+        // in the level contained, where a failure after the process ID ends the running program.
+        assertThat(endedBeforeTheProgramRan(false, 125, "level base\npid 4711\nfailed\n")).isTrue();
+        assertThat(endedBeforeTheProgramRan(true, 125, "level contained\npid 4711\nfailed\n")).isFalse();
+        // sandy stopped before it created the record, for example at an argument it does not know.
+        assertThat(Sandy.endedBeforeTheProgramRan(false, 125, Optional.empty())).isTrue();
+        // sandy writes the record on a best-effort basis, so an empty one does not show that the program did not run.
+        assertThat(endedBeforeTheProgramRan(false, 125, "")).isFalse();
+        assertThat(endedBeforeTheProgramRan(false, 125, "level base\n")).isFalse();
+        // Only sandy's failure status counts.
+        assertThat(endedBeforeTheProgramRan(false, 1, "level base\nfailed\n")).isFalse();
+        assertThat(Sandy.endedBeforeTheProgramRan(false, 137, Optional.empty())).isFalse();
+    }
+
+    private static boolean endedBeforeTheProgramRan(boolean staysParent, int exitStatus, String statusRecord) {
+        return Sandy.endedBeforeTheProgramRan(staysParent, exitStatus,
+                Optional.of(SandyStatusRecord.parse(statusRecord)));
     }
 
     // sandy refuses an argument before it reads the policy. Its reason counts, not the broken pipe of the write.

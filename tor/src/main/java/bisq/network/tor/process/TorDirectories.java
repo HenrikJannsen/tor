@@ -24,6 +24,7 @@ import lombok.Getter;
 import lombok.ToString;
 
 import java.nio.file.Path;
+import java.util.List;
 
 /**
  * The files of the embedded Tor below the Tor directory of the application ({@code <app data dir>/tor}).
@@ -41,6 +42,7 @@ public final class TorDirectories {
     public static final String PLUGGABLE_TRANSPORTS_DIR_NAME = "pluggable_transports";
     static final String BINARY_DIR_NAME = "bin";
     static final String DATA_DIR_NAME = "data";
+    static final String DATA_MODE_FILE_NAME = "data-mode";
     static final String SANDY_DIR_NAME = "sandy";
 
     private final Path baseDirPath;
@@ -75,6 +77,15 @@ public final class TorDirectories {
         return EmbeddedTorProcess.rotatedStdoutLogPath(stdoutLogPath);
     }
 
+    /**
+     * @return the files and directories of this layout directly in the Tor directory. The Tor directory can also hold
+     * files of the application, for example the onion service key of Bisq 1 in {@code hiddenservice}.
+     */
+    List<Path> getLayoutEntries() {
+        return List.of(binaryDirPath, dataDirPath, sandyDirPath, torrcPath, getOpenSslConfigPath(), stdoutLogPath,
+                getRotatedStdoutLogPath(), stderrLogPath, externalTorConfigPath, getDataModePath());
+    }
+
     // The GeoIP files of the bundled Tor, which the bundle installs next to the binary.
     public Path getBundledGeoIpFilePath() {
         return binaryDirPath.resolve("geoip");
@@ -96,6 +107,16 @@ public final class TorDirectories {
     // The configuration of the pluggable transports and the built-in bridges of the Tor Browser version of the bundle
     public Path getPluggableTransportConfigPath() {
         return getPluggableTransportsDirPath().resolve("pt_config.json");
+    }
+
+    // The status record which sandy writes for each run of a sandboxed Tor, outside every path which Tor may write
+    public Path getSandyStatusRecordPath() {
+        return sandyDirPath.resolve("run-status");
+    }
+
+    // Whether the last Tor which used the data directory ran in the sandbox (TorDataDirectoryMode)
+    public Path getDataModePath() {
+        return baseDirPath.resolve(DATA_MODE_FILE_NAME);
     }
 
     public Path getBundledTorBinaryPath() {

@@ -1,7 +1,9 @@
 # The sandbox of the embedded Tor under sandy 2.2 on Windows. See linux.toml for what
 # TorSandboxPolicy fills in, here also the AppContainer names: every level needs one of its own.
 # Windows cannot hide the paths outside the policy, so there is no view. tor.exe must start in a
-# desktop session; in session 0 user32.dll cannot initialize in an AppContainer.
+# session whose window station admits AppContainers, such as a desktop session: in another one,
+# for example session 0 of the services or a session over SSH, user32.dll cannot initialize in an
+# AppContainer, and sandy check does not detect it (sandy docs/windows.md, limit 13).
 version = 1
 
 [filesystem]

@@ -19,7 +19,6 @@ package bisq.network.tor;
 
 import bisq.network.tor.process.EmbeddedTorProcess;
 import bisq.network.tor.process.TorStartupFailedException;
-import bisq.network.tor.sandbox.SandboxUnavailableException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -37,13 +36,16 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * The embedded Tor can exit before it answers on its control port. When sandy started it, the exit can be a refusal of
  * sandy, for example because another process took a port of the policy between the check and the start. Then the user
- * needs the reason of sandy and the hint how to turn the sandbox off, as for every other sandbox failure.
+ * needs the reason of sandy and the hint how to turn the sandbox off, as for every other sandbox failure. Tor can exit
+ * with the status of sandy too, so only the status record of sandy, which Tor cannot write, tells a refusal from an
+ * exit of Tor. A stand-in for sandy writes the records here as sandy 2.4.1 does.
  */
 @Timeout(30)
 class TorServiceStartFailureTest {
@@ -63,24 +65,61 @@ class TorServiceStartFailureTest {
 
     @Test
     void aRefusalOfSandyIsASandboxFailureWithTheReasonAndTheHint() {
-        EmbeddedTorProcess process = start("echo 'sandy: the port 12345 is in use' >&2; exit 125");
+        EmbeddedTorProcess process = start(writeStatusRecord("level base\\nfailed\\n") +
+                "echo 'sandy: run failed: cannot listen on 127.0.0.1:12345: Address in use' >&2; exit 125");
 
-        assertThatThrownBy(() -> TorService.waitUntilControlPortAnswers(closedPort, process, Optional.of(OPT_OUT_HINT)))
-                .isInstanceOf(SandboxUnavailableException.class)
+        // A refusal which can pass, which the start tries once more
+        assertThatThrownBy(() -> TorService.waitUntilControlPortAnswers(closedPort, process, sandboxedRun()))
+                .isInstanceOf(TorService.SandyRefusalException.class)
                 .hasMessageContaining("sandy did not start Tor")
-                .hasMessageContaining("the port 12345 is in use")
+                .hasMessageContaining("statusRecord=[level base, failed]")
+                .hasMessageContaining("cannot listen on 127.0.0.1:12345")
                 .hasMessageContaining(OPT_OUT_HINT)
                 .hasNoCause();
     }
 
     @Test
     void anExitOfTorInTheSandboxIsAStartFailure() {
-        EmbeddedTorProcess process = start("echo 'Could not bind to 127.0.0.1:9050' >&2; exit 1");
+        EmbeddedTorProcess process = start(writeStatusRecord("level base\\npid 4711\\n") +
+                "echo 'Could not bind to 127.0.0.1:9050' >&2; exit 1");
 
-        assertThatThrownBy(() -> TorService.waitUntilControlPortAnswers(closedPort, process, Optional.of(OPT_OUT_HINT)))
+        assertThatThrownBy(() -> TorService.waitUntilControlPortAnswers(closedPort, process, sandboxedRun()))
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("exited before it answered")
                 .hasMessageContaining("Could not bind to 127.0.0.1:9050");
+    }
+
+    // A compromised Tor chooses its exit status and its standard error, but it cannot write the status record.
+    @Test
+    void aTorWhichExitsWithTheStatusOfSandyGetsNoAdviceToTurnTheSandboxOff() {
+        EmbeddedTorProcess process = start(writeStatusRecord("level base\\npid 4711\\n") +
+                "echo 'sandy: this system cannot run the sandbox. Turn it off.' >&2; exit 125");
+
+        assertThatThrownBy(() -> TorService.waitUntilControlPortAnswers(closedPort, process, sandboxedRun()))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("exited before it answered")
+                .hasMessageContaining("statusRecord=[level base, pid 4711]")
+                .hasMessageNotContaining(OPT_OUT_HINT);
+    }
+
+    // Where sandy stays the parent of Tor, it writes the process ID once Tor runs, so a failure after it is no refusal.
+    @Test
+    void aFailureOfSandyAfterTorRanGetsNoAdviceToTurnTheSandboxOff() {
+        EmbeddedTorProcess process = start(writeStatusRecord("level contained\\npid 4711\\nfailed\\n") + "exit 125");
+
+        assertThatThrownBy(() -> TorService.waitUntilControlPortAnswers(closedPort, process,
+                Optional.of(new TorService.SandboxedRun(statusRecordPath(), true, OPT_OUT_HINT))))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("statusRecord=[level contained, pid 4711, failed]");
+    }
+
+    @Test
+    void theStatusRecordIsRemovedOnceItIsRead() {
+        EmbeddedTorProcess process = start(writeStatusRecord("level base\\npid 4711\\n") + "exit 1");
+
+        assertThatThrownBy(() -> TorService.waitUntilControlPortAnswers(closedPort, process, sandboxedRun()))
+                .isInstanceOf(IOException.class);
+        assertThat(statusRecordPath()).doesNotExist();
     }
 
     @Test
@@ -92,7 +131,18 @@ class TorServiceStartFailureTest {
                 .hasMessageContaining("exited before it answered");
     }
 
-    // sandy refuses an argument before it reads the policy, so the write of the policy fails with a broken pipe.
+    // sandy passes the 32-bit exit code of tor.exe on unchanged, and Java reports 0xC0000142 as a negative int.
+    @Test
+    void aFailedDllInitializationOfTorOnWindowsNamesTheSessionAsTheLikelyCause() {
+        assertThat(TorService.windowsSessionHint(Optional.of(0xC0000142)))
+                .contains("STATUS_DLL_INIT_FAILED")
+                .contains("window station");
+        assertThat(TorService.windowsSessionHint(Optional.of(1))).isEmpty();
+        assertThat(TorService.windowsSessionHint(Optional.empty())).isEmpty();
+    }
+
+    // sandy refuses an argument before it reads the policy, so the write of the policy fails with a broken pipe. It
+    // also stops before it creates the status record.
     @Test
     void aSandyWhichEndsBeforeItReadsThePolicyIsASandboxFailureWithItsReason() {
         // Larger than a pipe buffer, so that the write fails once the process has ended
@@ -100,8 +150,9 @@ class TorServiceStartFailureTest {
         EmbeddedTorProcess process = start("echo 'sandy: unknown option --frobnicate' >&2; exit 125",
                 Optional.of(policy));
 
-        assertThatThrownBy(() -> TorService.waitUntilControlPortAnswers(closedPort, process, Optional.of(OPT_OUT_HINT)))
-                .isInstanceOf(SandboxUnavailableException.class)
+        assertThatThrownBy(() -> TorService.waitUntilControlPortAnswers(closedPort, process, sandboxedRun()))
+                .isInstanceOf(TorService.SandyRefusalException.class)
+                .hasMessageContaining("statusRecord=[none]")
                 .hasMessageContaining("unknown option --frobnicate")
                 .hasMessageContaining(OPT_OUT_HINT);
     }
@@ -173,6 +224,20 @@ class TorServiceStartFailureTest {
                 return true;
             }
         }, false);
+    }
+
+    // In the level base of linux.toml sandy replaces itself with Tor.
+    private Optional<TorService.SandboxedRun> sandboxedRun() {
+        return Optional.of(new TorService.SandboxedRun(statusRecordPath(), false, OPT_OUT_HINT));
+    }
+
+    private Path statusRecordPath() {
+        return tempDir.resolve("run-status");
+    }
+
+    // A shell command which writes the record as sandy does, with \n for the line ends
+    private String writeStatusRecord(String content) {
+        return "printf '" + content + "' > '" + statusRecordPath() + "'; ";
     }
 
     private EmbeddedTorProcess start(String shellCommand) {

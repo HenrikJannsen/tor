@@ -54,10 +54,6 @@ public final class TorDirectoryMigration {
     private static final String OLD_TOR_RUNTIME_PREFIX = "unverified-";
     // The marker of the old installation of the bundle
     private static final String OLD_INSTALLATION_VERSION_FILE_NAME = "version";
-    // The entries of the new layout in the Tor directory
-    private static final Set<String> NEW_LAYOUT_NAMES = Set.of(TorDirectories.EXTERNAL_TOR_CONFIG_FILE_NAME, "torrc",
-            "openssl.cnf", "tor-stdout.log", "tor-stdout.log.1", "tor-stderr.log", TorDirectories.BINARY_DIR_NAME,
-            TorDirectories.SANDY_DIR_NAME, MIGRATION_DIR_NAME);
 
     private TorDirectoryMigration() {
     }
@@ -102,13 +98,14 @@ public final class TorDirectoryMigration {
         try (Stream<Path> stream = Files.list(baseDirPath)) {
             entries = stream.collect(Collectors.toList());
         }
+        Set<String> newLayoutNames = newLayoutNames(directories);
         for (Path entry : entries) {
             String name = entry.getFileName().toString();
             if (isTorState(entry)) {
                 moveTorState(entry, migrationDirPath.resolve(name));
             } else if (isOldLayoutFile(name, oldBundleNames)) {
                 deleteQuietly(entry);
-            } else if (!isNewLayoutName(name)) {
+            } else if (!newLayoutNames.contains(name)) {
                 log.info("The Tor directory keeps {}, which the Tor library does not know", entry.toAbsolutePath());
             }
         }
@@ -132,8 +129,13 @@ public final class TorDirectoryMigration {
                 oldBundleNames.contains(name);
     }
 
-    private static boolean isNewLayoutName(String name) {
-        return NEW_LAYOUT_NAMES.contains(name);
+    // The entries of the new layout in the Tor directory, and the directory of the migration. The data directory is the
+    // result of the migration: an entry at its path is no part of the layout yet.
+    private static Set<String> newLayoutNames(TorDirectories directories) {
+        Stream<String> layoutNames = directories.getLayoutEntries().stream()
+                .filter(entry -> !entry.equals(directories.getDataDirPath()))
+                .map(entry -> entry.getFileName().toString());
+        return Stream.concat(layoutNames, Stream.of(MIGRATION_DIR_NAME)).collect(Collectors.toUnmodifiableSet());
     }
 
     // Losing the guards is better than failing every start, for example when an orphaned Tor locks a file on Windows.

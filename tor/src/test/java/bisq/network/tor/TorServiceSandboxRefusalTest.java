@@ -18,6 +18,7 @@
 package bisq.network.tor;
 
 import bisq.network.tor.common.torrc.DirectoryAuthority;
+import bisq.network.tor.process.TorStartupFailedException;
 import bisq.network.tor.sandbox.PluggableTransportsNotAllowedException;
 import bisq.network.tor.sandbox.SandboxUnavailableException;
 import bisq.network.tor.sandbox.SandboxedTransports;
@@ -28,7 +29,9 @@ import org.junit.jupiter.api.io.TempDir;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -155,6 +158,66 @@ class TorServiceSandboxRefusalTest {
 
         TorService.refuseDestinationsOutsideTheEgress(base, Set.of(), mixedBridges, OPT_OUT_HINT);
         TorService.refuseDestinationsOutsideTheEgress(hostNetwork, Set.of(), localBridges, OPT_OUT_HINT);
+    }
+
+    // Another process can take a port of the policy between the reservation of the ports and sandy.
+    @Test
+    void aStartWhichSandyRefusesIsTriedOnceMore() {
+        AtomicInteger starts = new AtomicInteger();
+
+        TorService.retryOnceAfterARefusalOfSandy(() -> {
+            if (starts.incrementAndGet() == 1) {
+                throw new TorService.SandyRefusalException("cannot listen on 127.0.0.1:12345", OPT_OUT_HINT);
+            }
+        });
+
+        assertThat(starts).hasValue(2);
+    }
+
+    @Test
+    void aSecondRefusalOfSandyFailsTheStartWithTheAdvice() {
+        AtomicInteger starts = new AtomicInteger();
+
+        assertThatThrownBy(() -> TorService.retryOnceAfterARefusalOfSandy(() -> {
+            starts.incrementAndGet();
+            throw new TorService.SandyRefusalException("cannot listen on 127.0.0.1:12345", OPT_OUT_HINT);
+        }))
+                .isInstanceOf(SandboxUnavailableException.class)
+                .hasMessageContaining("cannot listen on 127.0.0.1:12345")
+                .hasMessageContaining(OPT_OUT_HINT);
+        assertThat(starts).hasValue(2);
+    }
+
+    // A system which enforces no level, a configuration which the sandbox refuses and a failed start of Tor stay.
+    @Test
+    void otherFailuresOfTheStartAreNotTriedAgain() {
+        for (RuntimeException failure : List.of(new SandboxUnavailableException("no level", OPT_OUT_HINT),
+                new TorStartupFailedException("Tor exited"))) {
+            AtomicInteger starts = new AtomicInteger();
+
+            assertThatThrownBy(() -> TorService.retryOnceAfterARefusalOfSandy(() -> {
+                starts.incrementAndGet();
+                throw failure;
+            })).isSameAs(failure);
+            assertThat(starts).hasValue(1);
+        }
+    }
+
+    // sandy check exits with 125 when it cannot tell now, for example for a port which another process holds.
+    @Test
+    void onlyACheckWhichCannotTellNowCanPass() {
+        var undecided = new Sandy.CheckResult(Sandy.EXIT_STATUS_NOT_STARTED, Optional.empty(),
+                "sandy: cannot listen on 127.0.0.1:12345");
+        var notEnforceable = new Sandy.CheckResult(1, Optional.empty(), "level base: signals-isolated (unavailable)");
+
+        assertThat(TorService.refusalOfCheck(undecided, OPT_OUT_HINT))
+                .isInstanceOf(TorService.SandyRefusalException.class)
+                .hasMessageContaining("A later start may succeed")
+                .hasMessageContaining(OPT_OUT_HINT);
+        assertThat(TorService.refusalOfCheck(notEnforceable, OPT_OUT_HINT))
+                .isNotInstanceOf(TorService.SandyRefusalException.class)
+                .hasMessageContaining("cannot enforce any level")
+                .hasMessageContaining(OPT_OUT_HINT);
     }
 
     private TorService createTorService(Map<String, String> torrcOverrides, TorSandboxConfig sandboxConfig) {

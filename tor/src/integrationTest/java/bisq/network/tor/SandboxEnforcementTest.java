@@ -64,6 +64,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
@@ -71,7 +72,8 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * line and the environment of TorService, and checks what the sandbox enforces. sandy runs a named level on any host
  * that can enforce it, so a strong host runs the fallback levels too. The probes of the enforcement run busybox in the
  * base level of linux.toml, which Tor without pluggable transports gets, and of linux-transports.toml, which Tor with
- * obfs4 bridges gets; both as TorSandboxPolicy renders them for the bundled tor.
+ * obfs4 bridges gets; both as TorSandboxPolicy renders them for the bundled tor. The status record of sandy tells a
+ * refusal of sandy from a program which exits with the status of sandy.
  */
 @Timeout(120)
 class SandboxEnforcementTest {
@@ -83,6 +85,7 @@ class SandboxEnforcementTest {
     private static final Path BUSYBOX = Paths.get("/usr/bin/busybox");
     // The program of the transport in linux-transports.toml: the only program besides busybox which a probe may start
     private static final Path TRANSPORT_PROGRAM = Paths.get("/usr/bin/true");
+    private static final String OPT_OUT_HINT = "Turn the sandbox off to test.";
 
     @TempDir
     Path torDir;
@@ -269,6 +272,104 @@ class SandboxEnforcementTest {
         assertThat(signal.output()).contains("No such process").contains("rc=1");
     }
 
+    // Another process holds the port on which sandy relays the SOCKS port of Tor, so sandy refuses before Tor runs.
+    @Test
+    void aPortWhichAnotherProcessHoldsIsARefusalOfSandyWithTheAdvice() throws Exception {
+        TorListenerPorts listenerPorts = allocateListenerPorts();
+        SandyPolicy policy = torPolicy(listenerPorts);
+        Sandy.Level level = selectedLevel(policy);
+
+        try (ServerSocket ignored = new ServerSocket(listenerPorts.socks().outerPort(), 1,
+                LoopbackPorts.IPV4_LOOPBACK)) {
+            EmbeddedTorProcess tor = startInLevel(policy, level, EmbeddedTorProcess.torCommand(torBinaryPath,
+                    directories.getTorrcPath()));
+
+            // A refusal which can pass, which the start of TorService tries once more with other ports
+            assertThatThrownBy(() -> TorService.waitUntilControlPortAnswers(listenerPorts.control().outerPort(), tor,
+                    sandboxedRun(level)))
+                    .isInstanceOf(TorService.SandyRefusalException.class)
+                    .hasMessageContaining("statusRecord=[level " + level.name() + ", failed]")
+                    .hasMessageContaining("Address in use")
+                    .hasMessageContaining(OPT_OUT_HINT);
+        }
+        assertThat(directories.getSandyStatusRecordPath()).doesNotExist();
+    }
+
+    // sandy check tries the ports of the policy and cannot tell now while another process holds one.
+    @Test
+    void aPortWhichAnotherProcessHoldsAtTheCheckIsARefusalWhichCanPass() throws Exception {
+        TorListenerPorts listenerPorts = allocateListenerPorts();
+        SandyPolicy policy = torPolicy(listenerPorts);
+        Sandy sandy = new Sandy(sandyPath, Long.toString(ProcessHandle.current().pid()));
+
+        Sandy.CheckResult checkResult;
+        try (ServerSocket ignored = new ServerSocket(listenerPorts.control().outerPort(), 1,
+                LoopbackPorts.IPV4_LOOPBACK)) {
+            checkResult = sandy.check(policy, torBinaryPath);
+        }
+
+        assertThat(checkResult.exitCode()).as(checkResult.report()).isEqualTo(Sandy.EXIT_STATUS_NOT_STARTED);
+        assertThat(TorService.refusalOfCheck(checkResult, OPT_OUT_HINT))
+                .isInstanceOf(TorService.SandyRefusalException.class)
+                .hasMessageContaining(Integer.toString(listenerPorts.control().outerPort()));
+    }
+
+    /**
+     * A compromised Tor chooses its exit status and what it writes to its standard error, but not the status record
+     * of sandy, in which sandy names the process ID of the program once it runs it. In linux.toml sandy replaces itself
+     * with the program, in linux-transports.toml it stays its parent and contains the processes of the program.
+     */
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void aProgramWhichExitsWithTheStatusOfSandyGetsNoAdviceToTurnTheSandboxOff(boolean withTransports)
+            throws Exception {
+        SandyPolicy policy = withTransports ? transportsPolicy() : linuxPolicy();
+        Sandy.Level level = selectedLevel(policy);
+        assertThat(Sandy.staysParent(OS.LINUX, level)).as("sandy stays the parent in level %s", level)
+                .isEqualTo(withTransports);
+        int closedPort = LoopbackPorts.allocate(1).get(0);
+
+        EmbeddedTorProcess program = startInLevel(policy, level, List.of(BUSYBOX.toString(), "sh", "-c",
+                "echo 'sandy: this system cannot run the sandbox' >&2; exit 125"));
+
+        assertThatThrownBy(() -> TorService.waitUntilControlPortAnswers(closedPort, program, sandboxedRun(level)))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("exited before it answered")
+                .hasMessageContaining("exitCode=125")
+                .hasMessageContaining("statusRecord=[level " + level.name() + ", pid ")
+                .hasMessageNotContaining(OPT_OUT_HINT);
+    }
+
+    // The level which sandy check selects for the policy, with the requirements which it enforces there
+    private Sandy.Level selectedLevel(SandyPolicy policy) {
+        Sandy.CheckResult checkResult = new Sandy(sandyPath, Long.toString(ProcessHandle.current().pid()))
+                .check(policy, torBinaryPath);
+        assumeTrue(checkResult.isEnforceable(), "This host enforces no level of the policy:\n" + checkResult.report());
+        return checkResult.selectedLevel().orElseThrow();
+    }
+
+    // Starts the program as TorService starts Tor in the level, with this test as the parent which Tor ends with
+    private EmbeddedTorProcess startInLevel(SandyPolicy policy, Sandy.Level level, List<String> program)
+            throws IOException {
+        Sandy sandy = new Sandy(sandyPath, Long.toString(ProcessHandle.current().pid()));
+        Files.deleteIfExists(directories.getSandyStatusRecordPath());
+        var process = new EmbeddedTorProcess(sandy.runCommand(policy, level, directories.getSandyStatusRecordPath(),
+                program),
+                policy.workingDirPath(),
+                Sandy::removeLoaderVariables,
+                directories.getStdoutLogPath(),
+                directories.getStderrLogPath(),
+                Optional.of(Sandy.policyInput(policy)));
+        torProcesses.add(process);
+        process.start();
+        return process;
+    }
+
+    private Optional<TorService.SandboxedRun> sandboxedRun(Sandy.Level level) {
+        return Optional.of(new TorService.SandboxedRun(directories.getSandyStatusRecordPath(),
+                Sandy.staysParent(OS.LINUX, level), OPT_OUT_HINT));
+    }
+
     // A process which sandy takes as the parent of Tor, so that the test can end it
     private Process startParent() throws IOException {
         Process parent = new ProcessBuilder("sleep", "600").start();
@@ -278,14 +379,8 @@ class SandboxEnforcementTest {
 
     // Starts Tor as TorService starts it in the level, with the parent instead of Bisq, and waits until it answers.
     private EmbeddedTorProcess startTorInLevel(String levelName, Process parent) throws Exception {
-        List<Integer> ports = LoopbackPorts.allocate(5);
-        var listenerPorts = new TorListenerPorts(new PortMapping(ports.get(0), ports.get(1)),
-                new PortMapping(ports.get(2), ports.get(3)),
-                OptionalInt.of(ports.get(4)));
-        SandyPolicy policy = TorSandboxPolicy.create(OS.LINUX, directories, listenerPorts, List.of(),
-                TorService.sandboxedTorEnvironment(directories), TorSandboxPolicy.executablePaths(OS.LINUX, directories),
-                SandboxedTransports.NONE, "bisq2");
-        writeTorrc(listenerPorts);
+        TorListenerPorts listenerPorts = allocateListenerPorts();
+        SandyPolicy policy = torPolicy(listenerPorts);
 
         assumeEnforceable(policy, levelName);
         String parentPid = Long.toString(parent.pid());
@@ -293,7 +388,9 @@ class SandboxEnforcementTest {
         var level = new Sandy.Level(levelName, Set.of(Sandy.ENDS_WITH_PARENT));
         List<String> torCommand = TorService.sandboxedTorCommand(torBinaryPath, directories.getTorrcPath(), level,
                 parentPid);
-        var tor = new EmbeddedTorProcess(sandy.runCommand(policy, level, torCommand),
+        Files.deleteIfExists(directories.getSandyStatusRecordPath());
+        var tor = new EmbeddedTorProcess(sandy.runCommand(policy, level, directories.getSandyStatusRecordPath(),
+                torCommand),
                 policy.workingDirPath(),
                 Sandy::removeLoaderVariables,
                 directories.getStdoutLogPath(),
@@ -303,6 +400,22 @@ class SandboxEnforcementTest {
         tor.start();
         TorService.waitUntilControlPortAnswers(listenerPorts.control().outerPort(), tor, Optional.empty());
         return tor;
+    }
+
+    private static TorListenerPorts allocateListenerPorts() throws IOException {
+        List<Integer> ports = LoopbackPorts.allocate(5);
+        return new TorListenerPorts(new PortMapping(ports.get(0), ports.get(1)),
+                new PortMapping(ports.get(2), ports.get(3)),
+                OptionalInt.of(ports.get(4)));
+    }
+
+    // The policy of the bundled tor as TorService renders it, with the torrc of the ports
+    private SandyPolicy torPolicy(TorListenerPorts listenerPorts) {
+        SandyPolicy policy = TorSandboxPolicy.create(OS.LINUX, directories, listenerPorts, List.of(),
+                TorService.sandboxedTorEnvironment(directories), TorSandboxPolicy.executablePaths(OS.LINUX, directories),
+                SandboxedTransports.NONE, "bisq2");
+        writeTorrc(listenerPorts);
+        return policy;
     }
 
     private SandyPolicy linuxPolicy() throws Exception {
@@ -344,8 +457,10 @@ class SandboxEnforcementTest {
         program.add(BUSYBOX.toString());
         program.addAll(List.of(busyboxArguments));
         Sandy sandy = new Sandy(sandyPath, Long.toString(ProcessHandle.current().pid()));
+        Files.deleteIfExists(directories.getSandyStatusRecordPath());
         var processBuilder = new ProcessBuilder(sandy.runCommand(policy,
-                new Sandy.Level("base", Set.of(Sandy.ENDS_WITH_PARENT)), program))
+                new Sandy.Level("base", Set.of(Sandy.ENDS_WITH_PARENT)), directories.getSandyStatusRecordPath(),
+                program))
                 .redirectErrorStream(true);
         Sandy.removeLoaderVariables(processBuilder.environment());
         Process process = processBuilder.start();

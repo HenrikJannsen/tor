@@ -20,6 +20,7 @@ package bisq.network.tor.process;
 import bisq.network.tor.common.platform.OS;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Method;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
@@ -37,6 +38,8 @@ class TorDirectoriesTest {
         assertThat(directories.getBinaryDirPath()).isEqualTo(bin);
         assertThat(directories.getDataDirPath()).isEqualTo(BASE.resolve("data"));
         assertThat(directories.getSandyDirPath()).isEqualTo(BASE.resolve("sandy"));
+        assertThat(directories.getSandyStatusRecordPath()).isEqualTo(BASE.resolve("sandy").resolve("run-status"));
+        assertThat(directories.getDataModePath()).isEqualTo(BASE.resolve("data-mode"));
         assertThat(directories.getTorrcPath()).isEqualTo(BASE.resolve("torrc"));
         assertThat(directories.getStdoutLogPath()).isEqualTo(BASE.resolve("tor-stdout.log"));
         assertThat(directories.getStderrLogPath()).isEqualTo(BASE.resolve("tor-stderr.log"));
@@ -57,10 +60,27 @@ class TorDirectoriesTest {
                 .isEqualTo(EmbeddedTorProcess.rotatedStdoutLogPath(directories.getStdoutLogPath()));
     }
 
+    // The migration of the Tor directory takes the names of the layout from here, so a path of TorDirectories directly in
+    // the Tor directory which the layout misses would count there as a file which the library does not know.
+    @Test
+    void theLayoutHasEveryPathOfTorDirectoriesInTheTorDirectory() throws Exception {
+        List<Path> layoutEntries = directories.getLayoutEntries();
+        for (Method method : TorDirectories.class.getMethods()) {
+            if (method.getReturnType() == Path.class && method.getParameterCount() == 0) {
+                Path path = (Path) method.invoke(directories);
+                if (BASE.equals(path.getParent())) {
+                    assertThat(layoutEntries).as(method.getName()).contains(path);
+                }
+            }
+        }
+        assertThat(layoutEntries).allMatch(entry -> BASE.equals(entry.getParent())).doesNotHaveDuplicates();
+    }
+
     // A sandboxed Tor may write its data directory, so nothing which Bisq executes, reads or writes may lie there.
     @Test
     void nothingWhichBisqTrustsLiesInTheDataDirectory() {
         for (Path path : List.of(directories.getBinaryDirPath(), directories.getSandyDirPath(),
+                directories.getSandyStatusRecordPath(), directories.getDataModePath(),
                 directories.getTorrcPath(), directories.getStdoutLogPath(), directories.getStderrLogPath(),
                 directories.getExternalTorConfigPath(), directories.getOpenSslConfigPath())) {
             assertThat(path.startsWith(directories.getDataDirPath())).as(path.toString()).isFalse();

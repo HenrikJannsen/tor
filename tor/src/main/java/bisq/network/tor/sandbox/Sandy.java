@@ -17,6 +17,7 @@
 
 package bisq.network.tor.sandbox;
 
+import bisq.network.tor.common.platform.OS;
 import com.google.common.util.concurrent.Uninterruptibles;
 import com.typesafe.config.Config;
 import com.typesafe.config.ConfigException;
@@ -54,9 +55,10 @@ import java.util.stream.Collectors;
 @Slf4j
 public final class Sandy {
     /**
-     * The exit status of {@code sandy run} when sandy did not start the program, and of {@code sandy check} when it
-     * cannot tell now what the host enforces or the policy conflicts with the host. sandy prints the reason on
-     * standard error.
+     * The exit status of {@code sandy run} when sandy failed or refused, and of {@code sandy check} when it cannot tell
+     * now what the host enforces or the policy conflicts with the host. sandy prints the reason on standard error. A
+     * program which sandy started can exit with it too; only the status record of the run tells them apart
+     * ({@link #endedBeforeTheProgramRan}).
      */
     public static final int EXIT_STATUS_NOT_STARTED = 125;
     // The names of requirements in the JSON of sandy check, which sandy keeps stable
@@ -64,6 +66,7 @@ public final class Sandy {
     public static final String IP_NETWORK_PRIVATE = "ip-network-private";
     public static final String SIGNALS_ISOLATED = "signals-isolated";
     public static final String ENDS_WITH_PARENT = "ends-with-parent";
+    public static final String CHILD_PROCESSES_CONTAINED = "child-processes-contained";
 
     private static final long CHECK_TIMEOUT_SEC = 30;
     private static final long STOP_TIMEOUT_SEC = 5;
@@ -187,13 +190,21 @@ public final class Sandy {
      * refuse the start, instead of taking another level, if the host changed since the check, so Tor never runs with
      * a torrc that Bisq wrote for another level. On Linux and macOS sandy replaces itself with the program, so the
      * process is the program, unless the level has {@code children = "contained"}. Then, and on Windows in every
-     * level, sandy stays the parent of the program, ends it when sandy ends and exits with its status.
+     * level, sandy stays the parent of the program, ends it when sandy ends and exits with its status
+     * ({@link #staysParent}).
      * <p>
      * Bisq names itself as the parent only for a level that ends with it. With {@code --level}, sandy checks
      * {@code --parent-pid} against that level alone and refuses it for a level without {@code end_with_parent}, such
      * as {@code host-network-signals} of the Linux templates, while {@code check} accepts it for the whole policy.
+     *
+     * @param statusRecordPath where sandy writes the status record of the run ({@link SandyStatusRecord}): an absolute
+     *                         path outside every writable path of the policy, which must not exist. The caller removes
+     *                         the file once it has read the record.
      */
-    public List<String> runCommand(SandyPolicy policy, Level level, List<String> programCommand) {
+    public List<String> runCommand(SandyPolicy policy,
+                                   Level level,
+                                   Path statusRecordPath,
+                                   List<String> programCommand) {
         List<String> command = new ArrayList<>();
         command.add(binaryPath.toAbsolutePath().toString());
         command.add("run");
@@ -201,6 +212,8 @@ public final class Sandy {
         command.add("-");
         command.add("--level");
         command.add(level.name());
+        command.add("--status-file");
+        command.add(statusRecordPath.toAbsolutePath().normalize().toString());
         command.add("--cwd");
         command.add(policy.workingDirPath().toAbsolutePath().normalize().toString());
         if (level.enforces(ENDS_WITH_PARENT)) {
@@ -213,6 +226,46 @@ public final class Sandy {
 
     public static byte[] policyInput(SandyPolicy policy) {
         return policy.toml().getBytes(StandardCharsets.UTF_8);
+    }
+
+    /**
+     * Whether sandy stays the parent of the program in the level: on Windows in every level, on Linux and macOS with
+     * {@code children = "contained"}. Otherwise sandy replaces itself with the program. Bisq never passes
+     * {@code --explain}, with which sandy would stay the parent on Linux as well.
+     */
+    public static boolean staysParent(OS os, Level level) {
+        return os == OS.WINDOWS || level.enforces(CHILD_PROCESSES_CONTAINED);
+    }
+
+    /**
+     * Whether sandy itself ended a run before the program ran, for example because the host no longer enforces the
+     * level or another process holds a port of the policy. The program can exit with status 125 as well, but it cannot
+     * write the status record, so only the record decides:
+     * <ul>
+     *     <li>no record: sandy stopped before it created the file, so the program did not run;</li>
+     *     <li>{@code failed} without {@code pid}: sandy refused before the program ran;</li>
+     *     <li>{@code pid}, then {@code failed}: where sandy replaces itself with the program, it writes {@code pid}
+     *     right before it confines itself and executes the program, so confining or executing failed and the program
+     *     did not run. Where sandy stays the parent, it writes {@code pid} once the program runs, so it ended a
+     *     running program;</li>
+     *     <li>no {@code failed}: the program ran, or sandy could not write the record, which it writes on a best-effort
+     *     basis. Then the program may have run.</li>
+     * </ul>
+     *
+     * @param exitStatus   the exit status of the process which Bisq started
+     * @param statusRecord the record of the run, empty if sandy did not create the file
+     */
+    public static boolean endedBeforeTheProgramRan(boolean staysParent,
+                                                   int exitStatus,
+                                                   Optional<SandyStatusRecord> statusRecord) {
+        if (exitStatus != EXIT_STATUS_NOT_STARTED) {
+            return false;
+        }
+        if (statusRecord.isEmpty()) {
+            return true;
+        }
+        SandyStatusRecord record = statusRecord.get();
+        return record.hasSandyFailed() && (!record.hasProgramStarted() || !staysParent);
     }
 
     /**
