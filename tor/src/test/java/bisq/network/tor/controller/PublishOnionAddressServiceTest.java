@@ -25,6 +25,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
@@ -124,6 +125,20 @@ class PublishOnionAddressServiceTest {
                 "250 OK\r\n");
 
         assertThatCode(() -> torController.publish(onionServiceKey, 9999, 12345)).doesNotThrowAnyException();
+    }
+
+    // Tor names the onion address in lower case. Before, the key of an address in upper case failed as the key of
+    // another onion address, and its published onion service was removed.
+    @Test
+    void anOnionAddressInUpperCaseIsPublished() throws Exception {
+        OnionServiceKey upperCaseKey = new OnionServiceKey(onionServiceKey.getOnionAddress().toUpperCase(Locale.ROOT),
+                onionServiceKey.getBase64SecretScalar());
+        connect(1000, command -> command.startsWith("ADD_ONION") ?
+                addOnionReply(serviceId) + uploadEvents(serviceId) :
+                "250 OK\r\n");
+
+        assertThatCode(() -> torController.publish(upperCaseKey, 9999, 12345)).doesNotThrowAnyException();
+        assertThat(server.getCommands()).noneMatch(command -> command.startsWith("DEL_ONION"));
     }
 
     @Test

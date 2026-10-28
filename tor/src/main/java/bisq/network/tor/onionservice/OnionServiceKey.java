@@ -19,6 +19,8 @@ package bisq.network.tor.onionservice;
 import lombok.Getter;
 import lombok.ToString;
 
+import java.util.Locale;
+
 /**
  * The key of an onion service in the form which the ADD_ONION command of the Tor control protocol needs.
  */
@@ -29,8 +31,13 @@ public final class OnionServiceKey {
     @ToString.Exclude
     private final String base64SecretScalar;
 
+    /**
+     * @param onionAddress the onion address of the key in any case. Tor names onion addresses in lower case in its
+     *                     replies and events, which the library compares with the address of the key, and the
+     *                     library uses the address as the key of the onion service, so the key keeps the lower case.
+     */
     public OnionServiceKey(String onionAddress, String base64SecretScalar) {
-        this.onionAddress = onionAddress;
+        this.onionAddress = onionAddress.toLowerCase(Locale.ROOT);
         this.base64SecretScalar = base64SecretScalar;
     }
 }
