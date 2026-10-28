@@ -168,8 +168,11 @@ IDE import can resolve artifacts that `resolveAndVerifyDependencies` does not re
 `-javadoc.jar` archives, and the sources of the Groovy modules that Gradle embeds. `--write-verification-metadata`
 records only what the run requests, so these entries are maintained by hand:
 
-- The `org.codehaus.groovy` modules of version 3.0.21 (embedded in Gradle 8.9) are trusted for key
+- The `org.apache.groovy` modules of version 4.0.27 (embedded in Gradle 9.0.0) are trusted for key
   `34441E504A937F43EB0DAEF96A65176A0FB1CD0B`. Update the version when Gradle upgrades its embedded Groovy.
+- The Gradle sources `gradle:gradle:9.0.0` (`gradle-9.0.0-src.zip`, which the IDE fetches from the Gradle
+  distributions server for the build scripts) are trusted for key `1BD97A6A154E7810EE0BC832E2F38302C8075E3D`. Update
+  the version with the Gradle wrapper.
 - Sources and Javadoc of a dependency are covered when its module is trusted through a `trusted-key` entry. A
   dependency verified only by per-artifact entries needs entries for these archives as well.
 
