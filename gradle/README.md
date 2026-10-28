@@ -53,6 +53,12 @@ The committed verification files are:
 The root `resolveAndVerifyDependencies` task resolves every resolvable configuration of the root build and the
 `build-logic` included build.
 
+Gradle verifies an artifact when it resolves it, and a reused configuration cache entry would skip the resolution. The
+tasks which resolve every configuration, and `verifyDependencySignaturePolicy` and `dependencySignatureReport`, which
+always run with them, are therefore declared incompatible with the configuration cache: with `--configuration-cache`
+Gradle runs them, but stores no entry for such an invocation. The other checks of `build` work with the configuration
+cache.
+
 Gradle reads the verification metadata only from `gradle/` of the root of the build tree, so `build-logic` is verified
 only as part of this build. A build of `build-logic` on its own (`-p build-logic`) fails; run its tasks from the
 repository root instead, for example `./gradlew :build-logic:gradle-tasks:test`.

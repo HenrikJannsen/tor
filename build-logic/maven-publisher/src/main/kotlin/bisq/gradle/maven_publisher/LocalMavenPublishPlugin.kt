@@ -20,6 +20,49 @@ class LocalMavenPublishPlugin : Plugin<Project> {
     companion object {
         const val DEFAULT_GROUP = "bisq"
         val COMPOSITE_PROJECTS_TO_INCLUDE = listOf("tor")
+
+        // Gradle consumers get bisq:platform from the Gradle module metadata. The POM import of it cannot be resolved
+        // on JitPack, which moves our dependencies to its own coordinates but not BOM imports, and Gradle resolves the
+        // import while it reads the POM, before it switches to the module metadata.
+        private fun removeOwnBomImports(rootNode: Node) {
+            val dependencyManagementNode = rootNode.childNode("dependencyManagement") ?: return
+            val dependenciesNode = dependencyManagementNode.childNode("dependencies") ?: return
+            dependenciesNode.childNodes()
+                .filter { it.isOwnDependency() && it.childNode("scope")?.text() == "import" }
+                .forEach { dependenciesNode.remove(it) }
+            if (dependenciesNode.childNodes().isEmpty()) {
+                rootNode.remove(dependencyManagementNode)
+            }
+        }
+
+        // A dependency like implementation("bisq:common") still builds, because the composite build substitutes the
+        // project, but it is published without a version, and projects using the published jars cannot resolve it.
+        // The same goes for "bisq:common:$version" in a project whose own version is not set, which is published as
+        // "unspecified".
+        private fun requireVersionsOnOwnDependencies(rootNode: Node, publicationCoordinates: String) {
+            val withoutVersion = rootNode.childNode("dependencies")?.childNodes().orEmpty()
+                .filter { it.isOwnDependency() && it.childNode("version")?.text() in listOf(null, "unspecified") }
+                .map { dependency ->
+                    listOf("groupId", "artifactId", "version")
+                        .mapNotNull { dependency.childNode(it)?.text() }
+                        .joinToString(":")
+                }
+            if (withoutVersion.isNotEmpty()) {
+                throw GradleException("$publicationCoordinates declares $withoutVersion without a version. " +
+                        "Add one, for example implementation(\"bisq:common:\$version\"), in a project that sets its " +
+                        "version.")
+            }
+        }
+
+        private fun Node.isOwnDependency(): Boolean {
+            val groupId = childNode("groupId")?.text() ?: return false
+            return groupId == DEFAULT_GROUP || groupId in COMPOSITE_PROJECTS_TO_INCLUDE
+        }
+
+        private fun Node.childNodes(): List<Node> = children().filterIsInstance<Node>()
+
+        // Names carry the POM namespace, hence the suffix match
+        private fun Node.childNode(name: String): Node? = childNodes().firstOrNull { it.name().toString().endsWith(name) }
     }
 
     private var rootVersion = "unspecified"
@@ -114,53 +157,15 @@ class LocalMavenPublishPlugin : Plugin<Project> {
         // Include the Protobuf sources JAR
         artifact(protoSourcesJar)
 
+        // The action keeps only the coordinates and calls functions of the companion object: the configuration cache
+        // cannot store the publication or the plugin.
+        val publicationCoordinates = "$groupId:$artifactId"
         pom.withXml {
             val rootNode = asNode()
             removeOwnBomImports(rootNode)
-            requireVersionsOnOwnDependencies(rootNode)
+            requireVersionsOnOwnDependencies(rootNode, publicationCoordinates)
         }
     }
-
-    // Gradle consumers get bisq:platform from the Gradle module metadata. The POM import of it cannot be resolved on
-    // JitPack, which moves our dependencies to its own coordinates but not BOM imports, and Gradle resolves the import
-    // while it reads the POM, before it switches to the module metadata.
-    private fun removeOwnBomImports(rootNode: Node) {
-        val dependencyManagementNode = rootNode.childNode("dependencyManagement") ?: return
-        val dependenciesNode = dependencyManagementNode.childNode("dependencies") ?: return
-        dependenciesNode.childNodes()
-            .filter { it.isOwnDependency() && it.childNode("scope")?.text() == "import" }
-            .forEach { dependenciesNode.remove(it) }
-        if (dependenciesNode.childNodes().isEmpty()) {
-            rootNode.remove(dependencyManagementNode)
-        }
-    }
-
-    // A dependency like implementation("bisq:common") still builds, because the composite build substitutes the
-    // project, but it is published without a version, and projects using the published jars cannot resolve it. The same
-    // goes for "bisq:common:$version" in a project whose own version is not set, which is published as "unspecified".
-    private fun MavenPublication.requireVersionsOnOwnDependencies(rootNode: Node) {
-        val withoutVersion = rootNode.childNode("dependencies")?.childNodes().orEmpty()
-            .filter { it.isOwnDependency() && it.childNode("version")?.text() in listOf(null, "unspecified") }
-            .map { dependency ->
-                listOf("groupId", "artifactId", "version")
-                    .mapNotNull { dependency.childNode(it)?.text() }
-                    .joinToString(":")
-            }
-        if (withoutVersion.isNotEmpty()) {
-            throw GradleException("$groupId:$artifactId declares $withoutVersion without a version. " +
-                    "Add one, for example implementation(\"bisq:common:\$version\"), in a project that sets its version.")
-        }
-    }
-
-    private fun Node.isOwnDependency(): Boolean {
-        val groupId = childNode("groupId")?.text() ?: return false
-        return groupId == DEFAULT_GROUP || groupId in COMPOSITE_PROJECTS_TO_INCLUDE
-    }
-
-    private fun Node.childNodes(): List<Node> = children().filterIsInstance<Node>()
-
-    // Names carry the POM namespace, hence the suffix match
-    private fun Node.childNode(name: String): Node? = childNodes().firstOrNull { it.name().toString().endsWith(name) }
 
     // Gradle sets the version of every project from the gradle.properties in the root directory of this build before it
     // applies a plugin.

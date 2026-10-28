@@ -27,11 +27,8 @@ class TorBinaryPackager(
             dependsOn(torBinaryDownloader.verifySignatureTask)
 
             val tarFile: Provider<RegularFile> = torBinaryDownloader.verifySignatureTask.flatMap { it.fileToVerify }
-            from(
-                tarFile.map {
-                    project.tarTree(it.asFile.absolutePath)
-                }
-            )
+            // tarTree resolves the provider lazily. A lambda which uses the project would break the configuration cache.
+            from(project.tarTree(tarFile))
 
             into(project.layout.buildDirectory.dir(ARCHIVE_EXTRACTION_DIR))
         }

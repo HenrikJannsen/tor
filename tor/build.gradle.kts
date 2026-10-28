@@ -35,7 +35,9 @@ tor {
  */
 val generateTorBuildVersionClass by tasks.registering {
     val outputDir = layout.buildDirectory.dir("generated/source/torBuildVersion")
-    inputs.property("torVersion", torVersion)
+    // A local copy, because the configuration cache cannot store a reference to the script object.
+    val versionForTask = torVersion
+    inputs.property("torVersion", versionForTask)
     outputs.dir(outputDir)
 
     doLast {
@@ -45,7 +47,7 @@ val generateTorBuildVersionClass by tasks.registering {
             package bisq.network.tor.installer;
 
             final class TorBuildVersion {
-                static final String TOR_VERSION = "$torVersion";
+                static final String TOR_VERSION = "$versionForTask";
             }
         """.trimIndent())
     }
