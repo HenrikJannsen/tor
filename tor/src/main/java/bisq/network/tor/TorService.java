@@ -678,7 +678,7 @@ public class TorService {
     }
 
     private static boolean isSet(Map<String, String> torrcConfigMap, String key) {
-        return torrcConfigMap.keySet().stream().anyMatch(existingKey -> existingKey.equalsIgnoreCase(key));
+        return torrcConfigMap.keySet().stream().anyMatch(existingKey -> TorrcClientConfigFactory.sets(existingKey, key));
     }
 
     /**

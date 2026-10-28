@@ -23,14 +23,43 @@ import bisq.network.tor.common.torrc.TestNetworkTorrcGenerator;
 import bisq.network.tor.common.torrc.TorrcConfigGenerator;
 import bisq.network.tor.controller.PasswordDigest;
 import lombok.Builder;
+import lombok.extern.slf4j.Slf4j;
 
 import java.nio.file.Path;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
+import static bisq.network.tor.common.torrc.Torrc.Keys.CONTROL_PORT;
+import static bisq.network.tor.common.torrc.Torrc.Keys.CONTROL_PORT_WRITE_TO_FILE;
+import static bisq.network.tor.common.torrc.Torrc.Keys.DATA_DIRECTORY;
 import static bisq.network.tor.common.torrc.Torrc.Keys.DISABLE_NETWORK;
+import static bisq.network.tor.common.torrc.Torrc.Keys.HASHED_CONTROL_PASSWORD;
+import static bisq.network.tor.common.torrc.Torrc.Keys.SOCKS_PORT;
 
+@Slf4j
 @Builder
 public class TorrcClientConfigFactory {
+    // TorService reads the control port from the file which Tor writes, authenticates with the password of this start
+    // and checks its hash, and gives each stream of the SOCKS listener its own circuit. An override of these keys
+    // would break the start of Tor or this isolation.
+    private static final Set<String> KEYS_OWNED_BY_BISQ = Stream.of(CONTROL_PORT, CONTROL_PORT_WRITE_TO_FILE,
+                    SOCKS_PORT, DATA_DIRECTORY, HASHED_CONTROL_PASSWORD, DISABLE_NETWORK)
+            .map(key -> key.toLowerCase(Locale.ROOT))
+            .collect(Collectors.toUnmodifiableSet());
+
+    // Bisq alone controls the embedded Tor. Bisq sets none of these options; each would let another program control
+    // Tor: a control listener on a Unix socket (ControlSocket), an authenticated control connection on an inherited
+    // file descriptor (__OwningControllerFD), a second password (__HashedControlSessionPassword), the cookie, which
+    // every program that can read its file may use (CookieAuthentication, CookieAuthFile,
+    // CookieAuthFileGroupReadable), or control sockets which the group of the user may write
+    // (ControlSocketsGroupWritable).
+    private static final Set<String> CONTROL_ACCESS_KEYS = Set.of("controlsocket", "controlsocketsgroupwritable",
+            "owningcontrollerfd", "hashedcontrolsessionpassword", "cookieauthentication", "cookieauthfile",
+            "cookieauthfilegroupreadable");
+
     private final boolean isTestNetwork;
     private final Path dataDirPath;
     private final PasswordDigest hashedControlPassword;
@@ -45,9 +74,45 @@ public class TorrcClientConfigFactory {
 
     public Map<String, String> torrcClientConfigMap(Map<String, String> torrcOverrides) {
         Map<String, String> torrcClientConfig = clientTorrcGenerator().generate();
-        torrcClientConfig.putAll(torrcOverrides);
+        torrcOverrides.forEach((key, value) -> {
+            if (isOwnedByBisq(key)) {
+                log.warn("We ignore the torrc override of {}, because Bisq sets it for the embedded Tor", key);
+            } else if (isControlAccessKey(key)) {
+                log.warn("We ignore the torrc override of {}, because Bisq alone controls the embedded Tor", key);
+            } else {
+                // An override replaces a key of Bisq which it names in any case or as an abbreviation. Otherwise both
+                // entries would be written, and Tor would take one of them by the order of the map.
+                torrcClientConfig.keySet().removeIf(existingKey -> sets(key, existingKey));
+                torrcClientConfig.put(key, value);
+            }
+        });
         torrcClientConfig.put(DISABLE_NETWORK, "1");
         return torrcClientConfig;
+    }
+
+    // Tor reads the hidden options __ControlPort and __SocksPort, also abbreviated, as ControlPort and SocksPort. The
+    // other keys of Bisq have no hidden form: Tor refuses __DataDirectory, for example, as an unknown option.
+    private static boolean isOwnedByBisq(String key) {
+        return isPrefixOfAny(key.replaceFirst("^_+", ""), KEYS_OWNED_BY_BISQ);
+    }
+
+    // __OwningControllerFD and __HashedControlSessionPassword exist only in the hidden form.
+    private static boolean isControlAccessKey(String key) {
+        return isPrefixOfAny(key.replaceFirst("^_+", ""), CONTROL_ACCESS_KEYS);
+    }
+
+    /**
+     * Whether Tor reads the torrc key {@code key} as the option {@code optionName}: in any case, or as the start of
+     * the name, which Tor accepts as an abbreviation.
+     */
+    public static boolean sets(String key, String optionName) {
+        return isPrefixOfAny(key, Set.of(optionName.toLowerCase(Locale.ROOT)));
+    }
+
+    // Tor ignores the case of option names and accepts the start of an option name as an abbreviation.
+    private static boolean isPrefixOfAny(String key, Set<String> lowerCaseKeys) {
+        String lowerCaseKey = key.toLowerCase(Locale.ROOT);
+        return !lowerCaseKey.isEmpty() && lowerCaseKeys.stream().anyMatch(candidate -> candidate.startsWith(lowerCaseKey));
     }
 
     private TorrcConfigGenerator clientTorrcGenerator() {

@@ -49,10 +49,11 @@ class TorServiceBundledGeoIpTest {
 
     @Test
     void aTorrcOverrideOfTheUserStillApplies() {
-        Map<String, String> torrc = new HashMap<>(Map.of("geoipfile", "/opt/geoip"));
+        Map<String, String> torrc = new HashMap<>(Map.of("geoipfile", "/opt/geoip", "GeoIPv6", "/opt/geoip6"));
 
         TorService.putBundledGeoIpFiles(torrc, new TorDirectories(torDir));
 
-        assertThat(torrc).containsEntry("geoipfile", "/opt/geoip").doesNotContainKey("GeoIPFile");
+        // Also an abbreviation, which Tor accepts
+        assertThat(torrc).containsOnlyKeys("geoipfile", "GeoIPv6");
     }
 }
