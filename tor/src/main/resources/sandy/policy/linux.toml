@@ -29,7 +29,8 @@ expose = [
 forward = @forward@
 
 [process]
-# No child processes: Bisq runs Tor without the sandbox when it needs pluggable transports.
+# No child processes. Tor with pluggable transports, which are programs it starts, uses
+# linux-transports.toml or linux-transports-direct.toml.
 signals = "isolated"
 children = "none"
 end_with_parent = true

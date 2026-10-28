@@ -96,6 +96,31 @@ public final class BridgeTorrcEntries {
         return entries;
     }
 
+    /**
+     * @return the transports and the program of each {@code ClientTransportPlugin} entry of {@code entries}, as
+     * {@link #create} writes them: the transports separated by commas, {@code exec}, the program and its arguments
+     */
+    public static List<ClientTransportPlugin> findClientTransportPlugins(List<Map.Entry<String, String>> entries) {
+        return entries.stream()
+                .filter(entry -> entry.getKey().equals(CLIENT_TRANSPORT_PLUGIN))
+                .map(entry -> {
+                    String[] tokens = entry.getValue().split(" ");
+                    return new ClientTransportPlugin(List.of(tokens[0].split(",")), tokens[2]);
+                })
+                .toList();
+    }
+
+    /**
+     * @param transports the transports which the program provides to Tor
+     * @param program    the path of the program as Tor starts it: relative to the directory of the bundle, which is
+     *                   the working directory of Tor, or absolute
+     */
+    public record ClientTransportPlugin(List<String> transports, String program) {
+        public ClientTransportPlugin {
+            transports = List.copyOf(transports);
+        }
+    }
+
     private static List<String> getBridgeLines(BridgeConfig bridgeConfig,
                                                PluggableTransportConfig pluggableTransportConfig) {
         if (bridgeConfig.getBuiltInBridges().isEmpty()) {

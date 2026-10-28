@@ -26,7 +26,8 @@ import static com.google.common.base.Preconditions.checkArgument;
 
 /**
  * The configuration of the sandbox of the embedded Tor. The library runs the Tor which it starts inside sandy if the
- * sandbox is enabled, Tor does not use pluggable transports, and the host can enforce the sandbox.
+ * sandbox is enabled and the host can enforce it. Pluggable transports, programs which Tor starts for bridges, run in
+ * the sandbox only if the configuration allows them; otherwise a sandboxed start with them is refused.
  */
 @Getter
 @ToString
@@ -37,7 +38,7 @@ public final class TorSandboxConfig {
     static final int DEFAULT_ONION_SERVICE_PORT_POOL_SIZE = 32;
     private static final int MAX_ONION_SERVICE_PORT_POOL_SIZE = 1024;
 
-    public static final TorSandboxConfig DISABLED = new TorSandboxConfig(false, true,
+    public static final TorSandboxConfig DISABLED = new TorSandboxConfig(false, true, false,
             DEFAULT_ONION_SERVICE_PORT_POOL_SIZE, "bisq", "");
 
     /**
@@ -49,10 +50,13 @@ public final class TorSandboxConfig {
         boolean enabled = config != null && config.hasPath("enabled") && config.getBoolean("enabled");
         boolean forwardOnionServicePorts = config == null || !config.hasPath("forwardOnionServicePorts") ||
                 config.getBoolean("forwardOnionServicePorts");
+        boolean allowPluggableTransports = config != null && config.hasPath("allowPluggableTransports") &&
+                config.getBoolean("allowPluggableTransports");
         int onionServicePortPoolSize = config != null && config.hasPath("onionServicePortPoolSize") ?
                 config.getInt("onionServicePortPoolSize") :
                 DEFAULT_ONION_SERVICE_PORT_POOL_SIZE;
-        return new TorSandboxConfig(enabled, forwardOnionServicePorts, onionServicePortPoolSize, "bisq2",
+        return new TorSandboxConfig(enabled, forwardOnionServicePorts, allowPluggableTransports,
+                onionServicePortPoolSize, "bisq2",
                 "Start Bisq with the JVM option -D" + BISQ2_CONFIG_PATH + ".enabled=false to run Tor without the " +
                         "sandbox.");
     }
@@ -62,6 +66,9 @@ public final class TorSandboxConfig {
     // Tor reaches the onion services of Bisq through ports which sandy forwards. The sandbox needs it: Tor has a
     // network of its own there, and on Windows an AppContainer cannot reach the loopback ports of Bisq either.
     private final boolean forwardOnionServicePorts;
+    // Tor may start the pluggable transports of the bridges in its sandbox, which then lets it start processes and,
+    // for transports that resolve names or use UDP, gives it the network of the host. Off by default.
+    private final boolean allowPluggableTransports;
     // The number of onion services which can receive connections through forwarded ports.
     private final int onionServicePortPoolSize;
     // A short name of the application, for example bisq1 or bisq2. The AppContainer of Windows is named after it.
@@ -71,6 +78,7 @@ public final class TorSandboxConfig {
 
     public TorSandboxConfig(boolean enabled,
                             boolean forwardOnionServicePorts,
+                            boolean allowPluggableTransports,
                             int onionServicePortPoolSize,
                             String applicationId,
                             String optOutHint) {
@@ -78,6 +86,7 @@ public final class TorSandboxConfig {
                 "onionServicePortPoolSize must be between 1 and " + MAX_ONION_SERVICE_PORT_POOL_SIZE);
         this.enabled = enabled;
         this.forwardOnionServicePorts = forwardOnionServicePorts;
+        this.allowPluggableTransports = allowPluggableTransports;
         this.onionServicePortPoolSize = onionServicePortPoolSize;
         this.applicationId = applicationId;
         this.optOutHint = optOutHint;

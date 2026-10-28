@@ -45,7 +45,9 @@ import bisq.network.tor.process.TorDirectoryMigration;
 import bisq.network.tor.process.TorListenerPorts;
 import bisq.network.tor.process.TorListenerPorts.PortMapping;
 import bisq.network.tor.process.TorStartupFailedException;
+import bisq.network.tor.sandbox.PluggableTransportsNotAllowedException;
 import bisq.network.tor.sandbox.SandboxUnavailableException;
+import bisq.network.tor.sandbox.SandboxedTransports;
 import bisq.network.tor.sandbox.Sandy;
 import bisq.network.tor.sandbox.SandyBinary;
 import bisq.network.tor.sandbox.SandyPolicy;
@@ -66,7 +68,6 @@ import java.net.Socket;
 import java.net.UnknownHostException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -307,9 +308,10 @@ public class TorService {
                 createBridgeTorrcEntries(bridgeConfig) :
                 List.of();
         TorSandboxConfig sandboxConfig = transportConfig.getSandboxConfig();
-        boolean isSandboxed = isSandboxed(sandboxConfig, bridgeConfig, bridgeEntries);
+        SandboxedTransports transports = createSandboxedTransports(bridgeEntries);
+        boolean isSandboxed = isSandboxed(sandboxConfig);
         if (isSandboxed) {
-            refuseWhatTheSandboxCannotRun(sandboxConfig);
+            refuseWhatTheSandboxCannotRun(sandboxConfig, bridgeConfig, transports);
         }
 
         TorListenerPorts listenerPorts = reservePorts(isSandboxed, sandboxConfig.getOnionServicePortPoolSize());
@@ -321,7 +323,7 @@ public class TorService {
             // The policy names the torrc, which must exist when sandy checks the policy. Tor reads the torrc written
             // after the check, for the level which sandy selected.
             createTorrcConfigFile(hashedControlPassword, listenerPorts, bridgeEntries, true, OptionalInt.empty());
-            SandboxedStart sandboxedStart = checkSandbox(torBinaryPath, listenerPorts, sandboxConfig);
+            SandboxedStart sandboxedStart = checkSandbox(torBinaryPath, listenerPorts, sandboxConfig, transports);
             createTorrcConfigFile(hashedControlPassword, listenerPorts, bridgeEntries, true,
                     sandboxedStart.socks5ProxyPort(listenerPorts));
             embeddedTorProcess = createSandboxedTorProcess(torBinaryPath, sandboxedStart);
@@ -367,37 +369,25 @@ public class TorService {
         }
     }
 
-    /**
-     * Decides whether Tor runs in the sandbox. With pluggable transports, which are programs that Tor starts, Tor runs
-     * without the sandbox for now (decision sandbox-pt-bypass), and the status tells the application.
-     */
-    private boolean isSandboxed(TorSandboxConfig sandboxConfig,
-                                BridgeConfig bridgeConfig,
-                                List<Map.Entry<String, String>> bridgeEntries) {
-        // With bridges in the configuration, torrc overrides of the transport keys are ignored.
-        Collection<String> torrcKeys = bridgeConfig.isUsed() ?
-                bridgeEntries.stream().map(Map.Entry::getKey).collect(Collectors.toList()) :
-                transportConfig.getTorrcOverrides().keySet();
-        if (!sandboxConfig.isEnabled()) {
-            sandboxStatus = TorSandboxStatus.DISABLED;
-        } else if (TorrcClientConfigFactory.startsChildProcesses(torrcKeys)) {
-            sandboxStatus = TorSandboxStatus.BYPASSED_PLUGGABLE_TRANSPORTS;
-        } else {
+    // Tor runs in the sandbox if the configuration turns it on.
+    private boolean isSandboxed(TorSandboxConfig sandboxConfig) {
+        if (sandboxConfig.isEnabled()) {
             return true;
         }
-        if (sandboxConfig.isEnabled()) {
-            log.warn(sandboxStatus.getDescription());
-        } else {
-            log.info(sandboxStatus.getDescription());
-        }
+        sandboxStatus = TorSandboxStatus.DISABLED;
+        log.info(sandboxStatus.getDescription());
         return false;
     }
 
     /**
      * In its sandbox Tor has a network of its own, so it reaches the onion services of Bisq only through ports which
-     * sandy forwards, and it connects out only through sandy's egress broker, which Bisq sets as its proxy.
+     * sandy forwards, and it connects out only through sandy's egress broker, which Bisq sets as its proxy. It may
+     * start only the pluggable transports of the configured bridges, and those only if the configuration allows them.
      */
-    private void refuseWhatTheSandboxCannotRun(TorSandboxConfig sandboxConfig) {
+    @VisibleForTesting
+    void refuseWhatTheSandboxCannotRun(TorSandboxConfig sandboxConfig,
+                                       BridgeConfig bridgeConfig,
+                                       SandboxedTransports transports) {
         if (!sandboxConfig.isForwardOnionServicePorts()) {
             throw new SandboxUnavailableException("Tor in the sandbox reaches the onion services of Bisq only " +
                     "through forwarded ports, but forwardOnionServicePorts of the sandbox is false.",
@@ -409,6 +399,35 @@ public class TorService {
                     ". In its sandbox Tor connects out only through the egress broker of sandy, which Bisq sets as " +
                     "its proxy. Remove these overrides to run Tor in the sandbox.", sandboxConfig.getOptOutHint());
         }
+        List<String> processStartingKeys = TorrcClientConfigFactory.processStartingKeys(
+                transportConfig.getTorrcOverrides().keySet(), bridgeConfig.isUsed());
+        if (!processStartingKeys.isEmpty()) {
+            throw new SandboxUnavailableException("The torrc overrides set " + String.join(", ", processStartingKeys) +
+                    ", which make Tor start programs that its sandbox does not know. Remove these overrides; to use " +
+                    "pluggable transports in the sandbox, configure bridges.", sandboxConfig.getOptOutHint());
+        }
+        if (!transports.isEmpty() && !sandboxConfig.isAllowPluggableTransports()) {
+            List<String> transportNames = transports.transportNames().stream().sorted().toList();
+            throw new PluggableTransportsNotAllowedException("The bridges use the pluggable transports " +
+                    String.join(", ", transportNames) + ", programs which Tor starts. Its sandbox lets Tor start " +
+                    "them only if allowPluggableTransports of the sandbox configuration is true.",
+                    sandboxConfig.getOptOutHint(), transportNames);
+        }
+    }
+
+    // The pluggable transports of the bridges, with the absolute paths of their programs
+    private SandboxedTransports createSandboxedTransports(List<Map.Entry<String, String>> bridgeEntries) {
+        List<BridgeTorrcEntries.ClientTransportPlugin> plugins =
+                BridgeTorrcEntries.findClientTransportPlugins(bridgeEntries);
+        Set<String> transportNames = plugins.stream()
+                .flatMap(plugin -> plugin.transports().stream())
+                .collect(Collectors.toSet());
+        // A bundled program is relative to the binary directory, the working directory of Tor.
+        List<Path> programPaths = plugins.stream()
+                .map(plugin -> torDirectories.getBinaryDirPath().resolve(plugin.program()).toAbsolutePath().normalize())
+                .distinct()
+                .toList();
+        return new SandboxedTransports(transportNames, programPaths);
     }
 
     /**
@@ -453,7 +472,8 @@ public class TorService {
 
     private SandboxedStart checkSandbox(Path torBinaryPath,
                                         TorListenerPorts listenerPorts,
-                                        TorSandboxConfig sandboxConfig) {
+                                        TorSandboxConfig sandboxConfig,
+                                        SandboxedTransports transports) {
         String optOutHint = sandboxConfig.getOptOutHint();
         // Outside the try: a Tor directory whose libraries the loader cannot find fails the start without the sandbox
         // too, so its failure is no refusal of the sandbox.
@@ -466,6 +486,7 @@ public class TorService {
                     toForwardedPorts(onionServiceTargets),
                     torEnvironment,
                     TorSandboxPolicy.executablePaths(os, torDirectories),
+                    transports,
                     sandboxConfig.getApplicationId());
             Sandy sandy = new Sandy(SandyBinary.install(torDirectories.getSandyDirPath(), Platform.getPlatform()),
                     platformServices.getMyPid());

@@ -141,12 +141,16 @@ public class TorrcClientConfigFactory {
     }
 
     /**
-     * Whether Tor starts other processes with torrc entries of these keys. The option names must match exactly: a
-     * missed abbreviation makes a sandboxed start fail, because Tor cannot start the transport in the sandbox, while
-     * a wrong match would run Tor without the sandbox.
+     * The keys of the torrc overrides {@code torrcKeys} which stay in the torrc and make Tor start programs, also as an
+     * abbreviation, which Tor accepts. With the bridges of the Bisq configuration, the overrides of the bridge keys
+     * are ignored, which leaves {@code ServerTransportPlugin}.
      */
-    public static boolean startsChildProcesses(Collection<String> torrcKeys) {
-        return torrcKeys.stream().anyMatch(key -> KEYS_STARTING_PROCESSES.contains(key.toLowerCase(Locale.ROOT)));
+    public static List<String> processStartingKeys(Collection<String> torrcKeys, boolean usesBridges) {
+        return torrcKeys.stream()
+                .filter(key -> isPrefixOfAny(key, KEYS_STARTING_PROCESSES))
+                .filter(key -> !(usesBridges && isPrefixOfAny(key, BRIDGE_KEYS)))
+                .sorted()
+                .toList();
     }
 
     /**

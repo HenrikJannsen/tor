@@ -1,0 +1,55 @@
+# The sandbox of the embedded Tor under sandy 2.2 on Linux with pluggable transports that connect
+# only to the IP address of their bridge (obfs4). As linux.toml, except that Tor may start the
+# programs of the transports, which TorSandboxPolicy adds to read_exec, and sandy ends them with Tor.
+# Tor passes its Socks5Proxy, the egress broker, to the transports, which connect through it.
+version = 1
+
+[filesystem]
+system = "minimal"
+view = "policy"
+read = @read@
+read_exec = @read_exec@
+read_write = [@data@]
+
+[network]
+ip = "private"
+unix_sockets = "none"
+egress = { port = @egress_port@, reach = "public" }
+expose = [
+  { listen = @control_listen@, port = @control_port@ },
+  { listen = @socks_listen@, port = @socks_port@ },
+]
+forward = @forward@
+
+[process]
+# The transports end with Tor, also when sandy is killed; on Linux 5.13 to 6.11 the PID namespace
+# of contained also isolates the signals that Landlock cannot.
+signals = "isolated"
+children = "contained"
+end_with_parent = true
+
+[environment]
+set = @environment@
+
+[linux]
+path_metadata = "deny"
+
+# User namespaces restricted (Ubuntu 23.10 and newer, which Bisq never prepares with sandy setup)
+# or turned off: the network of the host, without the egress broker and without the view.
+[[fallback]]
+name = "host-network"
+network.ip = "all"
+network.egress = "none"
+filesystem.view = "all"
+
+# As host-network, below Landlock ABI 6: sandy cannot contain the transports there, so they can
+# outlive Tor until their standard input closes; Tor can signal the processes of this user, and it
+# does not end with Bisq (__OwningControllerProcess still ends it).
+[[fallback]]
+name = "host-network-signals"
+network.ip = "all"
+network.egress = "none"
+filesystem.view = "all"
+process.signals = "any"
+process.children = "allowed"
+process.end_with_parent = false

@@ -55,6 +55,17 @@ class TorSandboxConfigTest {
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
+    @Test
+    void theSandboxAllowsNoPluggableTransportsByDefault() {
+        TorSandboxConfig config = TorSandboxConfig.from(ConfigFactory.parseString("sandbox { enabled = true }"));
+        TorSandboxConfig allowing = TorSandboxConfig.from(ConfigFactory.parseString(
+                "sandbox { enabled = true, allowPluggableTransports = true }"));
+
+        assertThat(config.isAllowPluggableTransports()).isFalse();
+        assertThat(TorSandboxConfig.DISABLED.isAllowPluggableTransports()).isFalse();
+        assertThat(allowing.isAllowPluggableTransports()).isTrue();
+    }
+
     /**
      * In its sandbox Tor connects out only through the egress broker of sandy, so a torrc override of a proxy option
      * refuses the sandboxed start. Tor reads an abbreviation and any case as the option.
@@ -69,12 +80,22 @@ class TorSandboxConfigTest {
 
     @Test
     void onlyThePluggableTransportsLetTorStartProcesses() {
-        assertThat(TorrcClientConfigFactory.startsChildProcesses(List.of("UseBridges", "Bridge",
-                "ClientTransportPlugin"))).isTrue();
-        assertThat(TorrcClientConfigFactory.startsChildProcesses(List.of("servertransportplugin"))).isTrue();
+        assertThat(TorrcClientConfigFactory.processStartingKeys(List.of("UseBridges", "Bridge",
+                "ClientTransportPlugin"), false)).containsExactly("ClientTransportPlugin");
+        assertThat(TorrcClientConfigFactory.processStartingKeys(List.of("servertransportplugin"), false))
+                .containsExactly("servertransportplugin");
         // A bridge without transport needs no process.
-        assertThat(TorrcClientConfigFactory.startsChildProcesses(List.of("UseBridges", "Bridge"))).isFalse();
-        // Exact names: an abbreviation fails the sandboxed start instead of turning the sandbox off.
-        assertThat(TorrcClientConfigFactory.startsChildProcesses(List.of("ClientTransportPlug"))).isFalse();
+        assertThat(TorrcClientConfigFactory.processStartingKeys(List.of("UseBridges", "Bridge"), false)).isEmpty();
+        // Tor accepts abbreviations of option names.
+        assertThat(TorrcClientConfigFactory.processStartingKeys(List.of("ClientTransportPlug", "ServerTransportPl",
+                "ServerTransportOptions"), false)).containsExactly("ClientTransportPlug", "ServerTransportPl");
+    }
+
+    // With the bridges of the configuration, the overrides of the bridge keys are ignored, but ServerTransportPlugin
+    // stays in the torrc.
+    @Test
+    void withBridgesOnlyServerTransportPluginOverridesStartProcesses() {
+        assertThat(TorrcClientConfigFactory.processStartingKeys(List.of("ClientTransportPlugin",
+                "ClientTransportPlug", "ServerTransportPlugin"), true)).containsExactly("ServerTransportPlugin");
     }
 }

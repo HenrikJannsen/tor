@@ -36,23 +36,19 @@ public final class TorSandboxStatus {
         SANDBOXED,
         // Bisq uses a Tor which it did not start, so it cannot put that Tor into its sandbox.
         EXTERNAL_TOR,
-        // Tor uses pluggable transports, programs which Tor starts and which do not run in the sandbox yet.
-        BYPASSED_PLUGGABLE_TRANSPORTS,
         // The configuration turns the sandbox off.
         DISABLED
     }
 
     public static final TorSandboxStatus NOT_STARTED = new TorSandboxStatus(State.NOT_STARTED, "", false, false);
     public static final TorSandboxStatus EXTERNAL_TOR = new TorSandboxStatus(State.EXTERNAL_TOR, "", false, false);
-    public static final TorSandboxStatus BYPASSED_PLUGGABLE_TRANSPORTS =
-            new TorSandboxStatus(State.BYPASSED_PLUGGABLE_TRANSPORTS, "", false, false);
     public static final TorSandboxStatus DISABLED = new TorSandboxStatus(State.DISABLED, "", false, false);
 
     private final State state;
     // The level of the sandbox policy which sandy selected for this host, empty without the sandbox
     private final String level;
     // In the sandbox, Tor uses the network of the host, because this system cannot give it one of its own (Linux
-    // where user namespaces are restricted or turned off).
+    // where user namespaces are restricted or turned off), or because its pluggable transports need it.
     private final boolean hostNetwork;
     // In the sandbox, Tor can send signals to every process of the user, because the host cannot isolate them (Linux
     // before 6.12 without user namespaces).
@@ -83,15 +79,13 @@ public final class TorSandboxStatus {
         return switch (state) {
             case NOT_STARTED -> "Tor was not started yet.";
             case SANDBOXED -> "Tor runs in its sandbox." +
-                    (hostNetwork ? " This system cannot give Tor a network of its own, so Tor could reach the " +
+                    (hostNetwork ? " Tor uses the network of this computer, because this system cannot give it " +
+                            "one of its own or because its pluggable transports need it, so Tor could reach the " +
                             "services of this computer and of the local network." : "") +
                     (signalsNotIsolated ? " This system cannot isolate the signals of Tor, so Tor could send " +
                             "signals to other processes of this user." : "");
             case EXTERNAL_TOR -> "Bisq uses a Tor which it did not start, so it cannot run that Tor in its sandbox. " +
                     "The protection of that Tor depends on how it runs.";
-            case BYPASSED_PLUGGABLE_TRANSPORTS -> "Tor runs without its sandbox, because it uses pluggable " +
-                    "transports for bridges, which cannot run in the sandbox yet. A security bug in Tor or in a " +
-                    "transport can give an attacker access to your files.";
             case DISABLED -> "The Tor sandbox is turned off, so Tor runs with all rights of this user.";
         };
     }

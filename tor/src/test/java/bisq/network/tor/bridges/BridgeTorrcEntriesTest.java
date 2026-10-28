@@ -72,6 +72,26 @@ class BridgeTorrcEntriesTest {
                 Map.entry("ClientTransportPlugin", "snowflake exec pluggable_transports/lyrebird"));
     }
 
+    // The sandbox lets Tor start these programs, and the transports decide its network.
+    @Test
+    void findsTheTransportsAndTheProgramOfEachPluginEntry() {
+        String conjureBridge = "conjure 143.110.214.222:80 0123456789ABCDEF0123456789ABCDEF01234567";
+        BridgeConfig bridgeConfig = BridgeConfig.custom(List.of(SNOWFLAKE_BRIDGE, OBFS4_BRIDGE, WEBTUNNEL_BRIDGE,
+                VANILLA_BRIDGE, conjureBridge));
+
+        List<Map.Entry<String, String>> entries = BridgeTorrcEntries.create(bridgeConfig, config,
+                program -> Optional.of(program.equals("conjure-client") ? "/usr/bin/" + program :
+                        "pluggable_transports/" + program));
+
+        assertThat(BridgeTorrcEntries.findClientTransportPlugins(entries)).containsExactly(
+                new BridgeTorrcEntries.ClientTransportPlugin(List.of("conjure"), "/usr/bin/conjure-client"),
+                new BridgeTorrcEntries.ClientTransportPlugin(List.of("obfs4", "webtunnel"),
+                        "pluggable_transports/lyrebird"),
+                new BridgeTorrcEntries.ClientTransportPlugin(List.of("snowflake"), "pluggable_transports/lyrebird"));
+        assertThat(BridgeTorrcEntries.findClientTransportPlugins(BridgeTorrcEntries.create(
+                BridgeConfig.custom(List.of(VANILLA_BRIDGE)), config, program -> Optional.empty()))).isEmpty();
+    }
+
     @Test
     void theArgumentsOfAProgramFollowItsPath() {
         String conjureBridge = "conjure 143.110.214.222:80 0123456789ABCDEF0123456789ABCDEF01234567";

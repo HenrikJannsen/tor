@@ -12,12 +12,13 @@ Windows `sandy.exe`), and writes its SHA-256 hash into `sandy/SHA256SUMS`. The p
 sandboxed start of Tor, Bisq installs the binary into the directory `sandy` of the Tor directory, which Tor cannot
 write, and checks its hash against `SHA256SUMS`.
 
-The library needs sandy 2.2 or newer: it passes the policy on standard input and uses its fallback levels and
-`check --json`. The build packages sandy 2.4.1, whose binary of each platform `tor/build.gradle.kts` pins by its
-SHA-256 hash. The release archives of sandy cannot be downloaded publicly yet, so the binaries are committed in
-`tor/sandy/2.4.1/<platform name>/`, and the build fails if the binary of its platform does not have the pinned hash.
-`-Psandy.package=false` builds without sandy; a sandboxed start of Tor then fails with `SandboxUnavailableException`,
-as it does on `win_arm64`, for which no binary is packaged.
+The library needs sandy 2.4 or newer: it passes the policy on standard input, uses its fallback levels and
+`check --json`, and the macOS template for pluggable transports uses `macos.mach_services`. The build packages sandy
+2.4.1, whose binary of each platform `tor/build.gradle.kts` pins by its SHA-256 hash. The release archives of sandy
+cannot be downloaded publicly yet, so the binaries are committed in `tor/sandy/2.4.1/<platform name>/`, and the build
+fails if the binary of its platform does not have the pinned hash. `-Psandy.package=false` builds without sandy; a
+sandboxed start of Tor then fails with `SandboxUnavailableException`, as it does on `win_arm64`, for which no binary is
+packaged.
 
 The committed binaries were taken from the release archives of sandy 2.4.1:
 
