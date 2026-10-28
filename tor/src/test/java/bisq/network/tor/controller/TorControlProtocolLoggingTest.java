@@ -18,6 +18,7 @@
 package bisq.network.tor.controller;
 
 import bisq.network.tor.onionservice.OnionServiceKey;
+import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
@@ -38,7 +39,10 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -137,6 +141,25 @@ class TorControlProtocolLoggingTest {
         List<String> messages = loggedMessages();
         assertThat(messages).noneMatch(message -> message.contains(secretValue));
         assertThat(messages).contains("Send Tor control command: SETCONF [hidden]");
+    }
+
+    @Test
+    void closingTheConnectionLogsNoError() throws Exception {
+        // Every shutdown closes the connection; the end of the stream which the reader sees then is expected.
+        startControlServer(command -> "250 OK\r\n");
+        CountDownLatch connectionEnd = new CountDownLatch(1);
+        torControlProtocol.addConnectionEndListener(connectionEnd::countDown);
+
+        torControlProtocol.close();
+
+        assertThat(connectionEnd.await(5, TimeUnit.SECONDS)).isTrue();
+        List<ILoggingEvent> warningsAndErrors;
+        synchronized (appender) {
+            warningsAndErrors = appender.list.stream()
+                    .filter(event -> event.getLevel().isGreaterOrEqual(Level.WARN))
+                    .collect(Collectors.toList());
+        }
+        assertThat(warningsAndErrors).isEmpty();
     }
 
     private void startControlServer(Function<String, String> replyByCommand) {

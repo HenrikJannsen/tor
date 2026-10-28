@@ -8,7 +8,9 @@ import lombok.extern.slf4j.Slf4j;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -54,29 +56,50 @@ public class TorController {
             return;
         }
         isShutdownInProgress = true;
-        bootstrapService.ifPresent(BootstrapService::shutdown);
+        // The connection first: a command which waits for the reply of a Tor that does not answer any more ends at
+        // once, and the services send no SETEVENTS while they shut down, because Tor forgets the event registration
+        // with the connection.
+        runQuietly(torControlProtocol::close, "closing the connection to the Tor control port");
+        bootstrapService.ifPresent(service -> runQuietly(service::shutdown, "the shutdown of the bootstrap"));
         bootstrapService = Optional.empty();
-        publishOnionAddressServiceMap.values().forEach(PublishOnionAddressService::shutdown);
+        publishOnionAddressServiceMap.values().forEach(service ->
+                runQuietly(service::shutdown, "the shutdown of a publication"));
         publishOnionAddressServiceMap.clear();
-        onionServiceOnlineStateServiceMap.values().forEach(OnionServiceOnlineStateService::shutdown);
+        onionServiceOnlineStateServiceMap.values().forEach(service ->
+                runQuietly(service::shutdown, "the shutdown of an onion service lookup"));
         onionServiceOnlineStateServiceMap.clear();
-        torControlProtocol.close();
     }
 
+    // One failing step must not keep the other steps of the shutdown from running.
+    private static void runQuietly(Runnable step, String description) {
+        try {
+            step.run();
+        } catch (RuntimeException e) {
+            log.warn("Error at {} during the shutdown of the Tor controller", description, e);
+        }
+    }
+
+    /**
+     * @throws TorBootstrapFailedException if Tor did not bootstrap, also if the controller was shut down
+     */
     public void bootstrap() {
         if (isShutdownInProgress) {
-            return;
+            // The caller must not take Tor as bootstrapped. A shutdown during the wait fails the same way.
+            throw new TorBootstrapFailedException("The Tor controller was shut down");
         }
-        bootstrapAsync()
-                .exceptionally(throwable -> {
-                    if (throwable instanceof TorBootstrapFailedException) {
-                        throw (TorBootstrapFailedException) throwable;
-                    } else {
-                        log.error("Error at bootstrap", throwable);
-                        throw new TorBootstrapFailedException(throwable);
-                    }
-                })
-                .join();
+        try {
+            bootstrapAsync().get();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new TorBootstrapFailedException(e);
+        } catch (ExecutionException e) {
+            Throwable cause = e.getCause();
+            if (cause instanceof TorBootstrapFailedException) {
+                throw (TorBootstrapFailedException) cause;
+            }
+            log.error("Error at bootstrap", cause);
+            throw new TorBootstrapFailedException(cause);
+        }
     }
 
     public CompletableFuture<Void> bootstrapAsync() {
@@ -91,12 +114,21 @@ public class TorController {
         return future;
     }
 
+    /**
+     * @throws InterruptedException if the thread is interrupted while it waits. The publication goes on in the
+     *                              background; a later call for the same onion address waits for it.
+     * @throws CompletionException  with the cause of a failed publication, such as HsDescUploadFailedException
+     */
     public void publish(OnionServiceKey onionServiceKey, int onionServicePort, int localPort) throws InterruptedException {
         if (isShutdownInProgress) {
             // The caller must not take the onion service as published.
             throw new HsDescUploadFailedException("The Tor controller is shut down");
         }
-        publishAsync(onionServiceKey, onionServicePort, localPort).join();
+        try {
+            publishAsync(onionServiceKey, onionServicePort, localPort).get();
+        } catch (ExecutionException e) {
+            throw new CompletionException(e.getCause());
+        }
     }
 
     public CompletableFuture<Void> publishAsync(OnionServiceKey onionServiceKey,

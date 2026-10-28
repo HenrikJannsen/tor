@@ -90,6 +90,41 @@ class TorControlProtocolReplyTimeoutTest {
         assertThat(System.currentTimeMillis() - start).isLessThan(5000);
     }
 
+    @Test
+    void aReplyAfterTheTimeoutIsNotTakenAsTheReplyToTheNextCommand() throws Exception {
+        // The connection is closed at the timeout, so that the late reply cannot answer the next command.
+        serverSocket = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"));
+        serverThread = new Thread(this::answerTheFirstCommandLate, "LateTorControlServer");
+        serverThread.start();
+        torControlProtocol = new TorControlProtocol(REPLY_TIMEOUT_MS);
+        torControlProtocol.initialize(serverSocket.getLocalPort());
+
+        assertThatThrownBy(() -> torControlProtocol.getInfo("version"))
+                .isInstanceOf(ControlCommandFailedException.class);
+        Thread.sleep(2 * REPLY_TIMEOUT_MS);
+
+        assertThatThrownBy(() -> torControlProtocol.getInfo("version"))
+                .isInstanceOf(ControlCommandFailedException.class)
+                .hasMessageContaining("closed");
+    }
+
+    private void answerTheFirstCommandLate() {
+        try (Socket socket = serverSocket.accept();
+             BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII));
+             OutputStream outputStream = socket.getOutputStream()) {
+            reader.readLine();
+            Thread.sleep(REPLY_TIMEOUT_MS + 200);
+            outputStream.write("250-version=late\r\n250 OK\r\n".getBytes(StandardCharsets.US_ASCII));
+            outputStream.flush();
+            while (reader.readLine() != null) {
+                outputStream.write("250-version=0.4.9.14\r\n250 OK\r\n".getBytes(StandardCharsets.US_ASCII));
+                outputStream.flush();
+            }
+        } catch (IOException | InterruptedException ignore) {
+            // The test closes the connection
+        }
+    }
+
     private void acceptAndReadNothing() {
         try (Socket ignored = serverSocket.accept()) {
             Thread.sleep(10_000);

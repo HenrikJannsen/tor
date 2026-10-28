@@ -38,6 +38,9 @@ public class BootstrapService extends BootstrapEventListener {
     private final TorControlProtocol torControlProtocol;
     private final CountDownLatch countDownLatch = new CountDownLatch(1);
     private final long timeout;
+    private final Runnable connectionEndListener = this::onConnectionEnd;
+    private volatile boolean isShutdown;
+    private volatile boolean hasConnectionEnded;
     @Getter
     private Optional<CompletableFuture<Void>> future = Optional.empty();
 
@@ -49,6 +52,7 @@ public class BootstrapService extends BootstrapEventListener {
 
     public CompletableFuture<Void> bootstrap() {
         future = Optional.of(CompletableFuture.runAsync(() -> {
+                    torControlProtocol.addConnectionEndListener(connectionEndListener);
                     torControlProtocol.addBootstrapEventListener(this);
 
                     torControlProtocol.takeOwnership();
@@ -57,6 +61,14 @@ public class BootstrapService extends BootstrapEventListener {
 
                     try {
                         boolean isSuccess = countDownLatch.await(timeout, TimeUnit.MILLISECONDS);
+                        if (isShutdown) {
+                            throw new TorBootstrapFailedException("The Tor controller was shut down before Tor " +
+                                    "bootstrapped");
+                        }
+                        if (hasConnectionEnded) {
+                            throw new TorBootstrapFailedException("The connection to the Tor control port ended " +
+                                    "before Tor bootstrapped");
+                        }
                         if (!isSuccess) {
                             throw new TorBootstrapFailedException("Could not bootstrap Tor in " + timeout / 1000 + " seconds");
                         }
@@ -66,12 +78,21 @@ public class BootstrapService extends BootstrapEventListener {
                         throw new TorBootstrapFailedException(e);
                     }
                 }, MoreExecutors.directExecutor())
-                .whenComplete((nil, throwable) ->
-                        torControlProtocol.removeBootstrapEventListener(this)));
+                .whenComplete((nil, throwable) -> {
+                    torControlProtocol.removeConnectionEndListener(connectionEndListener);
+                    torControlProtocol.removeBootstrapEventListener(this);
+                }));
         return future.get();
     }
 
+    // Tor exited or closed the connection: the done event cannot arrive any more.
+    private void onConnectionEnd() {
+        hasConnectionEnded = true;
+        countDownLatch.countDown();
+    }
+
     public void shutdown() {
+        isShutdown = true;
         torControlProtocol.removeBootstrapEventListener(this);
         if (countDownLatch.getCount() > 0) {
             countDownLatch.countDown();

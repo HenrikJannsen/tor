@@ -49,7 +49,9 @@ public class TorControlProtocol implements AutoCloseable {
     // Closes a connection whose write does not end in time. One daemon thread for all connections.
     private static final ScheduledThreadPoolExecutor WRITE_TIMEOUT_SCHEDULER = createWriteTimeoutScheduler();
 
-    private Socket controlSocket;
+    // Volatile like isClosed: close() sets the flag and then reads the socket, initialize sets the socket and then reads
+    // the flag, so that one of them closes a socket which connects while the connection is closed.
+    private volatile Socket controlSocket;
     private final TorControlReader torControlReader;
     private Optional<OutputStream> outputStream = Optional.empty();
 
@@ -59,7 +61,8 @@ public class TorControlProtocol implements AutoCloseable {
     // CmdData = *DataLine "." CRLF. The data follows the DataReplyLine, until a line with a single dot.
     private static final Pattern DATA_REPLY_PATTERN = Pattern.compile("^\\d{3}\\+.*");
     private static final String DATA_END = ".";
-    private volatile boolean closeInProgress;
+    // Set by close() and never reset: a TorControlProtocol serves one connection.
+    private volatile boolean isClosed;
     // The time in which Tor must send the whole reply to a command
     private final long replyTimeoutMs;
 
@@ -84,9 +87,15 @@ public class TorControlProtocol implements AutoCloseable {
 
     public void initialize(int port) {
         try {
-            this.controlSocket = createAndConnectControlSocket(port);
-            this.outputStream = Optional.of(this.controlSocket.getOutputStream());
-            this.torControlReader.start(this.controlSocket.getInputStream());
+            Socket socket = createAndConnectControlSocket(port);
+            controlSocket = socket;
+            if (isClosed) {
+                // close() ran while the socket connected and may not have seen it.
+                closeQuietly(socket);
+                throw closedWhileConnecting();
+            }
+            this.outputStream = Optional.of(socket.getOutputStream());
+            this.torControlReader.start(socket.getInputStream());
             log.info("TorControlProtocol initialized successfully for port {}", port);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();  // Restore interrupted state
@@ -110,27 +119,28 @@ public class TorControlProtocol implements AutoCloseable {
 
     @Override
     public void close() {
-        if (closeInProgress) {
+        if (isClosed) {
             return;
         }
-        closeInProgress = true;
+        isClosed = true;
         log.debug("Closing TorControlProtocol resources.");
-        try {
-            if (controlSocket != null && !controlSocket.isClosed()) {
-                controlSocket.close();
-                log.debug("Control socket closed.");
-            }
-        } catch (IOException e) {
-            log.warn("IOException while closing control socket. This may be expected if connection was problematic.", e);
-        }
+        // The reader first, so that it takes the end of the stream which the closed socket causes as expected.
         try {
             torControlReader.close();
             log.debug("TorControlReader closed.");
         } catch (Exception e) {
             log.warn("Exception while closing TorControlReader.", e);
         }
+        Socket socket = controlSocket;
+        try {
+            if (socket != null && !socket.isClosed()) {
+                socket.close();
+                log.debug("Control socket closed.");
+            }
+        } catch (IOException e) {
+            log.warn("IOException while closing control socket. This may be expected if connection was problematic.", e);
+        }
         outputStream = Optional.empty();
-        closeInProgress = false;
     }
 
     public void authenticate(PasswordDigest passwordDigest) {
@@ -223,6 +233,18 @@ public class TorControlProtocol implements AutoCloseable {
         }
     }
 
+    /**
+     * @param listener called once when the connection to the control port has ended, at once if it has ended already.
+     *                 It is not called by {@link #close()} before the reader has noticed the closed socket.
+     */
+    public void addConnectionEndListener(Runnable listener) {
+        torControlReader.addConnectionEndListener(listener);
+    }
+
+    public void removeConnectionEndListener(Runnable listener) {
+        torControlReader.removeConnectionEndListener(listener);
+    }
+
     public synchronized void addBootstrapEventListener(BootstrapEventListener listener) {
         Set<String> previous = getEventTypesOfBootstrapEventListeners();
         torControlReader.addBootstrapEventListener(listener);
@@ -269,7 +291,7 @@ public class TorControlProtocol implements AutoCloseable {
     public synchronized void removeHsDescEventListener(HsDescEventListener listener) {
         Set<String> previous = getEventTypesOfHsDescEventListeners();
         String newEventType = listener.getEventType().name();
-        if (!previous.contains(newEventType) && !closeInProgress) {
+        if (!previous.contains(newEventType) && !isClosed) {
             log.warn("Remove HsDescEventListener but did not have eventType in listeners. This could happen if removeHsDescEventListener was called without addHsDescEventListener before.");
         }
         torControlReader.removeHsDescEventListener(listener);
@@ -300,6 +322,12 @@ public class TorControlProtocol implements AutoCloseable {
     }
 
     private synchronized void registerEvents(Set<String> events) {
+        if (isClosed) {
+            // Tor forgets the event registration with the connection. The services remove their listeners while the
+            // controller shuts down, after the connection is closed.
+            log.debug("The connection to the Tor control port is closed, SETEVENTS for {} is not sent", events);
+            return;
+        }
         if (events.isEmpty()) {
             log.info("Clear registered Events");
         } else {
@@ -322,6 +350,10 @@ public class TorControlProtocol implements AutoCloseable {
         Exception lastException = null;
 
         while (connectionAttempt < MAX_CONNECTION_ATTEMPTS) {
+            // A close, for example by a shutdown during the start, ends the attempts.
+            if (isClosed) {
+                throw closedWhileConnecting();
+            }
             Socket attemptSocket = new Socket();
             try {
                 // The Tor Control Port communication is typically unencrypted. 
@@ -367,9 +399,22 @@ public class TorControlProtocol implements AutoCloseable {
         throw new CannotConnectWithTorException(wrapperException);
     }
 
+    private static CannotConnectWithTorException closedWhileConnecting() {
+        return new CannotConnectWithTorException("The connection to the Tor control port was closed while it was " +
+                "being made");
+    }
+
+    private static void closeQuietly(Socket socket) {
+        try {
+            socket.close();
+        } catch (IOException e) {
+            log.debug("Could not close the control socket", e);
+        }
+    }
+
     private void sendCommand(String command) {
-        if (closeInProgress) {
-            return;
+        if (isClosed) {
+            throw new ControlCommandFailedException("The connection to the Tor control port is closed");
         }
         if (outputStream.isEmpty()) {
             throw new IllegalStateException("TorControlProtocol output stream not initialized. Cannot send command.");

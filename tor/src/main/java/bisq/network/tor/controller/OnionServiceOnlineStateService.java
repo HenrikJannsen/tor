@@ -41,6 +41,8 @@ public class OnionServiceOnlineStateService extends FilteredHsDescEventListener 
     private final String onionAddress;
     private final long timeout;
     private final CountDownLatch countDownLatch = new CountDownLatch(1);
+    private final Runnable connectionEndListener = this::onConnectionEnd;
+    private volatile boolean hasConnectionEnded;
     private boolean isOnline;
     @Getter
     private Optional<CompletableFuture<Boolean>> future = Optional.empty();
@@ -62,6 +64,7 @@ public class OnionServiceOnlineStateService extends FilteredHsDescEventListener 
 
     public CompletableFuture<Boolean> isOnionServiceOnlineAsync() {
         future = Optional.of(CompletableFuture.supplyAsync(() -> {
+                    torControlProtocol.addConnectionEndListener(connectionEndListener);
                     torControlProtocol.addHsDescEventListener(this);
 
                     String serviceId = onionAddress.replace(".onion", "");
@@ -76,6 +79,10 @@ public class OnionServiceOnlineStateService extends FilteredHsDescEventListener 
                     } catch (Exception e) {
                         throw new RuntimeException(e);
                     }
+                    if (hasConnectionEnded) {
+                        throw new RuntimeException("The connection to the Tor control port ended before the lookup " +
+                                "of the onion service completed");
+                    }
                     if (!isSuccess) {
                         throw new RuntimeException("Could not get onion address upload completed in " + timeout / 1000 + " seconds");
                     }
@@ -83,10 +90,17 @@ public class OnionServiceOnlineStateService extends FilteredHsDescEventListener 
                     return isOnline;
                 }, executor)
                 .whenComplete((isOnline, throwable) -> {
+                    torControlProtocol.removeConnectionEndListener(connectionEndListener);
                     torControlProtocol.removeHsDescEventListener(this);
                     executor.shutdown();
                 }));
         return future.get();
+    }
+
+    // Tor exited or closed the connection: the result of the lookup cannot arrive any more.
+    private void onConnectionEnd() {
+        hasConnectionEnded = true;
+        countDownLatch.countDown();
     }
 
     public void shutdown() {

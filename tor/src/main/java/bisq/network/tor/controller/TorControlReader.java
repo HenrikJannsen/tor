@@ -36,9 +36,11 @@ public class TorControlReader implements AutoCloseable {
     private final List<BootstrapEventListener> bootstrapEventListeners = new CopyOnWriteArrayList<>();
     @Getter
     private final List<HsDescEventListener> hsDescEventListeners = new CopyOnWriteArrayList<>();
+    private final List<Runnable> connectionEndListeners = new CopyOnWriteArrayList<>();
 
     private Optional<Thread> workerThread = Optional.empty();
     private volatile boolean isStopped;
+    private volatile boolean hasConnectionEnded;
 
     public void start(InputStream inputStream) {
         Thread thread = new Thread(() -> {
@@ -82,6 +84,9 @@ public class TorControlReader implements AutoCloseable {
             } finally {
                 // Wake up the callers waiting for a reply.
                 replies.add(Optional.empty());
+                // The flag first: a listener which is added from now on is notified by addConnectionEndListener.
+                hasConnectionEnded = true;
+                connectionEndListeners.forEach(TorControlReader::notifyConnectionEnd);
             }
         });
         workerThread = Optional.of(thread);
@@ -128,6 +133,14 @@ public class TorControlReader implements AutoCloseable {
         }
     }
 
+    private static void notifyConnectionEnd(Runnable listener) {
+        try {
+            listener.run();
+        } catch (RuntimeException e) {
+            log.warn("A listener could not handle the end of the Tor control connection", e);
+        }
+    }
+
     // A listener which fails must not keep the event from the other listeners.
     private static void notifyListener(Runnable notification, String line) {
         try {
@@ -169,6 +182,22 @@ public class TorControlReader implements AutoCloseable {
             // not taken as the reply to the next command.
             throw new ControlCommandFailedException("The wait for the reply of Tor was interrupted", e);
         }
+    }
+
+    /**
+     * Registers a listener which is called once the connection has ended, for example because Tor exited. A listener
+     * which is added after the end is called at once; a listener which is added while the connection ends may be
+     * called twice.
+     */
+    public void addConnectionEndListener(Runnable listener) {
+        connectionEndListeners.add(listener);
+        if (hasConnectionEnded) {
+            notifyConnectionEnd(listener);
+        }
+    }
+
+    public void removeConnectionEndListener(Runnable listener) {
+        connectionEndListeners.remove(listener);
     }
 
     public void addBootstrapEventListener(BootstrapEventListener listener) {

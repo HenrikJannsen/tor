@@ -27,8 +27,10 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @Timeout(30)
 class TorControlProtocolConcurrencyTest {
@@ -41,6 +43,37 @@ class TorControlProtocolConcurrencyTest {
         executor.shutdownNow();
         torControlProtocol.close();
         server.close();
+    }
+
+    @Test
+    void anInterruptedCommandDoesNotLeaveItsReplyToTheNextCommand() throws Exception {
+        CountDownLatch replyToFirstCommand = new CountDownLatch(1);
+        server = new FakeTorControlServer(command -> {
+            if (command.equals("GETINFO first")) {
+                awaitQuietly(replyToFirstCommand);
+                return "250-first=1\r\n250 OK\r\n";
+            }
+            return "250-second=2\r\n250 OK\r\n";
+        });
+        torControlProtocol.initialize(server.getPort());
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread caller = new Thread(() -> {
+            try {
+                torControlProtocol.getInfo("first");
+            } catch (Throwable t) {
+                failure.set(t);
+            }
+        });
+        caller.start();
+        waitForCommand("GETINFO first");
+
+        caller.interrupt();
+        caller.join(5000);
+        // The late reply to the first command arrives now
+        replyToFirstCommand.countDown();
+
+        assertThat(failure.get()).isInstanceOf(ControlCommandFailedException.class);
+        assertThatThrownBy(() -> torControlProtocol.getInfo("second")).isInstanceOf(ControlCommandFailedException.class);
     }
 
     private void waitForCommand(String commandStart) throws InterruptedException {

@@ -26,6 +26,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Function;
 
@@ -36,6 +37,7 @@ class FakeTorControlServer implements AutoCloseable {
     private final ServerSocket serverSocket;
     private final List<String> commands = new CopyOnWriteArrayList<>();
     private final Thread serverThread;
+    private volatile Optional<String> closeAfterCommandStart = Optional.empty();
 
     FakeTorControlServer(Function<String, String> replyByCommand) throws IOException {
         serverSocket = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"));
@@ -48,6 +50,11 @@ class FakeTorControlServer implements AutoCloseable {
                     commands.add(command);
                     outputStream.write(replyByCommand.apply(command).getBytes(StandardCharsets.US_ASCII));
                     outputStream.flush();
+                    String closedCommand = command;
+                    if (closeAfterCommandStart.filter(closedCommand::startsWith).isPresent()) {
+                        socket.close();
+                        return;
+                    }
                 }
             } catch (IOException ignore) {
                 // The test closes the sockets
@@ -62,6 +69,14 @@ class FakeTorControlServer implements AutoCloseable {
 
     List<String> getCommands() {
         return commands;
+    }
+
+    /**
+     * Ends the connection after the reply to the first command which starts with {@code commandStart}, as when Tor
+     * exits.
+     */
+    void closeConnectionAfter(String commandStart) {
+        closeAfterCommandStart = Optional.of(commandStart);
     }
 
     @Override

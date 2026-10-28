@@ -25,6 +25,8 @@ import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -75,6 +77,65 @@ class PublishOnionAddressServiceTest {
         assertThatThrownBy(publication::join)
                 .isInstanceOf(CompletionException.class)
                 .hasCauseInstanceOf(HsDescUploadFailedException.class);
+    }
+
+    @Test
+    void theEndOfTheConnectionFailsThePublicationAtOnce() throws Exception {
+        // Tor exits after it accepted ADD_ONION, long before the upload timeout
+        connect(10_000, command -> command.startsWith("ADD_ONION") ? addOnionReply(serviceId) : "250 OK\r\n");
+        server.closeConnectionAfter("ADD_ONION");
+
+        long start = System.currentTimeMillis();
+        assertThatThrownBy(() -> torController.publish(onionServiceKey, 9999, 12345))
+                .hasRootCauseInstanceOf(HsDescUploadFailedException.class)
+                .hasMessageContaining("ended");
+        assertThat(System.currentTimeMillis() - start).isLessThan(5000);
+    }
+
+    @Test
+    void theShutdownEndsAtOnceWhenTorDoesNotAnswer() throws Exception {
+        // Tor answers the SETEVENTS of the registration, and nothing after the ADD_ONION
+        AtomicInteger setEventsCommands = new AtomicInteger();
+        connect(10_000, command -> {
+            if (command.startsWith("ADD_ONION")) {
+                return addOnionReply(serviceId);
+            }
+            if (command.startsWith("SETEVENTS") && setEventsCommands.incrementAndGet() > 1) {
+                return "";
+            }
+            return "250 OK\r\n";
+        });
+        CompletableFuture<Void> publication = torController.publishAsync(onionServiceKey, 9999, 12345);
+        waitForCommand("ADD_ONION");
+
+        long start = System.currentTimeMillis();
+        torController.shutdown();
+
+        assertThat(System.currentTimeMillis() - start).isLessThan(5000);
+        assertThatThrownBy(publication::join).hasCauseInstanceOf(HsDescUploadFailedException.class);
+    }
+
+    @Test
+    void anInterruptedCallerOfPublishReturnsAtOnce() throws Exception {
+        connect(10_000, command -> command.startsWith("ADD_ONION") ? addOnionReply(serviceId) : "250 OK\r\n");
+        AtomicBoolean interrupted = new AtomicBoolean();
+        Thread caller = new Thread(() -> {
+            try {
+                torController.publish(onionServiceKey, 9999, 12345);
+            } catch (InterruptedException e) {
+                interrupted.set(true);
+            } catch (RuntimeException ignore) {
+                // The publication failed otherwise
+            }
+        });
+        caller.start();
+        waitForCommand("ADD_ONION");
+
+        caller.interrupt();
+        caller.join(5000);
+
+        assertThat(caller.isAlive()).isFalse();
+        assertThat(interrupted).isTrue();
     }
 
     @Test

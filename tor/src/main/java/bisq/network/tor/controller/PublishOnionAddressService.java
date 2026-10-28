@@ -41,7 +41,9 @@ public class PublishOnionAddressService extends FilteredHsDescEventListener {
     private final int timeout;
     private final OnionServiceKey onionServiceKey;
     private final CountDownLatch countDownLatch = new CountDownLatch(1);
+    private final Runnable connectionEndListener = this::onConnectionEnd;
     private volatile boolean isShutdown;
+    private volatile boolean hasConnectionEnded;
     @Getter
     private Optional<CompletableFuture<Void>> future = Optional.empty();
 
@@ -60,6 +62,7 @@ public class PublishOnionAddressService extends FilteredHsDescEventListener {
                 .setPriority(Thread.NORM_PRIORITY)
                 .build());
         future = Optional.of(CompletableFuture.runAsync(() -> {
+                    torControlProtocol.addConnectionEndListener(connectionEndListener);
                     torControlProtocol.addHsDescEventListener(this);
 
                     String serviceId = onionServiceKey.getOnionAddress().replace(".onion", "");
@@ -75,11 +78,18 @@ public class PublishOnionAddressService extends FilteredHsDescEventListener {
                     }
                 }, executor)
                 .whenComplete((nil, throwable) -> {
+                            torControlProtocol.removeConnectionEndListener(connectionEndListener);
                             torControlProtocol.removeHsDescEventListener(this);
                             executor.shutdown();
                         }
                 ));
         return future.get();
+    }
+
+    // Tor exited or closed the connection: the upload event cannot arrive any more.
+    private void onConnectionEnd() {
+        hasConnectionEnded = true;
+        countDownLatch.countDown();
     }
 
     private void awaitUpload() {
@@ -96,13 +106,17 @@ public class PublishOnionAddressService extends FilteredHsDescEventListener {
             throw new HsDescUploadFailedException("The Tor controller was shut down before the onion " +
                     "service was published");
         }
+        if (hasConnectionEnded) {
+            throw new HsDescUploadFailedException("The connection to the Tor control port ended before the onion " +
+                    "service was published");
+        }
         if (!isSuccess) {
             throw new HsDescUploadFailedException("Could not get onion address upload completed in " + timeout + " ms");
         }
     }
 
     private void removeOnionServiceQuietly(String serviceId) {
-        if (isShutdown) {
+        if (isShutdown || hasConnectionEnded) {
             // The control connection ends, and Tor removes the onion service with it.
             return;
         }
