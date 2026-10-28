@@ -5,6 +5,7 @@ import bisq.network.tor.controller.events.listener.HsDescEventListener;
 import bisq.network.tor.controller.exceptions.CannotConnectWithTorException;
 import bisq.network.tor.controller.exceptions.CannotSendCommandToTorException;
 import bisq.network.tor.onionservice.OnionServiceKey;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.io.BaseEncoding;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import lombok.extern.slf4j.Slf4j;
@@ -16,6 +17,7 @@ import java.io.OutputStream;
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
@@ -52,6 +54,8 @@ import java.util.stream.Stream;
 @Slf4j
 public class TorControlProtocol implements AutoCloseable {
     private static final int MAX_CONNECTION_ATTEMPTS = 10;
+    private static final int CONNECT_TIMEOUT_MS = 10_000;
+    private static final String LOOPBACK_HOST = "127.0.0.1";
     private static final String SERVICE_ID_REPLY_PREFIX = "250-ServiceID=";
     private static final SecureRandom SECURE_RANDOM = new SecureRandom();
     private static final int SAFE_COOKIE_NONCE_LENGTH = 32;
@@ -85,6 +89,8 @@ public class TorControlProtocol implements AutoCloseable {
     private volatile boolean isClosed;
     // The time in which Tor must send the whole reply to a command
     private final long replyTimeoutMs;
+    // The time in which the control port must accept the connection
+    private final int connectTimeoutMs;
 
     public TorControlProtocol() {
         this(TorControlReader.REPLY_TIMEOUT_MS);
@@ -101,13 +107,37 @@ public class TorControlProtocol implements AutoCloseable {
     }
 
     TorControlProtocol(long replyTimeoutMs) {
+        this(replyTimeoutMs, CONNECT_TIMEOUT_MS);
+    }
+
+    @VisibleForTesting
+    TorControlProtocol(long replyTimeoutMs, int connectTimeoutMs) {
         this.replyTimeoutMs = replyTimeoutMs;
+        this.connectTimeoutMs = connectTimeoutMs;
         torControlReader = new TorControlReader();
     }
 
+    /**
+     * Connects to the control port of the Tor which Bisq started on this host. Every failure of a connection is tried
+     * again a few times.
+     */
     public void initialize(int port) {
+        initialize(LOOPBACK_HOST, port, true);
+    }
+
+    /**
+     * Connects to the control port of a Tor which runs outside Bisq. Only a refused connection is tried again, because
+     * that Tor may not listen yet. Any other failure ends the attempts at once: a host which drops the packets would
+     * hold every attempt for the whole connect timeout, and an unreachable or unknown host does not change between
+     * the attempts.
+     */
+    public void initialize(String host, int port) {
+        initialize(host, port, false);
+    }
+
+    private void initialize(String host, int port, boolean isEveryFailureRetried) {
         try {
-            Socket socket = createAndConnectControlSocket(port);
+            Socket socket = createAndConnectControlSocket(host, port, isEveryFailureRetried);
             controlSocket = socket;
             if (isClosed) {
                 // close() ran while the socket connected and may not have seen it.
@@ -288,22 +318,25 @@ public class TorControlProtocol implements AutoCloseable {
     }
 
     /**
-     * @return the values of the configuration option {@code key}
+     * @return the values of the configuration option {@code key}, none if the option is not set and has no default
+     * value, for which Tor replies with the keyword alone, for example {@code 250 SocksPort}
      */
     public synchronized List<String> getConf(String key) {
         String command = "GETCONF " + key + "\r\n";
         sendCommand(command);
         List<String> replies = receiveReply().toList();
-        Pattern valuePattern = Pattern.compile("^250[- ]" + Pattern.quote(key) + "=(.*)$", Pattern.CASE_INSENSITIVE);
-        List<String> values = replies.stream()
+        Pattern valuePattern = Pattern.compile("^250[- ]" + Pattern.quote(key) + "(?:=(.*))?$", Pattern.CASE_INSENSITIVE);
+        List<Matcher> valueMatchers = replies.stream()
                 .map(valuePattern::matcher)
                 .filter(Matcher::matches)
-                .map(matcher -> matcher.group(1))
                 .toList();
-        if (values.isEmpty() || !replies.get(replies.size() - 1).startsWith("250 ")) {
+        if (valueMatchers.isEmpty() || !replies.get(replies.size() - 1).startsWith("250 ")) {
             throw invalidReply("GETCONF", replies);
         }
-        return values;
+        return valueMatchers.stream()
+                .filter(matcher -> matcher.group(1) != null)
+                .map(matcher -> matcher.group(1))
+                .collect(Collectors.toList());
     }
 
     /**
@@ -469,7 +502,9 @@ public class TorControlProtocol implements AutoCloseable {
         }
     }
 
-    private Socket createAndConnectControlSocket(int port) throws InterruptedException, CannotConnectWithTorException {
+    private Socket createAndConnectControlSocket(String host,
+                                                 int port,
+                                                 boolean isEveryFailureRetried) throws InterruptedException, CannotConnectWithTorException {
         int connectionAttempt = 0;
         Exception lastException = null;
 
@@ -480,14 +515,12 @@ public class TorControlProtocol implements AutoCloseable {
             }
             Socket attemptSocket = new Socket();
             try {
-                // The Tor Control Port communication is typically unencrypted. 
-                // This is considered safe because the connection is made to 127.0.0.1 (localhost),
-                // ensuring that the communication does not leave the local machine and is not 
-                // exposed to external networks. Authentication (via cookie or password) 
-                // is handled by the Tor control protocol itself after connection.
-                var socketAddress = new InetSocketAddress("127.0.0.1", port);
+                // The control connection is not encrypted. It carries the private keys of the onion services
+                // (ADD_ONION). The embedded Tor listens on 127.0.0.1. An external Tor on another host, for example
+                // the Whonix-Gateway, must be reached over a network which only trusted systems can use.
+                var socketAddress = new InetSocketAddress(host, port);
                 log.debug("Attempting to connect to Tor control port {} ({}/{})", socketAddress, connectionAttempt + 1, MAX_CONNECTION_ATTEMPTS);
-                attemptSocket.connect(socketAddress);
+                attemptSocket.connect(socketAddress, connectTimeoutMs);
                 log.info("Successfully connected control socket to Tor port {} after {} attempts", port, connectionAttempt + 1);
                 return attemptSocket;
             } catch (ConnectException e) {
@@ -507,6 +540,14 @@ public class TorControlProtocol implements AutoCloseable {
                     attemptSocket.close();
                 } catch (IOException closeEx) {
                     log.warn("Failed to close attemptSocket after IOException on port {}: {}", port, closeEx.getMessage(), closeEx);
+                }
+                if (!isEveryFailureRetried) {
+                    String reason = e instanceof SocketTimeoutException ?
+                            "did not accept the connection within " + connectTimeoutMs + " ms. The host may be down, " +
+                                    "or a firewall may drop the connection" :
+                            "cannot be reached: " + e;
+                    throw new CannotConnectWithTorException("The Tor control port " + host + ":" + port + " " + reason,
+                            e);
                 }
             }
 

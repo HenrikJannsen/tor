@@ -42,15 +42,14 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * A close of the protocol, for example by a shutdown during the start, ends a connect which still runs. A connect which
- * waits is modelled by a listener whose backlog is full: Linux then drops the connection request until the backlog
- * empties.
+ * A connection to an external Tor is tried again only while Tor refuses it. A host which drops the packets is modelled
+ * by a listener whose backlog is full: Linux then drops the connection request, so the connect times out.
  */
 @Timeout(30)
 class TorControlProtocolConnectTest {
     private static final int CONNECT_TIMEOUT_MS = 300;
 
-    private final TorControlProtocol torControlProtocol = new TorControlProtocol(10_000);
+    private final TorControlProtocol torControlProtocol = new TorControlProtocol(10_000, CONNECT_TIMEOUT_MS);
     // Also written by the threads of the tests
     private final List<AutoCloseable> resources = new CopyOnWriteArrayList<>();
 
@@ -63,12 +62,66 @@ class TorControlProtocolConnectTest {
     }
 
     @Test
+    void anExternalTorWhichDoesNotAcceptTheConnectionFailsAfterOneAttempt() throws IOException {
+        int port = listenWithFullBacklog().getLocalPort();
+        long start = System.nanoTime();
+
+        assertThatThrownBy(() -> torControlProtocol.initialize("127.0.0.1", port))
+                .isInstanceOf(CannotConnectWithTorException.class)
+                .hasMessageContaining("The Tor control port 127.0.0.1:" + port + " did not accept the connection " +
+                        "within " + CONNECT_TIMEOUT_MS + " ms");
+        // Ten attempts take at least 10 * 300 ms and nine pauses of 200 ms.
+        assertThat(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start)).isLessThan(2000);
+    }
+
+    @Test
+    void anExternalTorWhichDoesNotListenYetIsTriedAgain() throws Exception {
+        int port;
+        try (ServerSocket serverSocket = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) {
+            port = serverSocket.getLocalPort();
+        }
+        Thread laterListener = new Thread(() -> {
+            try {
+                Thread.sleep(500);
+                resources.add(FakeTorControlServer.onPort(port, command -> "250 OK\r\n"));
+            } catch (InterruptedException | IOException e) {
+                throw new IllegalStateException(e);
+            }
+        });
+        laterListener.start();
+
+        torControlProtocol.initialize("127.0.0.1", port);
+        torControlProtocol.authenticate(new byte[0]);
+        laterListener.join();
+    }
+
+    // The control port of the Tor which Bisq starts answers before Bisq connects, so every failure is tried again.
+    @Test
+    void theEmbeddedTorIsTriedAgainAlsoAfterATimeout() throws Exception {
+        ServerSocket serverSocket = listenWithFullBacklog();
+        Thread acceptor = new Thread(() -> {
+            try {
+                Thread.sleep(CONNECT_TIMEOUT_MS + 100);
+                while (true) {
+                    resources.add(serverSocket.accept());
+                }
+            } catch (InterruptedException | IOException ignore) {
+                // The test closed the server socket
+            }
+        });
+        acceptor.start();
+
+        torControlProtocol.initialize(serverSocket.getLocalPort());
+    }
+
+    // A shutdown during the start can close the connection before the start makes it.
+    @Test
     void aClosedProtocolDoesNotConnect() throws IOException {
         ServerSocket serverSocket = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"));
         resources.add(serverSocket);
         torControlProtocol.close();
 
-        assertThatThrownBy(() -> torControlProtocol.initialize(serverSocket.getLocalPort()))
+        assertThatThrownBy(() -> torControlProtocol.initialize("127.0.0.1", serverSocket.getLocalPort()))
                 .isInstanceOf(CannotConnectWithTorException.class)
                 .hasMessageContaining("closed while it was being made");
         serverSocket.setSoTimeout(500);
@@ -84,10 +137,10 @@ class TorControlProtocolConnectTest {
                 .filter(resource -> resource instanceof Socket socket && socket.isConnected())
                 .map(resource -> ((Socket) resource).getLocalPort())
                 .collect(Collectors.toSet());
-        TorControlProtocol slowProtocol = new TorControlProtocol(10_000);
+        TorControlProtocol slowProtocol = new TorControlProtocol(10_000, 5000);
         resources.add(slowProtocol);
         CompletableFuture<Void> connecting = CompletableFuture.runAsync(() ->
-                slowProtocol.initialize(serverSocket.getLocalPort()));
+                slowProtocol.initialize("127.0.0.1", serverSocket.getLocalPort()));
         Thread.sleep(200);
 
         slowProtocol.close();

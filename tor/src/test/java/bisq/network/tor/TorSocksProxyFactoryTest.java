@@ -91,6 +91,14 @@ class TorSocksProxyFactoryTest {
     }
 
     @Test
+    void theProxyOfAnExternalTorIsOnItsHost() throws Exception {
+        TorSocksProxyFactory externalTorFactory = new TorSocksProxyFactory("127.0.0.2", 9050);
+
+        assertEquals("127.0.0.2", externalTorFactory.getSocks5Proxy().getInetAddress().getHostAddress());
+        assertEquals(9050, externalTorFactory.getSocks5Proxy().getPort());
+    }
+
+    @Test
     void usernameIsDerivedFromTheStreamId() throws Exception {
         String node1 = usernameOf("node1");
         String node1Again = usernameOf("node1");

@@ -18,6 +18,9 @@
 package bisq.network.tor;
 
 import bisq.network.tor.controller.FakeTorControlServer;
+import bisq.network.tor.controller.TorController.SocksListener;
+import bisq.network.tor.process.TorStartupFailedException;
+import com.runjva.sourceforge.jsocks.protocol.Socks5Proxy;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -27,9 +30,11 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.stream.Stream;
@@ -163,6 +168,107 @@ class TorServiceExternalTorTest {
 
             assertThat(torService.initialize().join()).isTrue();
         }
+    }
+
+    // Bisq uses the first SOCKS listener, 127.0.0.1:9150.
+    @Test
+    void anExternalTorWhoseSocksPortDoesNotIsolateStreamsStopsTheStart() throws Exception {
+        try (FakeTorControlServer externalTor = new FakeTorControlServer(command ->
+                replyWithSocksPorts(command, "250-SocksPort=9050\r\n250 SocksPort=127.0.0.1:9150 NoIsolateSOCKSAuth\r\n"))) {
+            Files.writeString(torDir.resolve("external_tor.config"), "UseExternalTor 1\nCookieAuthentication 0\n" +
+                    "ControlPort 127.0.0.1:" + externalTor.getPort());
+            torService = new TorService(createTransportConfig(), PLATFORM_SERVICES);
+
+            assertThatThrownBy(() -> torService.initialize())
+                    .isInstanceOf(ExternalTorUnavailableException.class)
+                    .hasMessageContaining("SOCKS port 9150 does not isolate")
+                    .hasMessageContaining("SocksPort 127.0.0.1:9150 NoIsolateSOCKSAuth")
+                    .hasMessageNotContaining("SocksPort 9050");
+        }
+    }
+
+    @Test
+    void anExternalTorWhoseSocksPortIsolatesStreamsStarts() throws Exception {
+        // The default SocksPort of Tor (none set), and another port without the isolation
+        for (String socksPortReply : List.of("250 SocksPort\r\n",
+                "250-SocksPort=127.0.0.1:9150 KeepAliveIsolateSOCKSAuth\r\n250 SocksPort=9050 NoIsolateSOCKSAuth\r\n")) {
+            try (FakeTorControlServer externalTor = new FakeTorControlServer(command ->
+                    replyWithSocksPorts(command, socksPortReply))) {
+                Files.writeString(torDir.resolve("external_tor.config"), "UseExternalTor 1\nCookieAuthentication 0\n" +
+                        "ControlPort 127.0.0.1:" + externalTor.getPort());
+                torService = new TorService(createTransportConfig(), PLATFORM_SERVICES);
+
+                assertThat(torService.initialize().join()).isTrue();
+                assertThat(externalTor.getCommands()).contains("GETCONF SocksPort", "GETCONF __SocksPort");
+                torService.shutdown().join();
+            }
+        }
+    }
+
+    @Test
+    void bisqConnectsToTheSocksAddressOfTorOrOnAWildcardAddressToTheControlHost() throws Exception {
+        assertThat(socksProxyOfAnExternalTorWhichListensOn("192.0.2.7:9150")).isEqualTo("192.0.2.7:9150");
+        assertThat(socksProxyOfAnExternalTorWhichListensOn("0.0.0.0:9150")).isEqualTo("127.0.0.1:9150");
+    }
+
+    @Test
+    void aSpecificAddressIsUsedAndAWildcardAddressMeansTheControlHost() {
+        assertThat(selectSocksAddress("192.168.1.10", false, new SocksListener("192.168.1.11", 9150)))
+                .isEqualTo("192.168.1.11:9150");
+        assertThat(selectSocksAddress("192.168.1.10", false, new SocksListener("0.0.0.0", 9050)))
+                .isEqualTo("192.168.1.10:9050");
+        assertThat(selectSocksAddress("tor.example", false, new SocksListener("::", 9050)))
+                .isEqualTo("tor.example:9050");
+    }
+
+    // Only Tor on this host can be reached on a loopback address, as on Whonix through the forwarders of the Workstation.
+    @Test
+    void aLoopbackAddressIsUsedOnlyIfTorRunsOnThisHost() {
+        assertThat(selectSocksAddress("127.0.0.1", true, new SocksListener("::1", 9150))).isEqualTo("::1:9150");
+        assertThat(selectSocksAddress("192.168.1.10", false, new SocksListener("127.0.0.1", 9050),
+                new SocksListener("192.168.1.10", 9150))).isEqualTo("192.168.1.10:9150");
+
+        assertThatThrownBy(() -> TorService.selectSocksAddress("192.168.1.10", false,
+                List.of(new SocksListener("127.0.0.1", 9050), new SocksListener("::1", 9050))))
+                .isInstanceOf(TorStartupFailedException.class)
+                .hasMessageContaining("only on the loopback address of its host 192.168.1.10 (127.0.0.1:9050, [::1]:9050)")
+                .hasMessageContaining("Add a SocksPort");
+        assertThatThrownBy(() -> TorService.selectSocksAddress("127.0.0.1", true, List.of()))
+                .isInstanceOf(TorStartupFailedException.class)
+                .hasMessageContaining("no TCP SOCKS listener");
+    }
+
+    private String socksProxyOfAnExternalTorWhichListensOn(String socksListener) throws Exception {
+        try (FakeTorControlServer externalTor = new FakeTorControlServer(command ->
+                command.equals("GETINFO net/listeners/socks") ?
+                        "250-net/listeners/socks=\"" + socksListener + "\"\r\n250 OK\r\n" :
+                        replyOfABootstrappedTor(command))) {
+            Files.writeString(torDir.resolve("external_tor.config"), "UseExternalTor 1\nCookieAuthentication 0\n" +
+                    "ControlPort 127.0.0.1:" + externalTor.getPort());
+            torService = new TorService(createTransportConfig(), PLATFORM_SERVICES);
+            assertThat(torService.initialize().join()).isTrue();
+            Socks5Proxy socks5Proxy = torService.getSocks5Proxy();
+            torService.shutdown().join();
+            return socks5Proxy.getInetAddress().getHostAddress() + ":" + socks5Proxy.getPort();
+        }
+    }
+
+    private static String selectSocksAddress(String controlHost,
+                                             boolean isControlHostLoopback,
+                                             SocksListener... socksListeners) {
+        InetSocketAddress socksAddress = TorService.selectSocksAddress(controlHost, isControlHostLoopback,
+                List.of(socksListeners));
+        return socksAddress.getHostString() + ":" + socksAddress.getPort();
+    }
+
+    private static String replyWithSocksPorts(String command, String socksPortReply) {
+        if (command.equals("GETCONF SocksPort")) {
+            return socksPortReply;
+        }
+        if (command.equals("GETCONF __SocksPort")) {
+            return "250 __SocksPort\r\n";
+        }
+        return replyOfABootstrappedTor(command);
     }
 
     private static String replyOfABootstrappedTor(String command) {

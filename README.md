@@ -50,6 +50,27 @@ external Tor, `TorController`, `TorControlProtocol` and `FileUtils`. If the conn
 `java.util.HexFormat` needs API level 34, and `ProcessHandle` does not exist on Android. The Tor build uses Guava
 instead of `HexFormat`. The embedded Tor process and `tor-local-network` only run on desktop systems.
 
+## External Tor
+
+With `UseExternalTor 1` in `external_tor.config` of the Tor directory, Bisq uses a Tor which already runs instead of
+starting its own. The connection to its control port is plain TCP. It carries the private keys of the onion services
+of Bisq (`ADD_ONION`) and, with `ControlPassword`, the password. Use a `ControlPort` on the same system, or reach a Tor
+on another host only over a network which no untrusted system can use, such as the internal network of Whonix. While
+the control port refuses the connection, Bisq tries again for about two seconds, because the external Tor may not
+listen yet. If the control port does not accept the connection within 10 seconds, or its host cannot be reached, the
+start fails at once.
+
+Bisq asks the external Tor for its SOCKS listeners (`GETINFO net/listeners/socks`) and uses the first TCP listener which
+it can reach: one on a specific address at that address, one on a wildcard address (`0.0.0.0` or `::`) at the control
+host. A loopback address is an address of the host of Tor, so Bisq uses it only if the control host is a loopback
+address as well. If a Tor on another host listens for SOCKS connections only on its loopback address, the start fails.
+
+`TorService.getSocket` sends SOCKS credentials derived from the stream ID, so that Tor puts the streams of different
+stream IDs on different circuits. Tor does so on a SOCKS port with `IsolateSOCKSAuth`, which it sets by default. The
+start with an external Tor fails if a `SocksPort` or `__SocksPort` entry of its configuration which may have opened the
+SOCKS port that Bisq uses turns this off with `NoIsolateSOCKSAuth`. If the control port does not report the
+configuration, as onion-grater on Whonix does not, Bisq logs that it could not check the port and starts.
+
 ## Onion services
 
 A publication of an onion service completes once the first HSDir has stored its descriptor, which Tor reports with

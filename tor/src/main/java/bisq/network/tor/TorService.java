@@ -37,6 +37,7 @@ import bisq.network.tor.process.TorDirectories;
 import bisq.network.tor.process.TorStartupFailedException;
 import bisq.network.tor.process.control_port.ControlPortFileParser;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.net.InetAddresses;
 import com.runjva.sourceforge.jsocks.protocol.Socks5Proxy;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
@@ -44,8 +45,10 @@ import lombok.extern.slf4j.Slf4j;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.UnknownHostException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -549,9 +552,11 @@ public class TorService {
             torController.shutdown();
         }
         torController = torControllerFactory.get();
-        torController.initialize(controlPort);
+        torController.initialize(controlHost, controlPort);
 
         authenticateToExternalTor(externalTorConfig);
+        // A system Tor may still bootstrap, for example right after the start of the system.
+        torController.awaitBootstrapOfExternalTor();
 
         onionServiceTargets.close();
         onionServiceTargets = new DirectOnionServiceTargets(getExternalTorBindAddress());
@@ -560,10 +565,83 @@ public class TorService {
         log.info("The external Tor at {}:{} has version {}", controlHost, controlPort,
                 torVersion.orElse("unknown"));
 
-        // We do not call torController.bootstrap as we do not need to bootstrap Tor.
-        int port = torController.getSocksPort();
-        log.info("Tor control provided SOCKS port: {}", port);
-        torSocksProxyFactory = Optional.of(new TorSocksProxyFactory(port));
+        List<TorController.SocksListener> socksListeners = torController.getSocksListeners();
+        InetSocketAddress socksAddress = selectSocksAddress(controlHost, isLoopbackAddress(controlHost), socksListeners);
+        log.info("The external Tor listens for SOCKS connections on {}. Bisq connects to {}:{}",
+                describe(socksListeners), socksAddress.getHostString(), socksAddress.getPort());
+        refuseSocksPortWithoutStreamIsolation(socksAddress.getPort());
+        torSocksProxyFactory = Optional.of(new TorSocksProxyFactory(socksAddress.getHostString(), socksAddress.getPort()));
+    }
+
+    /**
+     * The address of the SOCKS port of an external Tor: the first TCP listener which Bisq can reach. A listener on a
+     * specific address is reached there. A listener on a wildcard address accepts connections on every address of the
+     * host of Tor, so Bisq connects to the control host. A loopback address is an address of the host of Tor, which is
+     * this host only if the control host is a loopback address as well.
+     *
+     * @param isControlHostLoopback whether the control host is a loopback address, so that Tor runs on this host
+     * @throws TorStartupFailedException if Bisq can reach none of the listeners
+     */
+    @VisibleForTesting
+    static InetSocketAddress selectSocksAddress(String controlHost,
+                                                boolean isControlHostLoopback,
+                                                List<TorController.SocksListener> socksListeners) {
+        for (TorController.SocksListener listener : socksListeners) {
+            Optional<InetAddress> address = InetAddresses.isInetAddress(listener.address()) ?
+                    Optional.of(InetAddresses.forString(listener.address())) :
+                    Optional.empty();
+            if (address.filter(InetAddress::isAnyLocalAddress).isPresent()) {
+                return InetSocketAddress.createUnresolved(controlHost, listener.port());
+            }
+            if (address.filter(InetAddress::isLoopbackAddress).isEmpty() || isControlHostLoopback) {
+                return InetSocketAddress.createUnresolved(listener.address(), listener.port());
+            }
+        }
+        if (socksListeners.isEmpty()) {
+            throw new TorStartupFailedException("Tor has no TCP SOCKS listener");
+        }
+        throw new TorStartupFailedException("Tor listens for SOCKS connections only on the loopback address of its " +
+                "host " + controlHost + " (" + describe(socksListeners) + "), which Bisq cannot reach from this host. " +
+                "Add a SocksPort on an address of that host which this host can reach to the configuration of the " +
+                "external Tor");
+    }
+
+    // IPv6 addresses in brackets, as Tor reports them
+    private static String describe(List<TorController.SocksListener> socksListeners) {
+        return socksListeners.stream()
+                .map(listener -> listener.address().contains(":") ?
+                        "[" + listener.address() + "]:" + listener.port() :
+                        listener.address() + ":" + listener.port())
+                .collect(Collectors.joining(", "));
+    }
+
+    // A host name which does not resolve is no loopback address. The control connection resolved it already.
+    private static boolean isLoopbackAddress(String host) {
+        try {
+            return InetAddress.getByName(host).isLoopbackAddress();
+        } catch (UnknownHostException e) {
+            return false;
+        }
+    }
+
+    /**
+     * {@link #getSocket} sends SOCKS credentials derived from the stream ID, so that Tor puts the streams of different
+     * stream IDs on different circuits, which both applications require for their connections. The Tor which Bisq
+     * starts always does so; the configuration of an external Tor can turn it off for its SOCKS port.
+     */
+    private void refuseSocksPortWithoutStreamIsolation(int socksPort) {
+        Optional<List<String>> entriesWithoutIsolation = torController.findSocksPortsWithoutSocksAuthIsolation(socksPort);
+        if (entriesWithoutIsolation.isEmpty()) {
+            log.info("The control port of the external Tor does not report its SocksPort configuration, so Bisq " +
+                    "cannot check that the SOCKS port {} isolates streams by their SOCKS credentials", socksPort);
+            return;
+        }
+        if (!entriesWithoutIsolation.get().isEmpty()) {
+            throw new TorStartupFailedException("Its SOCKS port " + socksPort + " does not isolate streams by their " +
+                    "SOCKS credentials (SocksPort " + String.join(", ", entriesWithoutIsolation.get()) + "), so Tor " +
+                    "could put the connections of different identities of Bisq on one circuit. Remove " +
+                    "NoIsolateSOCKSAuth from that SocksPort in the configuration of the external Tor");
+        }
     }
 
     private String getExternalTorUnavailableMessage(ExternalTorConfig externalTorConfig, RuntimeException cause) {

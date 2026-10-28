@@ -43,6 +43,41 @@ class TorControllerSocksPortTest {
     }
 
     @Test
+    void theTcpListenersAreReadWithTheirAddressesInTheOrderOfTor() {
+        assertThat(TorController.parseSocksListeners(
+                "250-net/listeners/socks=\"unix:/run/tor/socks\" \"0.0.0.0:9050\" \"[::1]:9150\""))
+                .containsExactly(new TorController.SocksListener("0.0.0.0", 9050),
+                        new TorController.SocksListener("::1", 9150));
+        assertThat(TorController.parseSocksListeners("250-net/listeners/socks=")).isEmpty();
+    }
+
+    // The forms of tor 0.4.9.14: an address is optional, IPv6 in brackets, auto gets a port when Tor opens it.
+    @Test
+    void anEntryWithThePortOfTheListenerOrAutoMayHaveOpenedIt() {
+        assertThat(TorController.mayHaveOpenedListenerOn("9050", 9050)).isTrue();
+        assertThat(TorController.mayHaveOpenedListenerOn("127.0.0.1:9050 IsolateDestAddr", 9050)).isTrue();
+        assertThat(TorController.mayHaveOpenedListenerOn("[::1]:9050", 9050)).isTrue();
+        assertThat(TorController.mayHaveOpenedListenerOn("auto NoIsolateSOCKSAuth", 40591)).isTrue();
+        assertThat(TorController.mayHaveOpenedListenerOn("127.0.0.1:auto", 40591)).isTrue();
+
+        assertThat(TorController.mayHaveOpenedListenerOn("127.0.0.1:9150", 9050)).isFalse();
+        assertThat(TorController.mayHaveOpenedListenerOn("unix:/run/tor/socks WorldWritable", 9050)).isFalse();
+        assertThat(TorController.mayHaveOpenedListenerOn("0", 9050)).isFalse();
+    }
+
+    @Test
+    void onlyNoIsolateSocksAuthTurnsTheIsolationBySocksCredentialsOff() {
+        assertThat(TorController.isolatesBySocksAuthentication("9050")).isTrue();
+        assertThat(TorController.isolatesBySocksAuthentication("9150 KeepAliveIsolateSOCKSAuth IsolateDestAddr"))
+                .isTrue();
+        assertThat(TorController.isolatesBySocksAuthentication("9050 NoIsolateSOCKSAuth")).isFalse();
+        assertThat(TorController.isolatesBySocksAuthentication("[::1]:9050 noisolatesocksauth")).isFalse();
+        // The last of the two flags counts.
+        assertThat(TorController.isolatesBySocksAuthentication("9050 NoIsolateSOCKSAuth IsolateSOCKSAuth")).isTrue();
+        assertThat(TorController.isolatesBySocksAuthentication("9050 IsolateSOCKSAuth NoIsolateSOCKSAuth")).isFalse();
+    }
+
+    @Test
     void withoutTcpListenerTheStartFails() {
         assertThatThrownBy(() -> TorController.parseSocksPort("250-net/listeners/socks=\"unix:/run/tor/socks\""))
                 .isInstanceOf(ControlCommandFailedException.class);
