@@ -66,16 +66,13 @@ public class TorBinaryZipExtractor {
         return inputStream;
     }
 
-    // The zip archive does not keep the file modes. On Linux, the archive has no tor, only the pluggable transports, so a
-    // file named tor in the Tor directory is not part of the bundle.
+    // The zip archive does not keep the file modes.
     private void makeProgramsExecutable() throws IOException {
         if (!isMacOsOrLinux()) {
             return;
         }
 
-        if (OS.isMacOs()) {
-            makeExecutable(destDirPath.resolve("tor"));
-        }
+        makeExecutable(destDirPath.resolve("tor"));
 
         Path pluggableTransportsDirPath = destDirPath.resolve(TorDirectories.PLUGGABLE_TRANSPORTS_DIR_NAME);
         if (Files.isDirectory(pluggableTransportsDirPath)) {

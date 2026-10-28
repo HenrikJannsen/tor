@@ -38,22 +38,24 @@ class TorBinaryZipExtractorTest {
     Path torDir;
 
     @Test
-    void theProgramsOfThePluggableTransportsBecomeExecutable() throws IOException {
+    void torAndTheProgramsOfThePluggableTransportsBecomeExecutable() throws IOException {
         assumeTrue(OS.isLinux(), "The archive of Linux");
-        // A file which is not part of the bundle, as the Whonix guide for Bisq 1 creates it
-        Files.createFile(torDir.resolve("tor"));
 
-        // The archive of Linux: only the pluggable transports, without tor
-        new TorBinaryZipExtractor(torDir).extract(zip("pluggable_transports/lyrebird",
+        // The archive of Linux: tor, its libraries, the GeoIP files and the pluggable transports
+        new TorBinaryZipExtractor(torDir).extract(zip("tor",
+                "libcrypto.so.3",
+                "geoip",
+                "pluggable_transports/lyrebird",
                 "pluggable_transports/conjure-client",
                 "pluggable_transports/pt_config.json",
                 "pluggable_transports/README.CONJURE.md"));
 
+        assertThat(torDir.resolve("tor")).isExecutable();
         Path pluggableTransportsDir = torDir.resolve("pluggable_transports");
         assertThat(pluggableTransportsDir.resolve("lyrebird")).isExecutable();
         assertThat(pluggableTransportsDir.resolve("conjure-client")).isExecutable();
         assertThat(Files.isExecutable(pluggableTransportsDir.resolve("pt_config.json"))).isFalse();
-        assertThat(Files.isExecutable(torDir.resolve("tor"))).isFalse();
+        assertThat(Files.isExecutable(torDir.resolve("geoip"))).isFalse();
     }
 
     private static ByteArrayInputStream zip(String... entryNames) throws IOException {

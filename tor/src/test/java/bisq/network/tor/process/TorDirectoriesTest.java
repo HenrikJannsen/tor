@@ -53,12 +53,4 @@ class TorDirectoriesTest {
         assertThat(directories.getBundledTorBinaryPath())
                 .isEqualTo(directories.getBundledTorBinaryPath(OS.isWindows()));
     }
-
-    @Test
-    void onlyABinaryInTheTorDirectoryIsTheBundledTor() {
-        assertThat(directories.isBundledTor(BASE.resolve("tor"))).isTrue();
-        assertThat(directories.isBundledTor(Paths.get("/usr/bin/tor"))).isFalse();
-        // The path is normalized, so one which leaves the Tor directory is not the bundled Tor.
-        assertThat(directories.isBundledTor(BASE.resolve("..").resolve("other").resolve("tor"))).isFalse();
-    }
 }

@@ -34,8 +34,8 @@ import bisq.network.tor.installer.TorInstaller;
 import bisq.network.tor.onionservice.DirectOnionServiceTargets;
 import bisq.network.tor.onionservice.OnionServiceKey;
 import bisq.network.tor.onionservice.OnionServiceTargets;
+import bisq.network.tor.process.BundledTorLibraries;
 import bisq.network.tor.process.EmbeddedTorProcess;
-import bisq.network.tor.process.LdPreload;
 import bisq.network.tor.process.LoopbackPorts;
 import bisq.network.tor.process.TorDirectories;
 import bisq.network.tor.process.TorStartupFailedException;
@@ -100,7 +100,7 @@ public class TorService {
     // Written by initialize, read by the user interface
     @Getter
     private volatile boolean useExternalTor;
-    // The version which the running Tor reports. On Linux it is the tor of the system, not the bundled version.
+    // The version which the running Tor reports
     @Getter
     private volatile Optional<String> torVersion = Optional.empty();
 
@@ -265,10 +265,9 @@ public class TorService {
     }
 
     private void startEmbeddedTor() {
-        // On Linux the bundle has only the pluggable transports, because Bisq uses the tor of the system.
         installTorIfNotUpToDate();
 
-        Path torBinaryPath = getTorBinaryPath();
+        Path torBinaryPath = torDirectories.getBundledTorBinaryPath();
 
         if (torController != null) {
             torController.shutdown();
@@ -276,11 +275,8 @@ public class TorService {
         torController = torControllerFactory.get();
 
         PasswordDigest hashedControlPassword = PasswordDigest.generateDigest();
-        boolean isBundledTor = torDirectories.isBundledTor(torBinaryPath);
-        createTorrcConfigFile(hashedControlPassword, isBundledTor);
-        if (isBundledTor) {
-            createEmptyOpenSslConfig();
-        }
+        createTorrcConfigFile(hashedControlPassword);
+        createEmptyOpenSslConfig();
 
         // remove the control port file before we launch tor, just in case it exists from
         // a previous run
@@ -332,16 +328,13 @@ public class TorService {
     }
 
     private EmbeddedTorProcess createTorProcess(Path torBinaryPath) {
-        Consumer<Map<String, String>> environmentAdjuster = torDirectories.isBundledTor(torBinaryPath) ?
-                environment -> {
-                    LdPreload.applyToEnvironment(environment, torDirectories.getBinaryDirPath());
-                    // The OpenSSL of the bundled Tor reads openssl.cnf from a directory of its build below
-                    // /var/tmp/dist, where any local user can create files, unless OPENSSL_CONF names another file.
-                    // The configuration can load modules into Tor.
-                    environment.put("OPENSSL_CONF", torDirectories.getOpenSslConfigPath().toAbsolutePath().toString());
-                } :
-                environment -> {
-                };
+        Consumer<Map<String, String>> environmentAdjuster = environment -> {
+            BundledTorLibraries.applyToEnvironment(environment, torDirectories.getBinaryDirPath());
+            // The OpenSSL of the bundled Tor reads openssl.cnf from a directory of its build below /var/tmp/dist, where
+            // any local user can create files, unless OPENSSL_CONF names another file. The configuration can load
+            // modules into Tor.
+            environment.put("OPENSSL_CONF", torDirectories.getOpenSslConfigPath().toAbsolutePath().toString());
+        };
         return new EmbeddedTorProcess(createTorCommand(torBinaryPath),
                 torDirectories.getBinaryDirPath(),
                 environmentAdjuster,
@@ -788,14 +781,6 @@ public class TorService {
         }
     }
 
-    private Path getTorBinaryPath() {
-        if (OS.isLinux()) {
-            Optional<Path> systemTorBinaryPath = EmbeddedTorProcess.getSystemTorPath();
-            return systemTorBinaryPath.orElseThrow(TorNotInstalledException::new);
-        }
-        return torDirectories.getBundledTorBinaryPath();
-    }
-
     private void installTorIfNotUpToDate() {
         var torInstaller = new TorInstaller(torDirectories.getBinaryDirPath());
         torInstaller.installIfNotUpToDate();
@@ -837,7 +822,7 @@ public class TorService {
         }
     }
 
-    private Map<String, String> createTorrcConfigFile(PasswordDigest hashedControlPassword, boolean isBundledTor) {
+    private Map<String, String> createTorrcConfigFile(PasswordDigest hashedControlPassword) {
         BridgeConfig bridgeConfig = transportConfig.getBridgeConfig();
         TorrcClientConfigFactory torrcClientConfigFactory = TorrcClientConfigFactory.builder()
                 .isTestNetwork(transportConfig.isTestNetwork())
@@ -848,9 +833,7 @@ public class TorService {
 
         Map<String, String> torrcOverrideConfigs = transportConfig.getTorrcOverrides();
         Map<String, String> torrcConfigMap = torrcClientConfigFactory.torrcClientConfigMap(torrcOverrideConfigs);
-        if (isBundledTor) {
-            putBundledGeoIpFiles(torrcConfigMap, torDirectories);
-        }
+        putBundledGeoIpFiles(torrcConfigMap, torDirectories);
 
         List<Map.Entry<String, String>> bridgeEntries = bridgeConfig.isUsed() ?
                 createBridgeTorrcEntries(bridgeConfig) :

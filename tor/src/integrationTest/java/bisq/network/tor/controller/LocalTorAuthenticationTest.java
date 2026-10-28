@@ -17,7 +17,9 @@
 
 package bisq.network.tor.controller;
 
-import bisq.network.tor.process.EmbeddedTorProcess;
+import bisq.network.tor.installer.TorInstaller;
+import bisq.network.tor.process.BundledTorLibraries;
+import bisq.network.tor.process.TorDirectories;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -29,7 +31,6 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -38,8 +39,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * Authenticates against a tor of the system. Tor runs with DisableNetwork, so it makes no connection to the Tor
- * network. The test is skipped if no tor is installed.
+ * Authenticates against the bundled tor. Tor runs with DisableNetwork, so it makes no connection to the Tor network.
+ * The test is skipped if the build packaged no Tor bundle.
  */
 @Timeout(60)
 class LocalTorAuthenticationTest {
@@ -56,10 +57,12 @@ class LocalTorAuthenticationTest {
 
     @BeforeAll
     static void startTor() throws IOException, InterruptedException {
-        Optional<Path> torBinaryPath = EmbeddedTorProcess.getSystemTorPath();
-        assumeTrue(torBinaryPath.isPresent(), "No tor in PATH");
+        assumeTrue(LocalTorAuthenticationTest.class.getClassLoader().getResource("tor.zip") != null,
+                "The build packaged no Tor bundle");
+        TorDirectories directories = new TorDirectories(torDir);
+        new TorInstaller(directories.getBinaryDirPath()).installIfNotUpToDate();
 
-        Path dataDir = Files.createDirectories(torDir.resolve("data"));
+        Path dataDir = Files.createDirectories(directories.getDataDirPath());
         Path controlPortFile = torDir.resolve("control-port");
         Path torrc = torDir.resolve("torrc");
         Files.writeString(torrc, String.join("\n",
@@ -73,12 +76,13 @@ class LocalTorAuthenticationTest {
                 "HashedControlPassword " + PASSWORD_DIGEST.getHashedPassword(),
                 "Log notice file " + torDir.resolve("tor.log")));
         Path emptyDefaults = Files.writeString(torDir.resolve("torrc-defaults"), "");
-        torProcess = new ProcessBuilder(torBinaryPath.get().toString(),
+        var processBuilder = new ProcessBuilder(directories.getBundledTorBinaryPath().toString(),
                 "-f", torrc.toString(),
                 "--defaults-torrc", emptyDefaults.toString())
                 .redirectErrorStream(true)
-                .redirectOutput(torDir.resolve("tor-stdout.log").toFile())
-                .start();
+                .redirectOutput(torDir.resolve("tor-stdout.log").toFile());
+        BundledTorLibraries.applyToEnvironment(processBuilder.environment(), directories.getBinaryDirPath());
+        torProcess = processBuilder.start();
 
         long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(30);
         while (!Files.exists(controlPortFile) || Files.readString(controlPortFile).isBlank()) {

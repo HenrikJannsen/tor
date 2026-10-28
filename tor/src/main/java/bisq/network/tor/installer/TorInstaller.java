@@ -29,7 +29,7 @@ import java.nio.file.Path;
 public class TorInstaller {
     // Internal marker for the installed bundle. Bump the suffix when bundled Tor packaging changes without a tor.version bump.
     @VisibleForTesting
-    static final String INSTALLATION_VERSION = TorBuildVersion.TOR_VERSION + "-bundle-3";
+    static final String INSTALLATION_VERSION = TorBuildVersion.TOR_VERSION + "-bundle-4";
     private final Path torDirPath;
     private final Path versionFilePath;
 

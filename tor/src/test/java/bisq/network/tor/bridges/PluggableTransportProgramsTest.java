@@ -40,9 +40,9 @@ class PluggableTransportProgramsTest {
         Path bundleDir = Files.createDirectories(tempDir.resolve("Application Support").resolve("tor"));
         createExecutable(bundleDir.resolve("pluggable_transports").resolve("lyrebird"));
 
-        assertThat(PluggableTransportPrograms.find(bundleDir, "lyrebird", false, false, null))
+        assertThat(PluggableTransportPrograms.find(bundleDir, "lyrebird", false))
                 .contains("pluggable_transports/lyrebird");
-        assertThat(PluggableTransportPrograms.find(bundleDir, "conjure-client", false, false, null)).isEmpty();
+        assertThat(PluggableTransportPrograms.find(bundleDir, "conjure-client", false)).isEmpty();
     }
 
     @Test
@@ -52,7 +52,7 @@ class PluggableTransportProgramsTest {
         Files.createFile(bundleDir.resolve("pluggable_transports").resolve("lyrebird"));
         assumeTrue(!Files.isExecutable(bundleDir.resolve("pluggable_transports").resolve("lyrebird")));
 
-        assertThat(PluggableTransportPrograms.find(bundleDir, "lyrebird", false, false, null)).isEmpty();
+        assertThat(PluggableTransportPrograms.find(bundleDir, "lyrebird", false)).isEmpty();
     }
 
     @Test
@@ -61,25 +61,8 @@ class PluggableTransportProgramsTest {
         Files.createDirectories(bundleDir.resolve("pluggable_transports"));
         Files.createFile(bundleDir.resolve("pluggable_transports").resolve("lyrebird.exe"));
 
-        assertThat(PluggableTransportPrograms.find(bundleDir, "lyrebird", true, false, null))
+        assertThat(PluggableTransportPrograms.find(bundleDir, "lyrebird", true))
                 .contains(Path.of("pluggable_transports", "lyrebird.exe").toString());
-    }
-
-    @Test
-    void onLinuxAProgramOfThePathCanReplaceTheBundle() throws IOException {
-        assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"));
-        Path binDir = Files.createDirectories(tempDir.resolve("bin"));
-        Path program = createExecutable(binDir.resolve("lyrebird"));
-        Path withSpace = Files.createDirectories(tempDir.resolve("my bin"));
-        createExecutable(withSpace.resolve("conjure-client"));
-        Path bundleDir = tempDir.resolve("tor");
-
-        assertThat(PluggableTransportPrograms.find(bundleDir, "lyrebird", false, true, binDir.toString()))
-                .contains(program.toString());
-        assertThat(PluggableTransportPrograms.find(bundleDir, "lyrebird", false, false, binDir.toString())).isEmpty();
-        // Tor would split the path at the space.
-        assertThat(PluggableTransportPrograms.find(bundleDir, "conjure-client", false, true, withSpace.toString()))
-                .isEmpty();
     }
 
     private static Path createExecutable(Path path) throws IOException {

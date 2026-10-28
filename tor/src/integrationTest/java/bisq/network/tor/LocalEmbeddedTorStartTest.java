@@ -19,7 +19,6 @@ package bisq.network.tor;
 
 import bisq.network.tor.common.platform.OS;
 import bisq.network.tor.controller.exceptions.TorBootstrapFailedException;
-import bisq.network.tor.process.EmbeddedTorProcess;
 import com.google.common.base.Throwables;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -29,7 +28,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -38,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * Starts the tor of the system through TorService up to the bootstrap. All connections of Tor go to a closed local
+ * Starts the bundled tor of Linux through TorService up to the bootstrap. All connections of Tor go to a closed local
  * port, so Tor makes no connection to the Tor network and cannot bootstrap. The start must then fail and stop Tor.
  */
 @Timeout(60)
@@ -48,9 +46,7 @@ class LocalEmbeddedTorStartTest {
 
     @Test
     void aStartWithoutBootstrapFailsAndStopsTor() throws Exception {
-        assumeTrue(OS.isLinux(), "Only Linux runs the tor of the system");
-        Optional<Path> torBinaryPath = EmbeddedTorProcess.getSystemTorPath();
-        assumeTrue(torBinaryPath.isPresent(), "No tor in PATH");
+        assumeBundledTorOfLinux();
 
         var transportConfig = new TorTransportConfig(torDir, 3000, 1000, false, Set.of(),
                 Map.of("Socks5Proxy", "127.0.0.1:1"), false);
@@ -69,8 +65,7 @@ class LocalEmbeddedTorStartTest {
     // Tor locks the file while it runs, so a file which an ended Tor left does not keep the next Tor from starting.
     @Test
     void aLockFileWhichAnEndedTorLeftDoesNotBlockTheStart() throws Exception {
-        assumeTrue(OS.isLinux(), "Only Linux runs the tor of the system");
-        assumeTrue(EmbeddedTorProcess.getSystemTorPath().isPresent(), "No tor in PATH");
+        assumeBundledTorOfLinux();
         Files.createFile(torDir.resolve("lock"));
         var transportConfig = new TorTransportConfig(torDir, 3000, 1000, false, Set.of(),
                 Map.of("Socks5Proxy", "127.0.0.1:1"), false);
@@ -85,8 +80,7 @@ class LocalEmbeddedTorStartTest {
     // The data directory of the application can hold "#", which starts a comment in an unquoted torrc value.
     @Test
     void aStartWithAHashInTheTorDirectoryReachesTheBootstrap() throws Exception {
-        assumeTrue(OS.isLinux(), "Only Linux runs the tor of the system");
-        assumeTrue(EmbeddedTorProcess.getSystemTorPath().isPresent(), "No tor in PATH");
+        assumeBundledTorOfLinux();
         Path hashTorDir = torDir.resolve("Bisq#1").resolve("tor");
         var transportConfig = new TorTransportConfig(hashTorDir, 3000, 1000, false, Set.of(),
                 Map.of("Socks5Proxy", "127.0.0.1:1"), false);
@@ -101,10 +95,15 @@ class LocalEmbeddedTorStartTest {
         assertThatNoTorOfThisTestRuns(hashTorDir);
     }
 
+    // The tests check the start on Linux.
+    private void assumeBundledTorOfLinux() {
+        assumeTrue(OS.isLinux(), "The test checks the start on Linux");
+        assumeTrue(getClass().getClassLoader().getResource("tor.zip") != null, "The build packaged no Tor bundle");
+    }
+
     @Test
     void aStartWithBridgesConnectsOnlyToTheBridges() throws Exception {
-        assumeTrue(OS.isLinux(), "Only Linux runs the tor of the system");
-        assumeTrue(EmbeddedTorProcess.getSystemTorPath().isPresent(), "No tor in PATH");
+        assumeBundledTorOfLinux();
         // A bridge without pluggable transport on a closed local port. With UseBridges, Tor connects to no other
         // relay, so it cannot bootstrap.
         String bridgeLine = "127.0.0.1:1 0123456789ABCDEF0123456789ABCDEF01234567";

@@ -24,7 +24,30 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 class PerPlatformUrlProviderTest {
-    private final PerPlatformUrlProvider provider = new PerPlatformUrlProvider() {
+    private final PerPlatformUrlProvider provider = new TestUrlProvider("linux-aarch64.tar.gz");
+
+    @Test
+    void namesTheBinaryOfEachPlatformWhichHasOne() {
+        assertEquals("https://example.org/1.0/linux-x86_64.tar.gz", provider.urlFor(Platform.LINUX_X86_64));
+        assertEquals("https://example.org/1.0/linux-aarch64.tar.gz", provider.urlFor(Platform.LINUX_ARM_64));
+        assertEquals("https://example.org/1.0/macos-x86_64.tar.gz", provider.urlFor(Platform.MACOS_X86_64));
+        assertEquals("https://example.org/1.0/macos-aarch64.tar.gz", provider.urlFor(Platform.MACOS_ARM_64));
+        assertEquals("https://example.org/1.0/windows-x86_64.tar.gz", provider.urlFor(Platform.WIN_X86_64));
+    }
+
+    @Test
+    void namesNoBinaryOfAnotherArchitectureForArm64() {
+        assertNull(new TestUrlProvider(null).urlFor(Platform.LINUX_ARM_64));
+        assertNull(provider.urlFor(Platform.WIN_ARM_64));
+    }
+
+    private static final class TestUrlProvider implements PerPlatformUrlProvider {
+        private final String linuxArm64Url;
+
+        private TestUrlProvider(String linuxArm64Url) {
+            this.linuxArm64Url = linuxArm64Url;
+        }
+
         @Override
         public String getUrlPrefix() {
             return "https://example.org/1.0/";
@@ -33,6 +56,11 @@ class PerPlatformUrlProviderTest {
         @Override
         public String getLINUX_X86_64_URL() {
             return "linux-x86_64.tar.gz";
+        }
+
+        @Override
+        public String getLINUX_ARM_64_URL() {
+            return linuxArm64Url;
         }
 
         @Override
@@ -49,19 +77,5 @@ class PerPlatformUrlProviderTest {
         public String getWIN_X86_64_URL() {
             return "windows-x86_64.tar.gz";
         }
-    };
-
-    @Test
-    void namesTheBinaryOfEachPlatformWhichHasOne() {
-        assertEquals("https://example.org/1.0/linux-x86_64.tar.gz", provider.urlFor(Platform.LINUX_X86_64));
-        assertEquals("https://example.org/1.0/macos-x86_64.tar.gz", provider.urlFor(Platform.MACOS_X86_64));
-        assertEquals("https://example.org/1.0/macos-aarch64.tar.gz", provider.urlFor(Platform.MACOS_ARM_64));
-        assertEquals("https://example.org/1.0/windows-x86_64.tar.gz", provider.urlFor(Platform.WIN_X86_64));
-    }
-
-    @Test
-    void namesNoBinaryOfAnotherArchitectureForArm64() {
-        assertNull(provider.urlFor(Platform.LINUX_ARM_64));
-        assertNull(provider.urlFor(Platform.WIN_ARM_64));
     }
 }

@@ -81,7 +81,8 @@ final class ExternalTorProcess implements AutoCloseable {
         directoryAuthorities.forEach(authority -> torrcLines.add("DirAuthority " + authority.toTorrcValue()));
         Path torrcPath = Files.write(torDirPath.resolve("torrc"), torrcLines);
 
-        Path torBinaryPath = EmbeddedTorProcess.getSystemTorPath()
+        // A user runs the tor of the system
+        Path torBinaryPath = EmbeddedTorProcess.findExecutableInPath(System.getenv("PATH"), "tor")
                 .orElseThrow(() -> new IllegalStateException("No tor in PATH"));
         // Tor ends with this JVM, also if the test does not stop it
         String ownerPid = String.valueOf(ProcessHandle.current().pid());

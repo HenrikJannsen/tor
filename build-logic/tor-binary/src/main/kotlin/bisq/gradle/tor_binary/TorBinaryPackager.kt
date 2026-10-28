@@ -1,9 +1,7 @@
 package bisq.gradle.tor_binary
 
 import bisq.gradle.common.OS
-import bisq.gradle.common.Platform
 import bisq.gradle.common.getOS
-import bisq.gradle.common.getPlatform
 import bisq.gradle.tasks.download.SignedBinaryDownloader
 import org.gradle.api.Project
 import org.gradle.api.file.RegularFile
@@ -22,15 +20,6 @@ class TorBinaryPackager(
     companion object {
         private const val ARCHIVE_EXTRACTION_DIR = "${BisqTorBinaryPlugin.DOWNLOADS_DIR}/extracted"
         private const val PROCESSED_DIR = "${BisqTorBinaryPlugin.DOWNLOADS_DIR}/processed"
-
-        /**
-         * The platform of the expert bundle which a build on [buildPlatform] packages files of. There is no bundle for
-         * Linux ARM64. A Linux build packages only the pluggable transports of the bundle, and on ARM64 only their
-         * configuration pt_config.json, which does not depend on the architecture, so it takes the bundle of Linux
-         * x86_64. Every other platform needs the programs of its own bundle; Windows ARM64 has none.
-         */
-        fun bundlePlatform(buildPlatform: Platform): Platform =
-            if (buildPlatform == Platform.LINUX_ARM_64) Platform.LINUX_X86_64 else buildPlatform
     }
 
     fun registerTasks() {
@@ -58,21 +47,8 @@ class TorBinaryPackager(
             project.tasks.register<Sync>("processUnpackedTorBinaryTar") {
                 dependsOn(unpackTarTask)
 
-                if (getOS() == OS.LINUX) {
-                    // The Bisq packages for Linux depend on the tor package of the system, so only the pluggable
-                    // transports of the expert bundle are bundled. The bundle has only x86_64 programs, so on ARM64
-                    // only their configuration is bundled, and the programs come from the system.
-                    val isX86 = getPlatform() == Platform.LINUX_X86_64
-                    from(project.layout.buildDirectory.dir("${ARCHIVE_EXTRACTION_DIR}/tor")) {
-                        include("pluggable_transports/pt_config.json")
-                        if (isX86) {
-                            include("pluggable_transports/lyrebird", "pluggable_transports/conjure-client")
-                        }
-                    }
-                } else {
-                    from(project.layout.buildDirectory.dir("${ARCHIVE_EXTRACTION_DIR}/data"))
-                    from(project.layout.buildDirectory.dir("${ARCHIVE_EXTRACTION_DIR}/tor"))
-                }
+                from(project.layout.buildDirectory.dir("${ARCHIVE_EXTRACTION_DIR}/data"))
+                from(project.layout.buildDirectory.dir("${ARCHIVE_EXTRACTION_DIR}/tor"))
                 into(project.layout.buildDirectory.dir(PROCESSED_DIR))
             }
 
