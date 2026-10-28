@@ -313,6 +313,12 @@ The build cache is on (`org.gradle.caching=true`), so a test task whose inputs d
 cache (`FROM-CACHE`) or is `UP-TO-DATE`, and a build can pass without running a test. `./gradlew test --rerun` and
 `./gradlew integrationTest --rerun` run the tests again; `--rerun-tasks` would also download the Tor bundle again.
 
+CI runs `build` on Linux, macOS and Windows, and `integrationTest --rerun` on Linux x86_64
+(`.github/workflows/build.yml`). The integration job installs the packages `tor` and `busybox` and allows unprivileged
+user namespaces, which Ubuntu 24.04 restricts, so that the tests also run in the levels `base` and `contained` of the
+Linux policy, which hosts without this restriction get. It fails if `SandboxEnforcementTest` skipped a test.
+`.github/workflows/public-network-test.yml` runs `PublicTorNetworkOnionServiceTest` once a week and on request.
+
 `gradle.properties` defines `version` (the version of the artifacts), `tor.version` (the version of the Tor expert
 bundle) and `tor.binaryVersion` (the version of the tor daemon in the bundle, which Bisq 2 shows). Bisq 2 reads all
 three from `tor/gradle.properties`. `tor.binaryVersion` is set by hand, so `verifyTorBinaryVersion`, which every build

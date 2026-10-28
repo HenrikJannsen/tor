@@ -92,3 +92,65 @@ jobs:
           ./gradlew --configuration-cache $tasks
           ./gradlew --configuration-cache $tasks | tee "$RUNNER_TEMP/cc-checks.log"
           grep -q 'Configuration cache entry reused' "$RUNNER_TEMP/cc-checks.log"
+
+  # The integration tests start Tor: in the sandbox of sandy, on a private Tor network on the runner, and as an external
+  # Tor. They check the sandbox of Linux, so they run on Linux only.
+  integration-test:
+    name: Integration tests on ubuntu-24.04
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify Gradle wrapper checksums
+        shell: bash
+        run: sha256sum -c gradle/wrapper/gradle-wrapper.sha256
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          java-version: '21.0.13'
+          distribution: 'zulu'
+          check-latest: false
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-provider: basic
+          validate-wrappers: true
+
+      # The private Tor network creates the keys of its relays with tor and tor-gencert of PATH, which no Linux expert
+      # bundle has. The probes of SandboxEnforcementTest run busybox in the sandbox.
+      - name: Install tor and busybox
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends tor busybox
+
+      # AppArmor restricts unprivileged user namespaces on Ubuntu 24.04, so sandy would fall back to host-network there,
+      # and the tests of the levels which most Linux hosts enforce (base, and contained with its PID namespace) would
+      # skip themselves. SandboxEnforcementTest runs host-network by its name in any case.
+      - name: Allow unprivileged user namespaces
+        shell: bash
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      # The results depend on the runner, which is no input of the tasks, so a result from the build cache would not
+      # show whether the tests pass here.
+      - name: Run the integration tests
+        shell: bash
+        run: ./gradlew --continue integrationTest --rerun
+
+      # A test skips itself where the host cannot enforce its level. A change of the runner image must not turn the
+      # sandbox tests off unnoticed.
+      - name: Check that no sandbox test was skipped
+        shell: bash
+        run: |
+          report=tor/build/test-results/integrationTest/TEST-bisq.network.tor.SandboxEnforcementTest.xml
+          if ! grep -q '<testsuite [^>]*skipped="0"' "$report"; then
+            echo "SandboxEnforcementTest skipped tests, so this runner cannot enforce every level they check: $report" >&2
+            exit 1
+          fi
