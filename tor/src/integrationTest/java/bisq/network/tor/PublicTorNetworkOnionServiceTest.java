@@ -17,6 +17,7 @@
 
 package bisq.network.tor;
 
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 
@@ -25,6 +26,9 @@ import java.time.Duration;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Runs the peers on the public Tor network, as the CI job of netlayer runs its peer message test on every platform. On
@@ -41,13 +45,35 @@ class PublicTorNetworkOnionServiceTest extends OnionServiceIntegrationTests {
 
     @Override
     TorTransportConfig createTransportConfig(Path torDir) {
+        return createTransportConfig(torDir, TorSandboxConfig.DISABLED);
+    }
+
+    private static TorTransportConfig createTransportConfig(Path torDir, TorSandboxConfig sandboxConfig) {
         return new TorTransportConfig(torDir, BOOTSTRAP_TIMEOUT_MS, HS_UPLOAD_TIMEOUT_MS, false, Set.of(), Map.of(),
-                false);
+                false, BridgeConfig.NONE, sandboxConfig);
     }
 
     // netlayer tries 12 times, 5 s apart
     @Override
     Duration getConnectTimeout() {
         return Duration.ofMinutes(3);
+    }
+
+    /**
+     * In the sandbox, as Bisq 2 runs Tor by default, Tor connects out through the egress broker of sandy and reaches
+     * the onion service of the peer through a forwarded port. The egress broker refuses the addresses of this host,
+     * so a private network on this host cannot test it.
+     */
+    @Test
+    void aPeerWhoseTorRunsInTheSandboxExchangesMessagesWithAPeer() throws InterruptedException {
+        assumeTrue(getClass().getClassLoader().getResource("sandy/SHA256SUMS") != null,
+                "The build packaged no sandy binary");
+        TorSandboxConfig sandboxConfig = new TorSandboxConfig(true, true, false, 32, "bisq2", "");
+        try (OnionPeer sandra = OnionPeer.start("sandra", createTransportConfig(tempDir.resolve("sandra"),
+                sandboxConfig), getConnectTimeout())) {
+            assertThat(sandra.getTorService().getSandboxStatus().isSandboxed()).isTrue();
+            assertThat(sandra.send(alice, "hello alice")).isEqualTo(AckServer.ackOf("alice", "hello alice"));
+            assertThat(alice.send(sandra, "hello sandra")).isEqualTo(AckServer.ackOf("sandra", "hello sandra"));
+        }
     }
 }

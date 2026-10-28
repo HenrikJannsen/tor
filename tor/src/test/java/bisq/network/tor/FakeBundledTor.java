@@ -31,7 +31,7 @@ import java.util.function.Supplier;
 
 /**
  * A Tor bundle whose tor is a shell script, so that a test runs the embedded start of TorService without a Tor. The
- * script records its process ID and waits until it is stopped. Once it runs,
+ * script records its arguments and its process ID and waits until it is stopped. Once it runs,
  * {@link #answerControlPort} answers on the control port of the torrc like a Tor which bootstraps at once.
  */
 final class FakeBundledTor implements AutoCloseable {
@@ -61,6 +61,7 @@ final class FakeBundledTor implements AutoCloseable {
         Path tor = fakeTor.binDir.resolve("tor");
         Files.writeString(tor, """
                 #!/bin/sh
+                printf '%s\\n' "$@" > fake-tor.args
                 echo $$ > fake-tor.pid.tmp
                 mv fake-tor.pid.tmp fake-tor.pid
                 exec sleep 60
@@ -88,10 +89,18 @@ final class FakeBundledTor implements AutoCloseable {
         }
     }
 
+    boolean hasStarted() {
+        return Files.exists(binDir.resolve("fake-tor.pid"));
+    }
+
     // Only a process which this JVM started, so that a reused process ID cannot count
     static boolean isRunning(long processId) {
         return ProcessHandle.current().descendants()
                 .anyMatch(process -> process.pid() == processId && process.isAlive());
+    }
+
+    List<String> arguments() throws IOException {
+        return Files.readAllLines(binDir.resolve("fake-tor.args"));
     }
 
     FakeTorControlServer answerControlPort() throws IOException {
