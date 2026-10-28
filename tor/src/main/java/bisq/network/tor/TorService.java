@@ -57,7 +57,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -77,20 +76,27 @@ public class TorService {
     private final TorTransportConfig transportConfig;
     private final PlatformServices platformServices;
     private final TorDirectories torDirectories;
-    // Creates the controller of each start
+    // Creates the controller of each start, see createControllerOfTheStart
     private final Supplier<TorController> torControllerFactory;
 
-    private TorController torController;
+    private final Object lifecycleLock = new Object();
+    // The initialization which runs or succeeded, whose result every caller of initialize gets. Empty before the first
+    // initialization, after a failed one, and from the begin of a shutdown on. Guarded by lifecycleLock.
+    private Optional<CompletableFuture<Boolean>> initialization = Optional.empty();
+    // The shutdown which runs. Guarded by lifecycleLock.
+    private Optional<CompletableFuture<Boolean>> runningShutdown = Optional.empty();
+
+    // Written by initialize and by shutdown, which runs on another thread, and read by the API methods
+    private volatile TorController torController;
     // Written by initialize, read by the user interface
     @Getter
     private volatile boolean useExternalTor;
-    private final AtomicBoolean isRunning = new AtomicBoolean();
     // The version which the running Tor reports. On Linux it is the tor of the system, not the bundled version.
     @Getter
     private volatile Optional<String> torVersion = Optional.empty();
 
-    private Optional<EmbeddedTorProcess> torProcess = Optional.empty();
-    private Optional<TorSocksProxyFactory> torSocksProxyFactory = Optional.empty();
+    private volatile Optional<EmbeddedTorProcess> torProcess = Optional.empty();
+    private volatile Optional<TorSocksProxyFactory> torSocksProxyFactory = Optional.empty();
     private volatile OnionServiceTargets onionServiceTargets = new DirectOnionServiceTargets(LoopbackPorts.IPV4_LOOPBACK);
     private final Map<String, String> externalTorConfigMap = new HashMap<>();
 
@@ -106,15 +112,93 @@ public class TorService {
         this.transportConfig = transportConfig;
         this.platformServices = platformServices;
         this.torDirectories = new TorDirectories(transportConfig.getDataDirPath());
-        this.torControllerFactory = torControllerFactory;
+        this.torControllerFactory = () -> createControllerOfTheStart(torControllerFactory);
     }
 
+    /**
+     * Starts Tor, or connects to the external Tor, in the thread of the caller. Callers share one initialization: a
+     * call while it runs gets its result, and a call after its success gets the success at once. A failure lets the
+     * next call start again, also a failure before the connection, for example an invalid external_tor.config. A
+     * shutdown while the initialization runs makes it fail. A call during a shutdown waits for the end of the shutdown
+     * and then starts again, as a call after a shutdown does.
+     *
+     * @return a future which completes with true once Tor runs. The caller whose thread runs the start gets a failure
+     * thrown; the callers which share the initialization get it in the future.
+     */
     public CompletableFuture<Boolean> initialize() {
-        boolean isNotRunning = isRunning.compareAndSet(false, true);
-        if (!isNotRunning) {
-            return CompletableFuture.completedFuture(true);
+        CompletableFuture<Boolean> ownInitialization = new CompletableFuture<>();
+        Optional<CompletableFuture<Boolean>> sharedInitialization = shareOrBeginInitialization(ownInitialization);
+        if (sharedInitialization.isPresent()) {
+            return sharedInitialization.get();
         }
+        try {
+            start();
+        } catch (RuntimeException | Error e) {
+            synchronized (lifecycleLock) {
+                if (isCurrentInitialization(ownInitialization)) {
+                    initialization = Optional.empty();
+                }
+            }
+            ownInitialization.completeExceptionally(e);
+            throw e;
+        }
+        boolean isEndedByShutdown;
+        synchronized (lifecycleLock) {
+            isEndedByShutdown = !isCurrentInitialization(ownInitialization);
+        }
+        if (isEndedByShutdown) {
+            // The shutdown stops what this start created once the future has completed.
+            TorStartupFailedException failure = shutDownDuringTheStart();
+            ownInitialization.completeExceptionally(failure);
+            throw failure;
+        }
+        ownInitialization.complete(true);
+        return ownInitialization;
+    }
 
+    // An initialization runs after a running shutdown has ended, never alongside it.
+    private Optional<CompletableFuture<Boolean>> shareOrBeginInitialization(CompletableFuture<Boolean> ownInitialization) {
+        while (true) {
+            CompletableFuture<Boolean> shutdown;
+            synchronized (lifecycleLock) {
+                if (runningShutdown.isEmpty()) {
+                    if (initialization.isPresent()) {
+                        return initialization;
+                    }
+                    initialization = Optional.of(ownInitialization);
+                    return Optional.empty();
+                }
+                shutdown = runningShutdown.get();
+            }
+            shutdown.handle((result, throwable) -> result).join();
+        }
+    }
+
+    // Only a shutdown replaces the initialization of a running start.
+    private boolean isCurrentInitialization(CompletableFuture<Boolean> ownInitialization) {
+        return initialization.isPresent() && initialization.get() == ownInitialization;
+    }
+
+    /**
+     * A start creates its controller only while no shutdown has ended its initialization. A shutdown before the start
+     * had a controller shuts down none of this start, so the start would otherwise start Tor after the shutdown.
+     */
+    private TorController createControllerOfTheStart(Supplier<TorController> factory) {
+        TorController controller = factory.get();
+        synchronized (lifecycleLock) {
+            if (initialization.isPresent()) {
+                return controller;
+            }
+        }
+        runQuietly(controller::shutdown, "Shutdown of the Tor controller failed");
+        throw shutDownDuringTheStart();
+    }
+
+    private static TorStartupFailedException shutDownDuringTheStart() {
+        return new TorStartupFailedException("The Tor service was shut down during its start");
+    }
+
+    private void start() {
         makeTorDir();
 
         readExternalTorConfigMap();
@@ -123,7 +207,7 @@ public class TorService {
         if (useExternalTor) {
             if (connectedToExternalTor(externalTorConfigMap)) {
                 log.info("External Tor will be used");
-                return CompletableFuture.completedFuture(true);
+                return;
             } else if (LinuxDistribution.isWhonix()) {
                 // In case we failed at connectedToExternalTor, we do not start the embedded Tor as fallback if we are on Whonix.
                 throw new RuntimeException("Bisq runs on a Whonix system but it could not connect to the Whonix system Tor. " +
@@ -134,13 +218,7 @@ public class TorService {
             }
         }
 
-        try {
-            startEmbeddedTor();
-        } catch (RuntimeException e) {
-            isRunning.set(false);
-            throw e;
-        }
-        return CompletableFuture.completedFuture(true);
+        startEmbeddedTor();
     }
 
     private void startEmbeddedTor() {
@@ -275,22 +353,59 @@ public class TorService {
         }
     }
 
+    /**
+     * Stops Tor, and ends a running initialization, which then fails. The future completes once the start of that
+     * initialization has ended, so that no Tor of this service runs then. A call during a shutdown gets that shutdown.
+     * The service can be started again.
+     */
     public CompletableFuture<Boolean> shutdown() {
         log.info("shutdown");
-        return CompletableFuture.supplyAsync(() -> {
-            // Each step runs also when an earlier one fails, so that Tor is stopped in any case.
-            if (torController != null) {
-                runQuietly(torController::shutdown, "Shutdown of the Tor controller failed");
+        CompletableFuture<Boolean> shutdown = new CompletableFuture<>();
+        Optional<CompletableFuture<Boolean>> endedInitialization;
+        synchronized (lifecycleLock) {
+            if (runningShutdown.isPresent()) {
+                return runningShutdown.get();
             }
-            torController = null;
-            torProcess.ifPresent(process -> runQuietly(process::shutdown, "Shutdown of the Tor process failed"));
-            torProcess = Optional.empty();
-            onionServiceTargets.close();
-            torSocksProxyFactory = Optional.empty();
-            externalTorConfigMap.clear();
-            torVersion = Optional.empty();
-            return true;
-        }, ForkJoinPool.commonPool());
+            endedInitialization = initialization;
+            initialization = Optional.empty();
+            runningShutdown = Optional.of(shutdown);
+        }
+        CompletableFuture.runAsync(() -> stopTor(endedInitialization), ForkJoinPool.commonPool())
+                .whenComplete((nil, throwable) -> {
+                    synchronized (lifecycleLock) {
+                        runningShutdown = Optional.empty();
+                    }
+                    if (throwable == null) {
+                        shutdown.complete(true);
+                    } else {
+                        shutdown.completeExceptionally(throwable);
+                    }
+                });
+        return shutdown;
+    }
+
+    private void stopTor(Optional<CompletableFuture<Boolean>> endedInitialization) {
+        // Ends a running start at its next step: its commands and its wait for the bootstrap fail, and its wait for the
+        // control port ends with the process.
+        stopControllerAndProcess();
+        // Until the start has ended, the fields belong to it, and it may still create a controller or a process.
+        endedInitialization.ifPresent(start -> start.handle((result, throwable) -> result).join());
+        stopControllerAndProcess();
+        torController = null;
+        torProcess = Optional.empty();
+        onionServiceTargets.close();
+        torSocksProxyFactory = Optional.empty();
+        externalTorConfigMap.clear();
+        torVersion = Optional.empty();
+    }
+
+    // Each step runs also when an earlier one fails, so that Tor is stopped in any case.
+    private void stopControllerAndProcess() {
+        TorController controller = torController;
+        if (controller != null) {
+            runQuietly(controller::shutdown, "Shutdown of the Tor controller failed");
+        }
+        torProcess.ifPresent(process -> runQuietly(process::shutdown, "Shutdown of the Tor process failed"));
     }
 
     public CompletableFuture<String> publishOnionService(int localPort, int onionServicePort, OnionServiceKey onionServiceKey) {
