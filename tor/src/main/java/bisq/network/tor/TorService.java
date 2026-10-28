@@ -43,7 +43,6 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
 import java.net.InetAddress;
-import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Files;
@@ -201,17 +200,22 @@ public class TorService {
 
         useExternalTor = evaluateUseExternalTor(externalTorConfig);
         if (useExternalTor) {
-            if (connectedToExternalTor(externalTorConfig)) {
-                log.info("External Tor will be used");
-                return;
-            } else if (LinuxDistribution.isWhonix()) {
-                // In case we failed at connectedToExternalTor, we do not start the embedded Tor as fallback if we are on Whonix.
-                throw new RuntimeException("Bisq runs on a Whonix system but it could not connect to the Whonix system Tor. " +
-                        "Please check the Bisq external_tor.config and the system Tor torrc config.");
-            } else {
-                // In case connectedToExternalTor failed we try embedded Tor (if not running on Whonix)
-                useExternalTor = false;
+            try {
+                connectToExternalTor(externalTorConfig);
+            } catch (RuntimeException e) {
+                // The user may rely on the external Tor, for example for its bridges or for the Tor of Whonix. An own
+                // Tor would connect directly to the Tor network instead, so the start fails.
+                if (torController != null) {
+                    runQuietly(torController::shutdown, "Shutdown of the Tor controller failed");
+                    torController = null;
+                }
+                // Without the cause: Bisq 2 shows only the root cause of a failed start, and this exception has to be
+                // it, so that the user sees the explanation and the hint.
+                log.warn("Bisq cannot use the external Tor", e);
+                throw new ExternalTorUnavailableException(getExternalTorUnavailableMessage(externalTorConfig, e));
             }
+            log.info("External Tor will be used");
+            return;
         }
 
         startEmbeddedTor();
@@ -522,27 +526,16 @@ public class TorService {
         return socksProxyFactory.getSocks5Proxy();
     }
 
-    private boolean connectedToExternalTor(ExternalTorConfig externalTorConfig) {
+    private void connectToExternalTor(ExternalTorConfig externalTorConfig) {
         String controlHost = externalTorConfig.getControlHost();
         int controlPort = externalTorConfig.getControlPort();
-        if (!isTorControlAvailable(controlHost, controlPort)) {
-            log.warn("Couldn't connect to external Tor control server. " +
-                    "This could happen if the control port is not correctly set up in 'external_tor.config' file.");
-            return false;
-        }
-
         if (torController != null) {
             torController.shutdown();
         }
         torController = torControllerFactory.get();
         torController.initialize(controlPort);
 
-        try {
-            authenticateToExternalTor(externalTorConfig);
-        } catch (TorControlAuthenticationFailed e) {
-            log.warn("Authentication to the external Tor failed: {}", e.getMessage());
-            return false;
-        }
+        authenticateToExternalTor(externalTorConfig);
 
         onionServiceTargets.close();
         onionServiceTargets = new DirectOnionServiceTargets(getExternalTorBindAddress());
@@ -555,7 +548,25 @@ public class TorService {
         int port = torController.getSocksPort();
         log.info("Tor control provided SOCKS port: {}", port);
         torSocksProxyFactory = Optional.of(new TorSocksProxyFactory(port));
-        return true;
+    }
+
+    private String getExternalTorUnavailableMessage(ExternalTorConfig externalTorConfig, RuntimeException cause) {
+        String location = externalTorConfig.getControlHost() + ":" + externalTorConfig.getControlPort();
+        String hint = LinuxDistribution.isWhonix() ?
+                "Check the Tor of the Whonix-Gateway and " + torDirectories.getExternalTorConfigPath() + "." :
+                "Start the external Tor or correct " + torDirectories.getExternalTorConfigPath() + ". Bisq uses an " +
+                        "external Tor if UseExternalTor is 1 there, if the environment variable " + TOR_SKIP_LAUNCH +
+                        " is 1, or if the application is configured to use one.";
+        return "Bisq is configured to use a Tor which runs outside Bisq, but it cannot use the Tor at " + location +
+                ": " + withoutFinalPeriod(cause.getMessage()) + ". Bisq does not start its own Tor instead, because it " +
+                "would connect to the Tor network without the settings of the external Tor, for example its bridges. " +
+                hint;
+    }
+
+    // The message of the cause goes into a sentence of another message, which ends it.
+    private static String withoutFinalPeriod(String message) {
+        String text = String.valueOf(message);
+        return text.endsWith(".") ? text.substring(0, text.length() - 1) : text;
     }
 
     private ExternalTorConfig readExternalTorConfig() {
@@ -576,18 +587,8 @@ public class TorService {
         try {
             return ExternalTorConfig.parse(torConfig);
         } catch (IllegalArgumentException e) {
-            throw new IllegalArgumentException("Invalid " + torConfigFilePath + ": " + e.getMessage(), e);
-        }
-    }
-
-    private boolean isTorControlAvailable(String controlHost, int controlPort) {
-        try (Socket socket = new Socket()) {
-            var socketAddress = new InetSocketAddress(controlHost, controlPort);
-            socket.connect(socketAddress);
-            log.info("Test connection to control server of external tor process successful.");
-            return true;
-        } catch (IOException e) {
-            return false;
+            // Without the cause, so that the message which names the file is the root cause which Bisq 2 shows
+            throw new IllegalArgumentException("Invalid " + torConfigFilePath + ": " + e.getMessage());
         }
     }
 

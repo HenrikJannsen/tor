@@ -27,7 +27,7 @@ import java.util.Locale;
  * Random keys in the format of real onion service keys. The tests only check that secrets do not reach the logs, so
  * the onion address does not need to belong to the secret.
  */
-final class TestKeys {
+public final class TestKeys {
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private TestKeys() {
@@ -38,7 +38,7 @@ final class TestKeys {
         return Base64.getEncoder().encodeToString(randomBytes(64));
     }
 
-    static OnionServiceKey randomOnionServiceKey() {
+    public static OnionServiceKey randomOnionServiceKey() {
         String serviceId = BaseEncoding.base32().omitPadding().encode(randomBytes(35)).toLowerCase(Locale.ROOT);
         return new OnionServiceKey(serviceId + ".onion", randomBase64SecretScalar());
     }

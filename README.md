@@ -45,10 +45,10 @@ dependency.
 
 The node app of bisq-mobile runs `TorService` with an external Tor on Android, from API level 33. Code which runs in
 this mode must only use Java APIs which Android 13 provides. This is `TorService.initialize` up to the connection to the
-external Tor, `TorController`, `TorControlProtocol` and `FileUtils`. If the connection fails, `TorService` starts the
-installer, which fails on Android because the app has no `tor.zip`. For example, `java.util.HexFormat` needs API level
-34, and `ProcessHandle` does not exist on Android. The Tor build uses Guava instead of `HexFormat`. The embedded Tor
-process and `tor-local-network` only run on desktop systems.
+external Tor, `TorController`, `TorControlProtocol` and `FileUtils`. If the connection fails, `TorService` fails with
+`ExternalTorUnavailableException`; it never starts its own Tor instead of a configured external Tor. For example,
+`java.util.HexFormat` needs API level 34, and `ProcessHandle` does not exist on Android. The Tor build uses Guava
+instead of `HexFormat`. The embedded Tor process and `tor-local-network` only run on desktop systems.
 
 ## Onion services
 

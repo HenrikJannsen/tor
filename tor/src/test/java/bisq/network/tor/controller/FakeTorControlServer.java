@@ -33,13 +33,13 @@ import java.util.function.Function;
 /**
  * A local control port which answers each command with the reply of a function and records the commands.
  */
-class FakeTorControlServer implements AutoCloseable {
+public class FakeTorControlServer implements AutoCloseable {
     private final ServerSocket serverSocket;
     private final List<String> commands = new CopyOnWriteArrayList<>();
     private final Thread serverThread;
     private volatile Optional<String> closeAfterCommandStart = Optional.empty();
 
-    FakeTorControlServer(Function<String, String> replyByCommand) throws IOException {
+    public FakeTorControlServer(Function<String, String> replyByCommand) throws IOException {
         serverSocket = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"));
         serverThread = new Thread(() -> {
             try (Socket socket = serverSocket.accept();
@@ -63,11 +63,11 @@ class FakeTorControlServer implements AutoCloseable {
         serverThread.start();
     }
 
-    int getPort() {
+    public int getPort() {
         return serverSocket.getLocalPort();
     }
 
-    List<String> getCommands() {
+    public List<String> getCommands() {
         return commands;
     }
 
@@ -75,7 +75,7 @@ class FakeTorControlServer implements AutoCloseable {
      * Ends the connection after the reply to the first command which starts with {@code commandStart}, as when Tor
      * exits.
      */
-    void closeConnectionAfter(String commandStart) {
+    public void closeConnectionAfter(String commandStart) {
         closeAfterCommandStart = Optional.of(commandStart);
     }
 
