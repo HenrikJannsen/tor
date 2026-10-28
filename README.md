@@ -32,7 +32,8 @@ dependency.
   classes with the same name on one class path break the Android build of bisq-mobile and make the JVM load whichever
   comes first.
 - `PlatformServices` declares the operations which depend on the platform of the host application: the own process
-  ID, the commands of the running processes, and whether the Tor build may set POSIX file permissions. The host passes
+  ID and whether the Tor build may set POSIX file permissions. Its method for the commands of the running processes is
+  deprecated, because the Tor build no longer calls it, and has a default implementation. The host passes
   an implementation to `TorService`. Bisq passes `BisqTorPlatformServices` of the network module, which uses
   `FacadeProvider` and `FileMutatorUtils` of `bisq.common`. bisq-mobile calls `FileMutatorUtils.setup(false, false)`,
   so the Tor build sets no POSIX permissions there.
@@ -55,6 +56,11 @@ A publication of an onion service completes once the first HSDir has stored its 
 `HS_DESC UPLOADED`, not at the start of the upload (`HS_DESC UPLOAD`), when no peer could find the onion service yet. It
 fails if no HSDir has stored the descriptor within the upload timeout of `TorTransportConfig`. The exception is an
 `UPLOAD` which a filter in front of Tor shortened, as the onion-grater profiles of Whonix before September 2024 do.
+
+## Embedded Tor
+
+Bisq never deletes the `lock` file of Tor in its data directory: Tor locks it while it runs, so a file which an ended
+Tor left blocks no start, and a Tor which still runs on the directory makes the next one exit.
 
 ## Build
 

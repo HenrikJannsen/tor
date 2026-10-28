@@ -17,6 +17,7 @@
 
 package bisq.network.tor.process;
 
+import bisq.network.tor.common.platform.OS;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
@@ -37,6 +38,14 @@ class TorDirectoriesTest {
         assertThat(directories.getStdoutLogPath()).isEqualTo(BASE.resolve("tor-stdout.log"));
         assertThat(directories.getStderrLogPath()).isEqualTo(BASE.resolve("tor-stderr.log"));
         assertThat(directories.getExternalTorConfigPath()).isEqualTo(BASE.resolve("external_tor.config"));
+    }
+
+    @Test
+    void theBundledTorBinaryHasTheNameOfItsPlatform() {
+        assertThat(directories.getBundledTorBinaryPath(true)).isEqualTo(BASE.resolve("tor.exe"));
+        assertThat(directories.getBundledTorBinaryPath(false)).isEqualTo(BASE.resolve("tor"));
+        assertThat(directories.getBundledTorBinaryPath())
+                .isEqualTo(directories.getBundledTorBinaryPath(OS.isWindows()));
     }
 
     @Test

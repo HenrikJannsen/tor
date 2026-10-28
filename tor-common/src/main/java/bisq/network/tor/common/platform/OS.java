@@ -34,6 +34,10 @@ public class OS {
         return osName.contains("mac") || osName.contains("darwin");
     }
 
+    public static boolean isWindows() {
+        return getOsName().contains("win");
+    }
+
     private static boolean isAndroid() {
         try {
             Class.forName("android.os.Build");

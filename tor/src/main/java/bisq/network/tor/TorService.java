@@ -149,15 +149,6 @@ public class TorService {
         }
 
         Path torBinaryPath = getTorBinaryPath();
-        if (!isTorRunning(torBinaryPath.toString())) {
-            Path lockFilePath = torDirectories.getDataDirPath().resolve("lock");
-            try {
-                Files.deleteIfExists(lockFilePath);
-            } catch (IOException e) {
-                log.warn("Couldn't remove the Tor lock file", e);
-                throw new IllegalStateException("Couldn't remove the Tor lock file: " + e);
-            }
-        }
 
         if (torController != null) {
             torController.shutdown();
@@ -541,10 +532,6 @@ public class TorService {
             return systemTorBinaryPath.orElseThrow(TorNotInstalledException::new);
         }
         return torDirectories.getBundledTorBinaryPath();
-    }
-
-    private boolean isTorRunning(String absoluteTorBinaryPath) {
-        return platformServices.getProcessCommandStream().anyMatch(e -> e.equals(absoluteTorBinaryPath));
     }
 
     private void installTorIfNotUpToDate() {

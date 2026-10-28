@@ -17,6 +17,8 @@
 
 package bisq.network.tor.process;
 
+import bisq.network.tor.common.platform.OS;
+import com.google.common.annotations.VisibleForTesting;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.ToString;
@@ -54,7 +56,12 @@ public final class TorDirectories {
     }
 
     public Path getBundledTorBinaryPath() {
-        return binaryDirPath.resolve("tor");
+        return getBundledTorBinaryPath(OS.isWindows());
+    }
+
+    @VisibleForTesting
+    Path getBundledTorBinaryPath(boolean isWindows) {
+        return binaryDirPath.resolve(isWindows ? "tor.exe" : "tor");
     }
 
     public boolean isBundledTor(Path torBinaryPath) {
