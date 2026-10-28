@@ -34,6 +34,7 @@ import bisq.network.tor.process.LdPreload;
 import bisq.network.tor.process.TorDirectories;
 import bisq.network.tor.process.TorStartupFailedException;
 import bisq.network.tor.process.control_port.ControlPortFileParser;
+import com.google.common.annotations.VisibleForTesting;
 import com.runjva.sourceforge.jsocks.protocol.Socks5Proxy;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
@@ -58,6 +59,7 @@ import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import static bisq.network.tor.common.torrc.Torrc.Keys.CONTROL_PORT;
@@ -75,6 +77,8 @@ public class TorService {
     private final TorTransportConfig transportConfig;
     private final PlatformServices platformServices;
     private final TorDirectories torDirectories;
+    // Creates the controller of each start
+    private final Supplier<TorController> torControllerFactory;
 
     private TorController torController;
     private final Set<String> publishedOnionServices = new CopyOnWriteArraySet<>();
@@ -89,9 +93,18 @@ public class TorService {
     private final Map<String, String> externalTorConfigMap = new HashMap<>();
 
     public TorService(TorTransportConfig transportConfig, PlatformServices platformServices) {
+        this(transportConfig, platformServices, () -> new TorController(transportConfig.getBootstrapTimeout(),
+                transportConfig.getHsUploadTimeout()));
+    }
+
+    @VisibleForTesting
+    TorService(TorTransportConfig transportConfig,
+               PlatformServices platformServices,
+               Supplier<TorController> torControllerFactory) {
         this.transportConfig = transportConfig;
         this.platformServices = platformServices;
         this.torDirectories = new TorDirectories(transportConfig.getDataDirPath());
+        this.torControllerFactory = torControllerFactory;
     }
 
     public CompletableFuture<Boolean> initialize() {
@@ -141,7 +154,7 @@ public class TorService {
         if (torController != null) {
             torController.shutdown();
         }
-        torController = new TorController(transportConfig.getBootstrapTimeout(), transportConfig.getHsUploadTimeout());
+        torController = torControllerFactory.get();
 
         PasswordDigest hashedControlPassword = PasswordDigest.generateDigest();
         Map<String, String> torrcConfigMap = createTorrcConfigFile(hashedControlPassword);
@@ -339,7 +352,7 @@ public class TorService {
         if (torController != null) {
             torController.shutdown();
         }
-        torController = new TorController(transportConfig.getBootstrapTimeout(), transportConfig.getHsUploadTimeout());
+        torController = torControllerFactory.get();
         torController.initialize(controlPort);
 
         boolean isAuthenticated = false;
