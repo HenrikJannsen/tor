@@ -29,6 +29,16 @@ The build uses Gradle dependency verification with:
 - `verify-metadata`
 - `verify-signatures`
 - armored keyring format
+- key servers off (`<key-servers enabled="false"/>`)
+
+With the key servers off, a build verifies the signatures with the keys of `gradle/verification-keyring.keys` alone and
+downloads no key. If the keyring lacks a key, every artifact which that key signed fails the verification, so a build
+which passes, also on a CI runner with an empty Gradle user home, shows that the committed keyring has every key the
+build needs. Gradle still asks the key servers for missing keys when it writes the metadata or exports the keyring
+(`--write-verification-metadata`, `--export-keys`, and `refreshDependencyVerificationKeyring`), unless `--offline` is
+given. Review the keys which these commands add before committing them. Gradle leaves the `<key-servers>` line out
+when it writes the metadata with the key servers on; `verifyDependencySignaturePolicy` fails until
+`<key-servers enabled="false"/>` is back after `<keyring-format>`.
 
 The committed verification files are:
 
@@ -38,6 +48,10 @@ The committed verification files are:
 
 The root `resolveAndVerifyDependencies` task resolves every resolvable configuration of the root build and the
 `build-logic` included build.
+
+Gradle reads the verification metadata only from `gradle/` of the root of the build tree, so `build-logic` is verified
+only as part of this build. A build of `build-logic` on its own (`-p build-logic`) fails; run its tasks from the
+repository root instead, for example `./gradlew :build-logic:gradle-tasks:test`.
 
 Each build keeps its own `.gradle/dependency-verification/inventory.tsv` relative to its build root. These inventories
 survive `clean`. Unchanged inventories are `UP-TO-DATE`; they are regenerated when resolved modules, direct dependency
@@ -89,6 +103,7 @@ Use this to drop stale entries, for example after removing or upgrading dependen
          <verify-metadata>true</verify-metadata>
          <verify-signatures>true</verify-signatures>
          <keyring-format>armored</keyring-format>
+         <key-servers enabled="false"/>
          <trusted-keys>
             <!-- keep the manually maintained trusted keys here -->
          </trusted-keys>
