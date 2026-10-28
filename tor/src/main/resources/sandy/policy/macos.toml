@@ -1,5 +1,5 @@
-# The sandbox of the embedded Tor under sandy 2.2 on macOS. See linux.toml for what TorSandboxPolicy
-# fills in. Tor and sandy must both be arm64 code on Apple silicon.
+# The sandbox of the embedded Tor under sandy 2.4.1 on macOS. See linux.toml for what
+# TorSandboxPolicy fills in. Tor and sandy must both be arm64 code on Apple silicon.
 version = 1
 
 [filesystem]

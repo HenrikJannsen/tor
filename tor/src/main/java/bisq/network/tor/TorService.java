@@ -1244,7 +1244,8 @@ public class TorService {
     /**
      * tor.exe ends with STATUS_DLL_INIT_FAILED before it runs when user32.dll cannot initialize in an AppContainer: in
      * a session whose window station does not admit AppContainers, such as session 0 or a session over SSH. sandy
-     * check does not detect it (sandy docs/windows.md, limit 13), and sandy passes the status on.
+     * check only warns in session 0, without refusing, and does not detect other such window stations (sandy
+     * docs/windows.md, limitation 13), and sandy passes the status on.
      */
     @VisibleForTesting
     static String windowsSessionHint(Optional<Integer> exitCode) {

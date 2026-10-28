@@ -22,7 +22,7 @@ import java.nio.file.Path;
 import static com.google.common.base.Preconditions.checkArgument;
 
 /**
- * A sandy policy as the TOML text of sandy 2.2 that Bisq passes on the standard input of sandy
+ * A sandy policy as the TOML text of sandy 2.4.1 that Bisq passes on the standard input of sandy
  * ({@code --policy -}), with the working directory of the program, which sandy takes on its command line. The policy
  * and its fallback levels come from a template of the library (see {@link TorSandboxPolicy}); Bisq does not decide
  * how strongly Tor is isolated, sandy does, by the level it selects.

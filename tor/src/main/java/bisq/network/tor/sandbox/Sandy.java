@@ -193,9 +193,9 @@ public final class Sandy {
      * level, sandy stays the parent of the program, ends it when sandy ends and exits with its status
      * ({@link #staysParent}).
      * <p>
-     * Bisq names itself as the parent only for a level that ends with it. With {@code --level}, sandy checks
-     * {@code --parent-pid} against that level alone and refuses it for a level without {@code end_with_parent}, such
-     * as {@code host-network-signals} of the Linux templates, while {@code check} accepts it for the whole policy.
+     * Bisq names itself as the parent only for a level that ends with it. A level without {@code end_with_parent},
+     * such as {@code host-network-signals} of the Linux templates, does not use the parent options: sandy 2.4.1
+     * ignores them there (sandy 2.2 refused them with {@code --level}).
      *
      * @param statusRecordPath where sandy writes the status record of the run ({@link SandyStatusRecord}): an absolute
      *                         path outside every writable path of the policy, which must not exist. The caller removes

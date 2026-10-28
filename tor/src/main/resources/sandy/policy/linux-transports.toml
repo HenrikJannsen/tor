@@ -1,4 +1,4 @@
-# The sandbox of the embedded Tor under sandy 2.2 on Linux with pluggable transports that connect
+# The sandbox of the embedded Tor under sandy 2.4.1 on Linux with pluggable transports that connect
 # only to the IP address of their bridge (obfs4). As linux.toml, except that Tor may start the
 # programs of the transports, which TorSandboxPolicy adds to read_exec, and sandy ends them with Tor.
 # Tor passes its Socks5Proxy, the egress broker, to the transports, which connect through it.

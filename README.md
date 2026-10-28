@@ -40,6 +40,13 @@ dependency.
 - The API of the Tor build only uses types of the Tor build. `TorTransportService` of the network module adapts the
   types of Bisq: it passes the `TorKeyPair` of Bisq as `OnionServiceKey`, and its `Config` implements
   `TransportConfig` of Bisq and wraps `TorTransportConfig`.
+- The supported API is `TorService` with the types which it takes, returns and throws: `PlatformServices`,
+  `TorTransportConfig` with `TorSandboxConfig` and `BridgeConfig`, `OnionServiceKey`, `CreateOnionServiceResponse`,
+  `TorSocksProxyFactory`, `TorSandboxStatus` and the exceptions of its methods. Bisq 1 also uses `TorDirectories` for
+  the paths in the Tor directory, `ExternalTorConfig` and `PluggableTransportConfig`, which are supported too. All other
+  classes are internal and may change in any version without notice: `EmbeddedTorProcess` and the other classes which
+  start and run the process of Tor, the sandbox, the installer of the bundle, the control connection and the torrc
+  generators. An app starts and stops Tor only through `TorService`.
 
 ## Android
 
@@ -124,14 +131,161 @@ bridges as well.
 In the configuration of Bisq 2 (`TorTransportConfig.from`), `builtInBridges` names the type of the built-in bridges and
 `bridges` lists bridge lines. Both are optional, and at most one may be set.
 
-## Embedded Tor
+## Sandbox
 
-Bisq never deletes the `lock` file of Tor in its data directory: Tor locks it while it runs, so a file which an ended
-Tor left blocks no start, and a Tor which still runs on the directory makes the next one exit.
+The library can run the Tor which it starts in the sandbox of the operating system with sandy 2.4.1 (Landlock and
+seccomp on Linux, Seatbelt on macOS, an AppContainer on Windows). The policy is a TOML file per platform in
+`tor/src/main/resources/sandy/policy/`; it decides how strongly Tor is isolated, and the library only fills in the
+values of a start (the paths of the Tor directory, the ports, the forwarded onion service targets, the environment
+and on Windows the AppContainer name), each written as a TOML value. The base of the policy is the maximum lockdown:
 
-`EmbeddedTorProcess` starts Tor with the `setsid` program of the system in a session of its own, if the system has
-one, as Linux does. A Ctrl+C in the terminal of Bisq then does not reach Tor, which would otherwise exit at once,
-before the shutdown of Bisq has used it. macOS has no `setsid`, so there Tor stays in the process group of Bisq.
+- Tor has a network of its own. Bisq reaches its control and SOCKS ports through ports which sandy relays out of the
+  sandbox, Tor reaches the onion services of Bisq through ports which sandy forwards, and Tor connects out only
+  through sandy's egress broker, which reaches public addresses only (`Socks5Proxy` in the torrc).
+- Tor may read its torrc, the bundle and the empty configuration of its OpenSSL, and execute only its binary and the
+  libraries of the bundle; it may write only its data directory; on Linux and macOS every other path looks missing to
+  it, except that on Linux the directories above a granted path exist, without their contents.
+- Tor cannot start other processes (see "Pluggable transports" below for the exception), cannot signal processes
+  outside the sandbox, and ends when Bisq ends.
+
+The policy also lists weaker fallback levels. sandy takes the first level that the host can enforce, and skips a level
+only for a lasting shortfall of the host, never for a failure that can pass or a port another process holds, so no
+other user of the host can choose a weaker level:
+
+| Level | Host |
+|---|---|
+| `base` | Linux 6.12 or newer with user namespaces which sandy may use and the fix of Landlock erratum 3, macOS, Windows 10 1809 or newer |
+| `contained` (Linux) | Linux 5.13 to 6.11 with the same: a PID namespace isolates the signals of Tor, and Tor may start processes in it, which end with Tor |
+| `host-network` | user namespaces restricted (Ubuntu 23.10 and newer) or off, or no fix of Landlock erratum 3: the network of the host, no egress broker, no view; on Windows a separate AppContainer |
+| `host-network-signals` (Linux) | as `host-network`, below Linux 6.12: Tor can signal the processes of the user and does not end with Bisq |
+
+Before each start Bisq writes the policy to the standard input of `sandy check --json`, writes the torrc for the
+level which sandy selected, and starts Tor with `sandy run --level` and the same policy on standard input. There is no
+policy file which anything could change in between, and `--level` makes sandy refuse rather than take another level
+if the host changed. Bisq names itself as the parent of Tor (`--parent-pid`) only in a level which ends Tor with Bisq;
+sandy refuses the option in `host-network-signals`. In such a level Tor gets no `__OwningControllerProcess`, because
+sandy ends it with Bisq; in the PID namespace of `contained` Tor cannot see Bisq's process and would exit at its first
+owner check. Bisq never runs `sandy setup`. Once Tor answers on its control port, `TorService.getSandboxStatus()`
+names the level and says what it gives up. A torrc override of a proxy option refuses the sandboxed start, because the
+egress broker is Tor's only way out, and so does an override of `GeoIPFile` or `GeoIPv6File`: in its sandbox Tor reads
+only the GeoIP files of its installation. The broker reaches public addresses only, so in a level with the broker a
+test network, whose directory authorities listen on 127.0.0.1, refuses the start before Tor runs, and so do bridges
+which are all on loopback, private or link-local addresses; with some of them Bisq logs a warning.
+
+In the configuration of Bisq 2 the sandbox is on unless `sandbox.enabled = false` turns it off, and it allows no
+pluggable transports unless `sandbox.allowPluggableTransports = true`. The `TorTransportConfig` constructor without a
+`TorSandboxConfig` leaves the sandbox off. The build packages the sandy 2.4.1 binary of its platform from
+`tor/sandy/2.4.1/`, which it pins by its hash, and `-Psandy.package=false` builds without sandy (see
+`tor/src/main/resources/sandy/README.md`, which also says how a new release of sandy is checked before the pins move:
+its signed tag, a rebuild from the tag, and a review of the source diff).
+
+Tor runs without the sandbox, and `TorService.getSandboxStatus()` says why, if:
+
+- the configuration turns it off (`DISABLED`);
+- Bisq uses an external Tor (`EXTERNAL_TOR`), which includes Whonix and Android.
+
+If the sandbox is on but no level can be enforced, or sandy cannot tell now, the start fails with
+`SandboxUnavailableException`, which names the reason and how the user of the application turns the sandbox off. So
+does a run which sandy ends before Tor runs, for example because another process took a port of the policy after the
+check. Tor can exit with the status of such a refusal, 125, as well, so Bisq decides by the status record of the run,
+which sandy writes into `sandy/run-status` (`--status-file`) and which Tor can neither write nor remove: only a record
+which shows that sandy ended the run before Tor ran gets the advice to turn the sandbox off. Every other end of a
+sandboxed Tor before it answers on its control port is a failed start without that advice. Bisq chooses the ports of
+the policy and releases them before sandy binds them, so such a refusal of `sandy run`, and an exit 125 of
+`sandy check`, which tries the ports, can pass: the start then runs once more with other ports, within the same
+`initialize()`, and only a second refusal fails it.
+
+On Linux sandy refuses to run as root or with capabilities, because Tor would keep them in the sandbox (Landlock does
+not restrict `chmod` or `chown`). A node which runs as root, as is common in containers, therefore fails its sandboxed
+start; run it as an unprivileged user, or turn the sandbox off. Bisq installs sandy into `sandy/` of the Tor directory
+and runs it from there, so a Tor directory on a mount with `noexec` fails the sandboxed start as well.
+
+### Pluggable transports
+
+The transports of bridges are programs which Tor starts. The sandbox does not allow them by default: a sandboxed start
+whose bridges use a transport fails with `PluggableTransportsNotAllowedException`, a `SandboxUnavailableException`
+which names the transports and returns them with `getTransportNames()`, so that the application can tell the user how
+to allow them in its own terms or let the user choose other bridges. With
+`allowPluggableTransports` of `TorSandboxConfig` (in Bisq 2 `sandbox.allowPluggableTransports = true`), Tor may start
+the programs of the transports of the configured bridges in its sandbox, which `TorSandboxPolicy` adds to the policy,
+and sandy ends them with Tor (`children = "contained"`). Programs which torrc overrides would start
+(`ClientTransportPlugin`, `ServerTransportPlugin`, also abbreviated) refuse the sandboxed start; with bridges in the
+configuration this leaves `ServerTransportPlugin`, because the overrides of the bridge keys are ignored. To use
+transports without any sandbox, turn the sandbox off.
+
+The transports decide the network:
+
+- obfs4 connects only to the IP address of its bridge. On Linux Tor keeps its network of its own, and the transport
+  connects through the egress broker, which Tor passes to it as its proxy (`linux-transports.toml`).
+- meek_lite and webtunnel resolve the names of their servers, which the broker refuses, snowflake needs UDP, which the
+  broker does not carry, and conjure refuses a proxy. With any of them, Tor and its transports get the network of the
+  host, with the view and the containment of the transports kept where the host gives them
+  (`linux-transports-direct.toml`).
+- On macOS every transport gets the network of the host (`macos-transports-direct.toml`): the private network of sandy
+  has no loopback there on which Tor could reach its transports.
+- Windows refuses transports in the sandbox: Tor cannot create the named pipes to its transports in an AppContainer
+  (measured, `CreateNamedPipeA` fails with access denied).
+
+The levels of the Linux templates: `base`, then `host-network` without the view where user namespaces are restricted
+or off, then `host-network-signals` below Linux 6.12, where sandy cannot contain the transports either: they end when
+Tor closes their standard input. The macOS template has the base alone: it has the network of the host already, and a
+Mac gives the view whenever Unix sockets are denied, so a level without the view would fail wherever the base fails.
+
+Measured with Tor 0.4.9.14 and lyrebird 0.8.1 of Tor Expert Bundle 15.0.25 under sandy 2.2.1: obfs4, meek_lite and
+webtunnel bootstrapped on Ubuntu 22.04 and 25.10, obfs4 and meek_lite also on macOS 27, and obfs4 also through the
+egress broker. On macOS webtunnel failed in the sandbox of sandy 2.2 (`x509: OSStatus -26276`): it verifies its server
+only with the certificate verifier of the system (trustd), a Mach service which sandy did not let programs reach, while
+meek_lite falls back to a root certificate of its own. Since sandy 2.4 the macOS transports template can allow the trust
+agent of the user, `com.apple.trustd.agent`, the one service this verification needs: a Go program that verifies a real
+certificate chain with the system verifier fails under sandy 2.4 without it and passes with it (measured on macOS 27).
+`TorSandboxPolicy` names it only when the bridges use a transport which verifies its server with the system: webtunnel,
+and snowflake and conjure, whose TLS also uses the system roots (not measured). obfs4, which uses no TLS, meek_lite and
+Tor without transports get no Mach service. A webtunnel bootstrap on macOS under sandy 2.4 has not been measured yet.
+snowflake did not bootstrap on the test network even without the sandbox, and conjure was not measured.
+
+Platform notes, from an end-to-end test of Tor 0.4.9.14 under sandy 2.2.0 with onion services on Ubuntu 22.04, Ubuntu
+25.10, Windows 11 and macOS 27:
+
+- macOS: the expert bundle's programs are not code signed, and Apple silicon kills unsigned code, so the installer
+  signs them ad hoc. Tor and sandy must both be arm64 code there.
+- Windows: `tor.exe` loads `user32.dll`, so the policy allows the win32k system calls, and Tor must start in a session
+  whose window station admits AppContainers, such as a desktop session. As a service, in session 0 or in a session
+  over SSH it ends with `STATUS_DLL_INIT_FAILED` before it runs. `sandy check` warns in session 0 but does not refuse,
+  and it detects no other window station which admits no AppContainer; Bisq logs the warning with the check and
+  reports a failed start of Tor which names the session as the likely cause.
+- Linux: the bundled tor takes the loader, glibc and zlib from the system, which the minimal system set of sandy
+  grants (the loader and the libraries in `/usr/lib`, `/usr/lib64`, `/lib` and `/lib64`), and its other libraries from
+  `bin/`, which `LD_LIBRARY_PATH` names; a Tor directory whose path contains `:` or `;` fails the start, because the
+  loader splits the variable there. The bundled tor is built for this layout of the file system, so it runs neither in
+  the sandbox nor without it on NixOS or Guix, whose libraries lie in their stores: there Bisq needs an external Tor.
+- Linux: in a level with the network of the host (`host-network`, `host-network-signals` and the base of
+  `linux-transports-direct.toml`), sandy asks the kernel through `inet_diag` (netlink `NETLINK_SOCK_DIAG`) who
+  connected to a forwarded onion service port, and refuses connections of other users. `sandy check` does not try
+  this. On a host where it fails, for example a kernel without `inet_diag` or a container that denies netlink
+  sockets, the check passes, and `sandy run` refuses to start Tor with status 125, which Bisq reports as a sandbox
+  refusal with the advice to turn the sandbox off (sandy `crates/sandy-linux/src/peer.rs`; not run on such a host).
+- Linux: Tor gets no `/proc/meminfo` (a grant of a `/proc` path would cost the PID namespace of `contained`), from
+  which it derives the default of `MaxMemInQueues`. So on every platform Bisq computes that default as Tor does, from
+  the size of the memory which the JVM reports (the limit of a container if one applies), and writes it into the
+  torrc of a sandboxed Tor unless a torrc override sets it; if the JVM cannot tell the size, it writes 512 MB.
+
+The Tor directory has the parts `bin/` (the installed bundle), `data/` (the DataDirectory of Tor, the only directory
+which a sandboxed Tor may write) and `sandy/`; the torrc, `openssl.cnf`, the logs and `external_tor.config` lie in the
+Tor directory itself. Bisq never deletes the `lock` file of Tor in `data/`: Tor locks it while it runs, so a file which
+an ended Tor left blocks no start, and a Tor which still runs on the directory makes the next one exit. A compromised
+Tor in the sandbox can leave files in `data/` which exploit the next Tor that parses them, and a Tor without the
+sandbox has all rights of the user. So before each start `data-mode` in the Tor directory records whether Tor runs in
+the sandbox, and before Tor starts without the sandbox on a `data/` which a sandboxed Tor may have written (the record
+says so, or it is missing while `data/` existed before the start), Bisq clears `data/`. Tor then selects new entry
+guards and downloads the directory documents again. A start in the sandbox keeps `data/`. Tor logs to its
+standard output, which Bisq writes to `tor-stdout.log`. Before a start of the embedded Tor, `TorDirectoryMigration`
+moves the state of Tor from the layout before into `data/`, deletes the files of the old layout which it knows, and
+keeps everything else, such as the onion service key of Bisq 1 in `hiddenservice/`.
+
+`EmbeddedTorProcess` starts Tor, or sandy, with the `setsid` program of the system in a session of its own, if the
+system has one, as Linux does. A Ctrl+C in the terminal of Bisq then does not reach Tor, which would otherwise exit at
+once, before the shutdown of Bisq has used it. macOS has no `setsid`, so there Tor stays in the process group of
+Bisq.
 
 ## Build
 
@@ -145,7 +299,7 @@ Run these commands in the repository root:
   it needs tor and tor-gencert in `PATH` (on Debian and Ubuntu the package `tor`), and the tor in `PATH` is also its
   external Tor. Two peers publish onion services and exchange messages, also after a restart, through the SOCKS5 proxy
   and through an external Tor. `-Ptor.publicNetworkTests=true` adds `PublicTorNetworkOnionServiceTest`, which runs
-  these peers on the public Tor network.
+  these peers and a peer in the sandbox on the public Tor network.
 - `./gradlew :tor:verifyTorBinary` downloads and verifies the Tor expert bundle. See
   [build-logic/tor-binary/README.md](build-logic/tor-binary/README.md).
 - `./gradlew dependencySignatureReport` writes [docs/dependency-signature-report.md](docs/dependency-signature-report.md)

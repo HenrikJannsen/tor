@@ -1,5 +1,5 @@
-# The sandbox of the embedded Tor under sandy 2.2 on Linux. TorSandboxPolicy fills in the values of
-# a start, written as TOML values: the paths of the Tor directory, the ports, the targets of the
+# The sandbox of the embedded Tor under sandy 2.4.1 on Linux. TorSandboxPolicy fills in the values
+# of a start, written as TOML values: the paths of the Tor directory, the ports, the targets of the
 # onion services and the environment of Tor. Everything else, and every fallback level, is decided
 # here. sandy takes the first level this host can enforce and skips one only for a lasting
 # shortfall of the host, never for a failure that can pass or a port another process holds

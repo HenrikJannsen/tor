@@ -38,7 +38,30 @@ gpg --verify SHA256SUMS.asc SHA256SUMS
 sha256sum --check --ignore-missing SHA256SUMS
 ```
 
-The binaries are reproducible: `scripts/release-build.sh TARGET` in a checkout of the signed tag `v2.4.1` of sandy
-builds a binary with the pinned hash again. Once the releases can be downloaded publicly, the build should download
-the archive of its platform and check the signature of `SHA256SUMS` and the pinned hash, as it does for the Tor expert
-bundle, and `tor/sandy/` should be removed.
+The key is published at <https://github.com/wodoro.gpg>, by the account which owns the repository of sandy;
+keys.openpgp.org and keyserver.ubuntu.com do not have it. Once the releases can be downloaded publicly, the build
+should download the archive of its platform and check the signature of `SHA256SUMS` and the pinned hash, as it does for
+the Tor expert bundle, and `tor/sandy/` should be removed.
+
+## Updating sandy
+
+sandy confines every sandboxed Tor of Bisq 1 and Bisq 2, so a new release is not taken on its signed checksums alone.
+Before `sandyVersion` and `pinnedSha256` in `tor/build.gradle.kts` move to a new release:
+
+1. Verify the signed tag of the release with the key above: `git tag -v vX.Y.Z` in a checkout of sandy.
+2. Check the release archives against their signed `SHA256SUMS` as above, and the binary of each platform against the
+   hash which the release notes list.
+3. Build the release again from its signed tag on at least one platform and compare the binary with the one in the
+   archive: `scripts/release-build.sh TARGET` in a checkout of the tag, as the README of sandy describes in "Building
+   a release binary again". A Linux binary depends on the host of the toolchain: those of 2.2.1 to 2.4.1 rebuild bit
+   for bit only on an x86_64 Linux host, for both Linux targets, while a build on an arm64 host has the same functions
+   in another order. Both Linux binaries of 2.4.1 match their pins when rebuilt with an x86_64 host. The macOS and
+   Windows binaries can be rebuilt only on those systems, with the linker versions which the release notes name. If a
+   rebuild differs from the binary of the release, find out why before the pin moves.
+4. Review the source diff since the pinned release (`git diff vOLD vNEW`) for what it changes in the sandbox of Tor:
+   the policy and its fallback levels, the platform backends, the relays and the egress broker, and `check` and `run`
+   with the options which the library passes, the status record included. Write the review down, and adapt the
+   templates in `policy/` and the README of the library to what changed.
+5. Commit the binaries in `tor/sandy/<version>/<platform name>/`, remove the directory of the old version, set
+   `sandyVersion` and the hashes, update the table above, and run the unit tests and the integration tests of the
+   sandbox on Linux, and a sandboxed start on macOS and Windows where these systems are available.

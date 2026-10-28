@@ -39,6 +39,12 @@ import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
+/**
+ * The process of the embedded Tor, or of sandy, which starts Tor in the sandbox. Internal: like the other classes which
+ * start and run the process of Tor, it is no API of the Tor build, so its constructors and methods may change in any
+ * version without notice. Applications start and stop Tor with {@link bisq.network.tor.TorService}; the README names
+ * the supported API.
+ */
 @Slf4j
 public class EmbeddedTorProcess {
     public static final String ARG_OWNER_PID = "__OwningControllerProcess";

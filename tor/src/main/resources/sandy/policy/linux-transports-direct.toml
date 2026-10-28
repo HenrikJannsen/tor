@@ -1,4 +1,4 @@
-# The sandbox of the embedded Tor under sandy 2.2 on Linux with pluggable transports that resolve
+# The sandbox of the embedded Tor under sandy 2.4.1 on Linux with pluggable transports that resolve
 # names or use UDP (meek_lite, webtunnel, snowflake, conjure), which the egress broker does not
 # carry: the network of the host, without the egress broker. Otherwise as linux-transports.toml:
 # Tor may start the programs of the transports, and sandy ends them with Tor. On Linux sandy adds
