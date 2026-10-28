@@ -116,13 +116,26 @@ cp "$tor_key_dir/tor-key.asc" \
 The Gradle task must finish successfully. Keep the pinned primary fingerprint
 unchanged when refreshing its subkeys. Never bypass a failed signature check.
 
-## Offline builds and the key messages
+## Offline builds and key refreshes
 
 The download tasks honour `--offline`: a downloaded bundle is kept, and a
 missing one fails the build with a message instead of opening a connection.
 Run the build once online after a change of `tor.version`.
 
-`verifyTorBinary` prints a line such as "Subkey ... is revoked or not bound
-as signing key. We do not trust it." for the revoked 2015 subkey of the Tor
-Browser developers key and then verifies the bundle with a current subkey.
-The line is expected.
+The task reads the content of the bundled key as an input, so a refreshed
+key file runs the verification again.
+
+## Which keys verify a bundle
+
+`verifyTorBinary` accepts a signature only by a key of the pinned primary
+key which was valid for signing when the signature was made: the binding
+signature of the subkey and the back-signature (0x19) of the subkey must
+verify, the signed key flags must allow signing, and neither the subkey nor
+the primary key may have expired at the creation time of the signature.
+Evaluated at that time, a bundle signed with a subkey which has expired
+since, such as `157432CF78A65729` on 2026-10-26, still verifies, so that an
+older release can be built again. The signer states that time, so whoever
+holds the private key of an expired subkey can still sign with an earlier
+time. A subkey with any revocation is never trusted, such as the 2015 subkey
+`2D000988589839A3`, which was revoked as compromised, and a revocation of the
+primary key fails the verification.

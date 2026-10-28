@@ -7,7 +7,8 @@ import org.gradle.api.provider.Property
 import org.gradle.api.provider.Provider
 import org.gradle.api.tasks.TaskProvider
 import org.gradle.kotlin.dsl.register
-import java.net.URL
+import java.net.URI
+import java.security.MessageDigest
 
 class SignedBinaryDownloader(
     private val project: Project,
@@ -37,8 +38,14 @@ class SignedBinaryDownloader(
             fileToVerify.set(binaryDownloadTask.flatMap { it.outputFile })
             detachedSignatureFile.set(signatureDownloadTask.flatMap { it.outputFile })
             pgpFingerprintToKeyUrl.set(pgpFingerprintToKeyUrlMap)
+            pgpFingerprintToKeySha256.set(pgpFingerprintToKeyUrlMap.mapValues { (_, keyUrl) -> sha256Of(keyUrl) })
 
             resultFile.set(project.layout.buildDirectory.file("${downloadDirectory}/sha256.result"))
         }
+    }
+
+    private fun sha256Of(keyUrl: String): String {
+        val keyBytes = URI.create(keyUrl).toURL().readBytes()
+        return MessageDigest.getInstance("SHA-256").digest(keyBytes).joinToString("") { "%02x".format(it) }
     }
 }

@@ -18,4 +18,11 @@ gradlePlugin {
 
 dependencies {
     implementation(project(":gradle-tasks"))
+    testImplementation(libs.bouncycastle.pg)
+    testImplementation(libs.junit.jupiter)
+    testRuntimeOnly(libs.junit.platform.launcher)
+}
+
+tasks.test {
+    useJUnitPlatform()
 }

@@ -9,3 +9,6 @@ gradle/wrapper/gradle-wrapper.jar binary
 
 # The test resource checks the reading of a line which ends with CRLF, so its line endings must not be converted.
 tor-common/src/test/resources/file_utils_test_resource.txt -text
+
+# Files of a Tor Browser release for the tests of the signature check. The signatures cover their bytes.
+build-logic/tor-binary/src/test/resources/torbrowser-*/** -text

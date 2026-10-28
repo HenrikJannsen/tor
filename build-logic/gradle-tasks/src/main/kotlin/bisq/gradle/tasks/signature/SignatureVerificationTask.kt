@@ -9,6 +9,7 @@ import org.gradle.api.provider.Property
 import org.gradle.api.provider.Provider
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.TaskAction
 import java.net.URL
@@ -21,8 +22,15 @@ abstract class SignatureVerificationTask : DefaultTask() {
     @get:InputFile
     abstract val detachedSignatureFile: RegularFileProperty
 
-    @get:Input
+    // Not an input: the URL names the jar of the build logic, which differs per checkout, and the content of the key
+    // decides the result. The hashes below are the input.
+    @get:Internal
     abstract val pgpFingerprintToKeyUrl: MapProperty<String, String >
+
+    // The SHA-256 of each key file, so that a changed key, for example after Tor revoked a subkey, runs the
+    // verification again instead of reusing the result of the old key.
+    @get:Input
+    abstract val pgpFingerprintToKeySha256: MapProperty<String, String>
 
     @get:OutputFile
     abstract val resultFile: RegularFileProperty
@@ -39,7 +47,8 @@ abstract class SignatureVerificationTask : DefaultTask() {
 
         if (!isSignatureValid) {
             throw GradleException(
-                "Signature verification failed for ${fileToVerify.get().asFile.absolutePath}."
+                "Signature verification failed for ${fileToVerify.get().asFile.absolutePath}. Only a key of the " +
+                        "pinned certificate which was valid for signing when the signature was made is accepted."
             )
         }
     }
