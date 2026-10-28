@@ -57,7 +57,8 @@ class TorControlProtocolReplyValidationTest {
 
         assertThatThrownBy(() -> torControlProtocol.getInfo("version"))
                 .isInstanceOf(ControlCommandFailedException.class)
-                .hasMessageContaining("Invalid GETINFO reply");
+                .hasMessage("Invalid GETINFO reply. Tor reported (not verified by Bisq): [250-ServiceID=" + serviceId +
+                        ", 250 OK]");
     }
 
     @Test

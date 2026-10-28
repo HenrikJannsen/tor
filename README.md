@@ -193,7 +193,11 @@ which shows that sandy ended the run before Tor ran gets the advice to turn the 
 sandboxed Tor before it answers on its control port is a failed start without that advice. Bisq chooses the ports of
 the policy and releases them before sandy binds them, so such a refusal of `sandy run`, and an exit 125 of
 `sandy check`, which tries the ports, can pass: the start then runs once more with other ports, within the same
-`initialize()`, and only a second refusal fails it.
+`initialize()`, and only a second refusal fails it. The error of a failed start quotes the end of `tor-stderr.log`. In
+the sandbox, sandy and Tor write that file and Tor can rewrite it, so the error names what Bisq knows itself (the exit
+status and the status record) first and labels the quote as written by sandy and by Tor in its sandbox and not verified
+by Bisq. In the same way an error which quotes a reply of Tor on its control connection, or a field of one of its events,
+says what Bisq knows first and then labels the quote "Tor reported (not verified by Bisq)".
 
 On Linux sandy refuses to run as root or with capabilities, because Tor would keep them in the sandbox (Landlock does
 not restrict `chmod` or `chown`). A node which runs as root, as is common in containers, therefore fails its sandboxed

@@ -69,6 +69,7 @@ class TorControllerExternalBootstrapTest {
 
         assertThatThrownBy(() -> torController.awaitBootstrapOfExternalTor())
                 .isInstanceOf(TorBootstrapFailedException.class)
+                .hasMessageContaining("seconds. Tor reported (not verified by Bisq): ")
                 .hasMessageContaining("PROGRESS=50");
     }
 

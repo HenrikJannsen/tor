@@ -98,6 +98,10 @@ public class TorService {
     private static final String SOCKS5_PROXY = "Socks5Proxy";
     private static final String MAX_MEM_IN_QUEUES = "MaxMemInQueues";
     private static final int STATUS_DLL_INIT_FAILED = 0xC0000142;
+    // sandy and the Tor which it runs write the standard error of a sandboxed start, and Tor can rewrite the file, so a
+    // quote of it can be the text of a compromised Tor.
+    private static final String SANDBOXED_STDERR_LABEL =
+            "stderr (written by sandy and by Tor in its sandbox, not verified by Bisq)";
     // Environment variable to not launch the embedded Tor process
     public static final String TOR_SKIP_LAUNCH = "TOR_SKIP_LAUNCH";
 
@@ -404,7 +408,7 @@ public class TorService {
             torController.bootstrap();
             if (!embeddedTorProcess.isAlive()) {
                 throw new TorStartupFailedException("Embedded Tor exited during bootstrap. " +
-                        embeddedTorProcess.getStartupDiagnostics());
+                        startupDiagnostics(embeddedTorProcess, sandboxedRun.isPresent()));
             }
             // Tor binds its SOCKS port only when the bootstrap enables the network, seconds after Bisq released it.
             verifySocksListener(listenerPorts.socks().innerPort());
@@ -1199,7 +1203,8 @@ public class TorService {
                 }
                 if (System.currentTimeMillis() - start > CONTROL_PORT_TIMEOUT_MS) {
                     throw new IOException("Tor did not answer on its control port " + controlPort + " within " +
-                            CONTROL_PORT_TIMEOUT_MS + " ms. " + embeddedTorProcess.getStartupDiagnostics());
+                            CONTROL_PORT_TIMEOUT_MS + " ms. " +
+                            startupDiagnostics(embeddedTorProcess, sandboxedRun.isPresent()));
                 }
                 Thread.sleep(CONTROL_PORT_POLL_INTERVAL_MS);
             }
@@ -1220,17 +1225,25 @@ public class TorService {
         } catch (IOException e) {
             return new IOException("Embedded Tor exited before it answered on its control port, and Bisq could not " +
                     "read the status record of sandy, which tells whether Tor ran: " + e.getMessage() + ". " +
-                    embeddedTorProcess.getStartupDiagnostics());
+                    embeddedTorProcess.getStartupDiagnostics(SANDBOXED_STDERR_LABEL));
         }
         int exitCode = embeddedTorProcess.getExitCode().orElseThrow();
+        // The facts which Bisq knows come before the quote of the standard error, which Tor can have written.
         String record = "statusRecord=[" + statusRecord.map(SandyStatusRecord::toString).orElse("none") + "], ";
         if (Sandy.endedBeforeTheProgramRan(sandboxedRun.staysParent(), exitCode, statusRecord)) {
             // Without a cause, so that the reason and the hint are the root cause which Bisq 2 shows
             throw new SandyRefusalException("sandy did not start Tor. " + record +
-                    embeddedTorProcess.getStartupDiagnostics(), sandboxedRun.optOutHint());
+                    embeddedTorProcess.getStartupDiagnostics(SANDBOXED_STDERR_LABEL), sandboxedRun.optOutHint());
         }
-        return new IOException("Embedded Tor exited before it answered on its control port. " + record +
-                embeddedTorProcess.getStartupDiagnostics() + windowsSessionHint(Optional.of(exitCode)));
+        return new IOException("Embedded Tor exited before it answered on its control port." +
+                windowsSessionHint(Optional.of(exitCode)) + " " + record +
+                embeddedTorProcess.getStartupDiagnostics(SANDBOXED_STDERR_LABEL));
+    }
+
+    private static String startupDiagnostics(EmbeddedTorProcess embeddedTorProcess, boolean isSandboxed) {
+        return isSandboxed ?
+                embeddedTorProcess.getStartupDiagnostics(SANDBOXED_STDERR_LABEL) :
+                embeddedTorProcess.getStartupDiagnostics();
     }
 
     private static void removeStatusRecordQuietly(Path statusRecordPath) {

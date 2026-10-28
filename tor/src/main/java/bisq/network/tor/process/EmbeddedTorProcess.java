@@ -255,12 +255,20 @@ public class EmbeddedTorProcess {
     }
 
     public String getStartupDiagnostics() {
+        return getStartupDiagnostics("stderr");
+    }
+
+    /**
+     * @param stderrLabel introduces the end of the standard error log, which the diagnostics quote last, for example
+     *                    to say who wrote it where the caller cannot vouch for its content
+     */
+    public String getStartupDiagnostics(String stderrLabel) {
         String exitCode = getExitCode()
                 .map(String::valueOf)
                 .orElseGet(() -> isAlive() ? "still running" : "not started");
         return "exitCode=" + exitCode +
                 ", stderrLog=" + stderrLogPath.toAbsolutePath() +
-                ", stderr=" + readLogSnippet(stderrLogPath);
+                ", " + stderrLabel + "=" + readLogSnippet(stderrLogPath);
     }
 
     /**

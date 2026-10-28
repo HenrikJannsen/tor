@@ -88,6 +88,16 @@ final class TorControlLogFormat {
                 : statusCodeAndSeparator + key + "=" + HIDDEN;
     }
 
+    /**
+     * Introduces text of Tor, a reply or a field of an event, which the message of an exception quotes. An application
+     * can show the message to the user; Bisq 2 shows the root cause of a failed start. In its sandbox a compromised Tor
+     * chooses that text, so the message labels it as the text of Tor, which Bisq did not verify, and quotes it last,
+     * after what Bisq knows itself.
+     */
+    static String quoteOfTor(String text) {
+        return "Tor reported (not verified by Bisq): " + text;
+    }
+
     static String toLoggableOptionArgument(String argument) {
         int valueStart = argument.indexOf('=');
         return valueStart < 0 ? argument : argument.substring(0, valueStart) + "=" + HIDDEN;

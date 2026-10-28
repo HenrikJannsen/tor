@@ -248,7 +248,8 @@ public class TorControlProtocol implements AutoCloseable {
 
         Matcher matcher = AUTHCHALLENGE_REPLY_PATTERN.matcher(reply);
         if (!matcher.matches()) {
-            throw new TorControlAuthenticationFailed("Invalid reply to AUTHCHALLENGE: " + reply);
+            throw new TorControlAuthenticationFailed("Invalid reply to AUTHCHALLENGE. " +
+                    TorControlLogFormat.quoteOfTor(TorControlLogFormat.toLoggableReply(reply)));
         }
         byte[] serverHash = BaseEncoding.base16().decode(matcher.group(1).toUpperCase(Locale.ROOT));
         byte[] serverNonce = BaseEncoding.base16().decode(matcher.group(2).toUpperCase(Locale.ROOT));
@@ -286,7 +287,8 @@ public class TorControlProtocol implements AutoCloseable {
         // Tor answers "515 Authentication failed" to a wrong secret, but any reply other than "250 OK" means that
         // the connection is not authenticated, for example "514 Authentication required".
         if (!isSuccessReply(reply)) {
-            throw new TorControlAuthenticationFailed(reply);
+            throw new TorControlAuthenticationFailed("Tor did not accept the authentication. " +
+                    TorControlLogFormat.quoteOfTor(TorControlLogFormat.toLoggableReply(reply)));
         }
     }
 
@@ -317,7 +319,8 @@ public class TorControlProtocol implements AutoCloseable {
         sendCommand(command);
         String reply = receiveReply().findFirst().orElseThrow();
         if (!isSuccessReply(reply)) {
-            throw new ControlCommandFailedException("Couldn't remove onion service " + serviceId + ": " + reply);
+            throw new ControlCommandFailedException("Couldn't remove onion service " + serviceId + ". " +
+                    TorControlLogFormat.quoteOfTor(TorControlLogFormat.toLoggableReply(reply)));
         }
     }
 
@@ -743,7 +746,8 @@ public class TorControlProtocol implements AutoCloseable {
 
     private static ControlCommandFailedException invalidReply(String commandName, List<String> replies) {
         List<String> loggableReplies = replies.stream().map(TorControlLogFormat::toLoggableReply).collect(Collectors.toList());
-        return new ControlCommandFailedException("Invalid " + commandName + " reply: " + loggableReplies);
+        return new ControlCommandFailedException("Invalid " + commandName + " reply. " +
+                TorControlLogFormat.quoteOfTor(loggableReplies.toString()));
     }
 
     private boolean isSuccessReply(String reply) {

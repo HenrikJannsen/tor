@@ -53,6 +53,7 @@ public class OnionServiceOnlineStateService extends FilteredHsDescEventListener 
     private volatile boolean hasConnectionEnded;
     // The result of the lookup, written by the first HS_DESC event before it opens the latch
     private boolean isOnline;
+    // The end of the message of a lookup which Tor could not make
     private Optional<String> failureReason = Optional.empty();
     private final ExecutorService executor;
 
@@ -116,7 +117,7 @@ public class OnionServiceOnlineStateService extends FilteredHsDescEventListener 
                                 "service within " + timeout / 1000 + " seconds");
                     }
                     if (failureReason.isPresent()) {
-                        throw new RuntimeException("Tor could not look up the onion service: " + failureReason.get());
+                        throw new RuntimeException("Tor could not look up the onion service" + failureReason.get());
                     }
 
                     return isOnline;
@@ -174,7 +175,9 @@ public class OnionServiceOnlineStateService extends FilteredHsDescEventListener 
                 // Debug level: the address of a peer must not appear in a shared log.
                 log.debug("hsFetch request for {} failed with reason {}", onionAddress, reason.orElse("none"));
                 if (!reason.equals(Optional.of("NOT_FOUND"))) {
-                    failureReason = Optional.of(reason.map(value -> "REASON=" + value).orElse("no REASON"));
+                    failureReason = Optional.of(reason
+                            .map(value -> ". " + TorControlLogFormat.quoteOfTor("REASON=" + value))
+                            .orElse(" and named no reason"));
                 }
                 countDownLatch.countDown();
                 break;

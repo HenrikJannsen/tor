@@ -99,7 +99,42 @@ class TorServiceStartFailureTest {
                 .isInstanceOf(IOException.class)
                 .hasMessageContaining("exited before it answered")
                 .hasMessageContaining("statusRecord=[level base, pid 4711]")
-                .hasMessageNotContaining(OPT_OUT_HINT);
+                .hasMessageNotContaining(OPT_OUT_HINT)
+                .satisfies(e -> assertThatTheQuoteIsLabeledAndLast(e.getMessage(),
+                        "sandy: this system cannot run the sandbox. Turn it off."));
+    }
+
+    // The quote comes last, after the facts which Bisq knows, and says that Tor in its sandbox can have written it.
+    @Test
+    void theStandardErrorOfASandboxedStartIsQuotedAsTextWhichBisqDidNotVerify() {
+        EmbeddedTorProcess refused = start(writeStatusRecord("level base\\nfailed\\n") +
+                "echo 'sandy: run failed' >&2; exit 125");
+        assertThatThrownBy(() -> TorService.waitUntilControlPortAnswers(closedPort, refused, sandboxedRun()))
+                .isInstanceOf(TorService.SandyRefusalException.class)
+                .satisfies(e -> assertThatTheQuoteIsLabeledAndLast(((TorService.SandyRefusalException) e).getReason(),
+                        "sandy: run failed"));
+
+        EmbeddedTorProcess exited = start(writeStatusRecord("level base\\npid 4711\\n") +
+                "echo 'Could not bind' >&2; exit 1");
+        assertThatThrownBy(() -> TorService.waitUntilControlPortAnswers(closedPort, exited, sandboxedRun()))
+                .satisfies(e -> assertThatTheQuoteIsLabeledAndLast(e.getMessage(), "Could not bind"));
+    }
+
+    // Without the sandbox Tor has all the rights of Bisq, so a label would add nothing.
+    @Test
+    void theStandardErrorOfAStartWithoutTheSandboxIsQuotedAsBefore() {
+        EmbeddedTorProcess process = start("echo 'Could not bind' >&2; exit 1");
+
+        assertThatThrownBy(() -> TorService.waitUntilControlPortAnswers(closedPort, process, Optional.empty()))
+                .hasMessageEndingWith(", stderr=Could not bind")
+                .hasMessageNotContaining("not verified");
+    }
+
+    private static void assertThatTheQuoteIsLabeledAndLast(String message, String quote) {
+        String label = "stderr (written by sandy and by Tor in its sandbox, not verified by Bisq)=";
+        assertThat(message).endsWith(label + quote);
+        assertThat(message.indexOf("exitCode=")).isLessThan(message.indexOf(label));
+        assertThat(message.indexOf("statusRecord=")).isLessThan(message.indexOf(label));
     }
 
     // Where sandy stays the parent of Tor, it writes the process ID once Tor runs, so a failure after it is no refusal.

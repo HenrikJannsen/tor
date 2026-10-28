@@ -117,7 +117,9 @@ class OnionServiceOnlineStateServiceTest {
         long start = System.currentTimeMillis();
         CompletableFuture<Boolean> lookup = torController.isOnionServiceOnlineAsync(onionAddress);
 
-        assertThatThrownBy(lookup::join).hasMessageContaining("QUERY_RATE_LIMITED");
+        assertThatThrownBy(lookup::join)
+                .hasMessageEndingWith("Tor could not look up the onion service. Tor reported (not verified by Bisq): " +
+                        "REASON=QUERY_RATE_LIMITED");
         assertThat(System.currentTimeMillis() - start).isLessThan(5000);
     }
 
