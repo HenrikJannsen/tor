@@ -70,6 +70,8 @@ import static com.google.common.base.Preconditions.checkArgument;
 public class TorService {
     private static final long CONTROL_PORT_FILE_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(30);
     private static final long CONTROL_PORT_FILE_POLL_INTERVAL_MS = 100;
+    private static final String GEOIP_FILE = "GeoIPFile";
+    private static final String GEOIP_V6_FILE = "GeoIPv6File";
     // Environment variable to not launch the embedded Tor process
     public static final String TOR_SKIP_LAUNCH = "TOR_SKIP_LAUNCH";
 
@@ -234,7 +236,11 @@ public class TorService {
         torController = torControllerFactory.get();
 
         PasswordDigest hashedControlPassword = PasswordDigest.generateDigest();
-        Map<String, String> torrcConfigMap = createTorrcConfigFile(hashedControlPassword);
+        boolean isBundledTor = torDirectories.isBundledTor(torBinaryPath);
+        createTorrcConfigFile(hashedControlPassword, isBundledTor);
+        if (isBundledTor) {
+            createEmptyOpenSslConfig();
+        }
 
         // remove the control port file before we launch tor, just in case it exists from
         // a previous run
@@ -287,7 +293,13 @@ public class TorService {
 
     private EmbeddedTorProcess createTorProcess(Path torBinaryPath) {
         Consumer<Map<String, String>> environmentAdjuster = torDirectories.isBundledTor(torBinaryPath) ?
-                environment -> LdPreload.applyToEnvironment(environment, torDirectories.getBinaryDirPath()) :
+                environment -> {
+                    LdPreload.applyToEnvironment(environment, torDirectories.getBinaryDirPath());
+                    // The OpenSSL of the bundled Tor reads openssl.cnf from a directory of its build below
+                    // /var/tmp/dist, where any local user can create files, unless OPENSSL_CONF names another file.
+                    // The configuration can load modules into Tor.
+                    environment.put("OPENSSL_CONF", torDirectories.getOpenSslConfigPath().toAbsolutePath().toString());
+                } :
                 environment -> {
                 };
         return new EmbeddedTorProcess(createTorCommand(torBinaryPath),
@@ -665,7 +677,43 @@ public class TorService {
         torInstaller.installIfNotUpToDate();
     }
 
-    private Map<String, String> createTorrcConfigFile(PasswordDigest hashedControlPassword) {
+    private static boolean isSet(Map<String, String> torrcConfigMap, String key) {
+        return torrcConfigMap.keySet().stream().anyMatch(existingKey -> existingKey.equalsIgnoreCase(key));
+    }
+
+    /**
+     * The bundled Tor looks for its GeoIP files in a directory of its build below /var/tmp/dist, where any local user
+     * can create files, unless the torrc names them. Bisq names the files of the bundle also when one is missing from a
+     * damaged installation: Tor then runs without country data instead of reading that directory. A torrc override of
+     * the user still applies.
+     */
+    @VisibleForTesting
+    static void putBundledGeoIpFiles(Map<String, String> torrcConfigMap, TorDirectories torDirectories) {
+        putIfNotSet(torrcConfigMap, GEOIP_FILE, torDirectories.getBundledGeoIpFilePath());
+        putIfNotSet(torrcConfigMap, GEOIP_V6_FILE, torDirectories.getBundledGeoIpv6FilePath());
+    }
+
+    private static void putIfNotSet(Map<String, String> torrcConfigMap, String key, Path filePath) {
+        if (isSet(torrcConfigMap, key)) {
+            return;
+        }
+        if (!Files.exists(filePath)) {
+            log.warn("The Tor bundle has no {}. Tor runs without its country data.", filePath);
+        }
+        torrcConfigMap.put(key, filePath.toAbsolutePath().toString());
+    }
+
+    private void createEmptyOpenSslConfig() {
+        Path openSslConfigPath = torDirectories.getOpenSslConfigPath();
+        try {
+            FileUtils.writeToPath("", openSslConfigPath, platformServices.supportsPosixPermissions());
+        } catch (IOException e) {
+            log.warn("Couldn't write {}", openSslConfigPath, e);
+            throw new TorStartupFailedException("Couldn't write " + openSslConfigPath + ": " + e);
+        }
+    }
+
+    private Map<String, String> createTorrcConfigFile(PasswordDigest hashedControlPassword, boolean isBundledTor) {
         TorrcClientConfigFactory torrcClientConfigFactory = TorrcClientConfigFactory.builder()
                 .isTestNetwork(transportConfig.isTestNetwork())
                 .dataDirPath(torDirectories.getDataDirPath())
@@ -674,6 +722,9 @@ public class TorService {
 
         Map<String, String> torrcOverrideConfigs = transportConfig.getTorrcOverrides();
         Map<String, String> torrcConfigMap = torrcClientConfigFactory.torrcClientConfigMap(torrcOverrideConfigs);
+        if (isBundledTor) {
+            putBundledGeoIpFiles(torrcConfigMap, torDirectories);
+        }
 
         var torrcFileGenerator = new TorrcFileGenerator(torDirectories.getTorrcPath(),
                 torrcConfigMap,
