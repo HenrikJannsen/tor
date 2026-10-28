@@ -23,23 +23,26 @@ import bisq.network.tor.bridges.PluggableTransportPrograms;
 import bisq.network.tor.common.file.FileUtils;
 import bisq.network.tor.common.platform.LinuxDistribution;
 import bisq.network.tor.common.platform.OS;
-import bisq.network.tor.common.torrc.BaseTorrcGenerator;
 import bisq.network.tor.common.torrc.TorrcFileGenerator;
 import bisq.network.tor.common.torrc.TorrcSyntax;
 import bisq.network.tor.controller.PasswordDigest;
 import bisq.network.tor.controller.TorCommandFilteredException;
 import bisq.network.tor.controller.TorControlAuthenticationFailed;
 import bisq.network.tor.controller.TorController;
+import bisq.network.tor.installer.TorBinaryZipExtractor;
 import bisq.network.tor.installer.TorInstaller;
 import bisq.network.tor.onionservice.DirectOnionServiceTargets;
 import bisq.network.tor.onionservice.OnionServiceKey;
 import bisq.network.tor.onionservice.OnionServiceTargets;
+import bisq.network.tor.process.ControlPortProbe;
 import bisq.network.tor.process.BundledTorLibraries;
 import bisq.network.tor.process.EmbeddedTorProcess;
 import bisq.network.tor.process.LoopbackPorts;
 import bisq.network.tor.process.TorDirectories;
+import bisq.network.tor.process.TorDirectoryMigration;
+import bisq.network.tor.process.TorListenerPorts;
+import bisq.network.tor.process.TorListenerPorts.PortMapping;
 import bisq.network.tor.process.TorStartupFailedException;
-import bisq.network.tor.process.control_port.ControlPortFileParser;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.net.InetAddresses;
 import com.runjva.sourceforge.jsocks.protocol.Socks5Proxy;
@@ -70,8 +73,8 @@ import java.util.stream.Collectors;
 
 @Slf4j
 public class TorService {
-    private static final long CONTROL_PORT_FILE_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(30);
-    private static final long CONTROL_PORT_FILE_POLL_INTERVAL_MS = 100;
+    private static final long CONTROL_PORT_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(30);
+    private static final long CONTROL_PORT_POLL_INTERVAL_MS = 100;
     private static final String GEOIP_FILE = "GeoIPFile";
     private static final int AUTH_COOKIE_LENGTH = 32;
     private static final String GEOIP_V6_FILE = "GeoIPv6File";
@@ -265,6 +268,7 @@ public class TorService {
     }
 
     private void startEmbeddedTor() {
+        prepareTorDirectories();
         installTorIfNotUpToDate();
 
         Path torBinaryPath = torDirectories.getBundledTorBinaryPath();
@@ -274,56 +278,67 @@ public class TorService {
         }
         torController = torControllerFactory.get();
 
+        TorListenerPorts listenerPorts = chooseListenerPorts();
         PasswordDigest hashedControlPassword = PasswordDigest.generateDigest();
-        createTorrcConfigFile(hashedControlPassword);
+        createTorrcConfigFile(hashedControlPassword, listenerPorts);
         createEmptyOpenSslConfig();
 
-        // remove the control port file before we launch tor, just in case it exists from
-        // a previous run
-        Path controlDirPath = torDirectories.getDataDirPath().resolve(BaseTorrcGenerator.CONTROL_DIR_NAME);
-        Path controlPortFilePath = controlDirPath.resolve("control");
-        try {
-            FileUtils.deleteFileAndWait(controlPortFilePath, 5000);
-        } catch (Exception e) {
-            throw new RuntimeException("Failed to delete tor control port file", e);
-        }
-
-        createTorControlDirectory();
         EmbeddedTorProcess embeddedTorProcess = createTorProcess(torBinaryPath);
         torProcess = Optional.of(embeddedTorProcess);
         embeddedTorProcess.start();
 
+        int controlPort = listenerPorts.control().outerPort();
         try {
-            waitUntilControlPortFileExists(controlPortFilePath, embeddedTorProcess);
-
-            int controlPort = ControlPortFileParser.parse(controlPortFilePath);
-
-            controlPortFilePath.toFile().deleteOnExit();
+            waitUntilControlPortAnswers(controlPort, embeddedTorProcess);
 
             torController.initialize(controlPort);
             torController.authenticate(hashedControlPassword);
+            // Bisq released the chosen ports before Tor bound them. Before Bisq sends any secret (the onion service
+            // keys), it checks that the process on the port is the Tor of this start.
             torController.verifyHashedControlPassword(hashedControlPassword);
             torController.bootstrap();
             if (!embeddedTorProcess.isAlive()) {
                 throw new TorStartupFailedException("Embedded Tor exited during bootstrap. " +
                         embeddedTorProcess.getStartupDiagnostics());
             }
+            // Tor binds its SOCKS port only when the bootstrap enables the network, seconds after Bisq released it.
+            verifySocksListener(listenerPorts.socks().innerPort());
 
             torVersion = torController.getTorVersion();
             log.info("Tor {} runs with the binary {}", torVersion.orElse("of unknown version"), torBinaryPath);
 
-            int port = torController.getSocksPort();
-            torSocksProxyFactory = Optional.of(new TorSocksProxyFactory(port));
+            torSocksProxyFactory = Optional.of(new TorSocksProxyFactory(listenerPorts.socks().outerPort()));
         } catch (InterruptedException e) {
             stopEmbeddedTor(embeddedTorProcess);
             Thread.currentThread().interrupt();
-            throw new RuntimeException("Interrupted while waiting for tor control port file to exist", e);
+            throw new RuntimeException("Interrupted while waiting for the tor control port", e);
         } catch (IOException e) {
             stopEmbeddedTor(embeddedTorProcess);
-            throw new RuntimeException("Error while waiting for tor control port file to exist", e);
+            throw new RuntimeException("Error while waiting for the tor control port", e);
         } catch (RuntimeException e) {
             stopEmbeddedTor(embeddedTorProcess);
             throw e;
+        }
+    }
+
+    private TorListenerPorts chooseListenerPorts() {
+        try {
+            List<Integer> ports = LoopbackPorts.allocate(2);
+            TorListenerPorts listenerPorts = new TorListenerPorts(new PortMapping(ports.get(0), ports.get(0)),
+                    new PortMapping(ports.get(1), ports.get(1)));
+            log.info("Tor listener ports: {}", listenerPorts);
+            return listenerPorts;
+        } catch (IOException e) {
+            log.warn("Couldn't reserve the ports of Tor", e);
+            throw new TorStartupFailedException("Couldn't reserve the loopback ports of Tor: " + e);
+        }
+    }
+
+    private void verifySocksListener(int socksPort) {
+        int reportedSocksPort = torController.getSocksPort();
+        if (reportedSocksPort != socksPort) {
+            throw new TorStartupFailedException("Tor reports its SOCKS listener on port " + reportedSocksPort +
+                    " instead of the chosen port " + socksPort + ". Another process may listen on the chosen port.");
         }
     }
 
@@ -408,6 +423,19 @@ public class TorService {
         torController.authenticateWithSafeCookie(authCookie);
     }
 
+    private void prepareTorDirectories() {
+        try {
+            TorDirectoryMigration.migrateIfNeeded(torDirectories, TorBinaryZipExtractor::readTopLevelNames);
+            boolean posixPermissionsAllowed = platformServices.supportsPosixPermissions();
+            FileUtils.createDirectories(torDirectories.getDataDirPath(), posixPermissionsAllowed);
+            FileUtils.createDirectories(torDirectories.getBinaryDirPath(), posixPermissionsAllowed);
+        } catch (IOException e) {
+            log.warn("Couldn't prepare the Tor directories", e);
+            throw new TorStartupFailedException("Couldn't prepare the directories of Tor in " +
+                    torDirectories.getBaseDirPath() + ": " + e);
+        }
+    }
+
     /**
      * The Whonix-Gateway has the markers of Whonix, so Bisq would take it for a Workstation and connect to the
      * forwarded control port of the Gateway, which does not exist on the Gateway itself.
@@ -417,17 +445,6 @@ public class TorService {
             throw new TorStartupFailedException("Bisq does not run on a Whonix-Gateway, whose Tor serves the " +
                     "Whonix-Workstations behind it. Run Bisq on a Whonix-Workstation, which uses the Tor of the " +
                     "Gateway.");
-        }
-    }
-
-    private void createTorControlDirectory() {
-        Path controlDirFilePath = torDirectories.getDataDirPath().resolve(BaseTorrcGenerator.CONTROL_DIR_NAME);
-        if (!Files.exists(controlDirFilePath)) {
-            try {
-                FileUtils.createDirectories(controlDirFilePath);
-            } catch (IOException e) {
-                throw new TorStartupFailedException("Couldn't create Tor control directory.");
-            }
         }
     }
 
@@ -765,19 +782,19 @@ public class TorService {
         }
     }
 
-    private void waitUntilControlPortFileExists(Path controlPortFilePath,
-                                                EmbeddedTorProcess embeddedTorProcess) throws InterruptedException, IOException {
+    private void waitUntilControlPortAnswers(int controlPort,
+                                             EmbeddedTorProcess embeddedTorProcess) throws InterruptedException, IOException {
         long start = System.currentTimeMillis();
-        while (!Files.exists(controlPortFilePath)) {
+        while (!ControlPortProbe.isTorAnswering(controlPort)) {
             if (!embeddedTorProcess.isAlive()) {
-                throw new IOException("Embedded Tor exited before writing control port file. " +
+                throw new IOException("Embedded Tor exited before it answered on its control port. " +
                         embeddedTorProcess.getStartupDiagnostics());
             }
-            if (System.currentTimeMillis() - start > CONTROL_PORT_FILE_TIMEOUT_MS) {
-                throw new IOException("Control port file did not exist after " + CONTROL_PORT_FILE_TIMEOUT_MS + " ms: " +
-                        controlPortFilePath.toAbsolutePath() + ". " + embeddedTorProcess.getStartupDiagnostics());
+            if (System.currentTimeMillis() - start > CONTROL_PORT_TIMEOUT_MS) {
+                throw new IOException("Tor did not answer on its control port " + controlPort + " within " +
+                        CONTROL_PORT_TIMEOUT_MS + " ms. " + embeddedTorProcess.getStartupDiagnostics());
             }
-            Thread.sleep(CONTROL_PORT_FILE_POLL_INTERVAL_MS);
+            Thread.sleep(CONTROL_PORT_POLL_INTERVAL_MS);
         }
     }
 
@@ -822,13 +839,16 @@ public class TorService {
         }
     }
 
-    private Map<String, String> createTorrcConfigFile(PasswordDigest hashedControlPassword) {
+    private Map<String, String> createTorrcConfigFile(PasswordDigest hashedControlPassword,
+                                                      TorListenerPorts listenerPorts) {
         BridgeConfig bridgeConfig = transportConfig.getBridgeConfig();
         TorrcClientConfigFactory torrcClientConfigFactory = TorrcClientConfigFactory.builder()
                 .isTestNetwork(transportConfig.isTestNetwork())
                 .dataDirPath(torDirectories.getDataDirPath())
                 .hashedControlPassword(hashedControlPassword)
                 .usesBridges(bridgeConfig.isUsed())
+                .controlPort(listenerPorts.control().innerPort())
+                .socksPort(listenerPorts.socks().innerPort())
                 .build();
 
         Map<String, String> torrcOverrideConfigs = transportConfig.getTorrcOverrides();

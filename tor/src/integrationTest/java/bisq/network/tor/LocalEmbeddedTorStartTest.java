@@ -66,7 +66,7 @@ class LocalEmbeddedTorStartTest {
     @Test
     void aLockFileWhichAnEndedTorLeftDoesNotBlockTheStart() throws Exception {
         assumeBundledTorOfLinux();
-        Files.createFile(torDir.resolve("lock"));
+        Files.createFile(Files.createDirectories(torDir.resolve("data")).resolve("lock"));
         var transportConfig = new TorTransportConfig(torDir, 3000, 1000, false, Set.of(),
                 Map.of("Socks5Proxy", "127.0.0.1:1"), false);
         var torService = new TorService(transportConfig, new LocalPlatformServices());
@@ -90,8 +90,8 @@ class LocalEmbeddedTorStartTest {
                 .satisfies(e -> assertThat(Throwables.getRootCause(e)).isInstanceOf(TorBootstrapFailedException.class));
 
         assertThat(Files.readString(hashTorDir.resolve("torrc")))
-                .contains("DataDirectory \"" + hashTorDir.toAbsolutePath() + "\"\n");
-        assertThat(hashTorDir.resolve("state")).exists();
+                .contains("DataDirectory \"" + hashTorDir.resolve("data").toAbsolutePath() + "\"\n");
+        assertThat(hashTorDir.resolve("data").resolve("state")).exists();
         assertThatNoTorOfThisTestRuns(hashTorDir);
     }
 

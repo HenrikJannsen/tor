@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -31,25 +32,46 @@ class TorDirectoriesTest {
 
     @Test
     void theFilesOfTheEmbeddedTorLieInTheTorDirectory() {
+        Path bin = BASE.resolve("bin");
         assertThat(directories.getBaseDirPath()).isEqualTo(BASE);
-        assertThat(directories.getBinaryDirPath()).isEqualTo(BASE);
-        assertThat(directories.getDataDirPath()).isEqualTo(BASE);
+        assertThat(directories.getBinaryDirPath()).isEqualTo(bin);
+        assertThat(directories.getDataDirPath()).isEqualTo(BASE.resolve("data"));
+        assertThat(directories.getSandyDirPath()).isEqualTo(BASE.resolve("sandy"));
         assertThat(directories.getTorrcPath()).isEqualTo(BASE.resolve("torrc"));
         assertThat(directories.getStdoutLogPath()).isEqualTo(BASE.resolve("tor-stdout.log"));
         assertThat(directories.getStderrLogPath()).isEqualTo(BASE.resolve("tor-stderr.log"));
         assertThat(directories.getExternalTorConfigPath()).isEqualTo(BASE.resolve("external_tor.config"));
         assertThat(directories.getOpenSslConfigPath()).isEqualTo(BASE.resolve("openssl.cnf"));
-        assertThat(directories.getBundledGeoIpFilePath()).isEqualTo(BASE.resolve("geoip"));
-        assertThat(directories.getBundledGeoIpv6FilePath()).isEqualTo(BASE.resolve("geoip6"));
-        assertThat(directories.getPluggableTransportsDirPath()).isEqualTo(BASE.resolve("pluggable_transports"));
+        assertThat(directories.getBundledGeoIpFilePath()).isEqualTo(bin.resolve("geoip"));
+        assertThat(directories.getBundledGeoIpv6FilePath()).isEqualTo(bin.resolve("geoip6"));
+        assertThat(directories.getPluggableTransportsDirPath()).isEqualTo(bin.resolve("pluggable_transports"));
         assertThat(directories.getPluggableTransportConfigPath())
-                .isEqualTo(BASE.resolve("pluggable_transports").resolve("pt_config.json"));
+                .isEqualTo(bin.resolve("pluggable_transports").resolve("pt_config.json"));
+    }
+
+    // Bisq 2 leaves the logs of Tor out of its backup and opens them.
+    @Test
+    void theEarlierLogOfTorLiesNextToItsLog() {
+        assertThat(directories.getRotatedStdoutLogPath()).isEqualTo(BASE.resolve("tor-stdout.log.1"));
+        assertThat(directories.getRotatedStdoutLogPath())
+                .isEqualTo(EmbeddedTorProcess.rotatedStdoutLogPath(directories.getStdoutLogPath()));
+    }
+
+    // A sandboxed Tor may write its data directory, so nothing which Bisq executes, reads or writes may lie there.
+    @Test
+    void nothingWhichBisqTrustsLiesInTheDataDirectory() {
+        for (Path path : List.of(directories.getBinaryDirPath(), directories.getSandyDirPath(),
+                directories.getTorrcPath(), directories.getStdoutLogPath(), directories.getStderrLogPath(),
+                directories.getExternalTorConfigPath(), directories.getOpenSslConfigPath())) {
+            assertThat(path.startsWith(directories.getDataDirPath())).as(path.toString()).isFalse();
+        }
     }
 
     @Test
     void theBundledTorBinaryHasTheNameOfItsPlatform() {
-        assertThat(directories.getBundledTorBinaryPath(true)).isEqualTo(BASE.resolve("tor.exe"));
-        assertThat(directories.getBundledTorBinaryPath(false)).isEqualTo(BASE.resolve("tor"));
+        Path bin = BASE.resolve("bin");
+        assertThat(directories.getBundledTorBinaryPath(true)).isEqualTo(bin.resolve("tor.exe"));
+        assertThat(directories.getBundledTorBinaryPath(false)).isEqualTo(bin.resolve("tor"));
         assertThat(directories.getBundledTorBinaryPath())
                 .isEqualTo(directories.getBundledTorBinaryPath(OS.isWindows()));
     }

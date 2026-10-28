@@ -46,10 +46,11 @@ import static com.google.common.base.Preconditions.checkArgument;
 @Slf4j
 @Builder
 public class TorrcClientConfigFactory {
-    // TorService reads the control port from the file which Tor writes, authenticates with the password of this start
-    // and checks its hash, and gives each stream of the SOCKS listener its own circuit. An override of these keys
-    // would break the start of Tor or this isolation.
+    // TorService chooses the control and SOCKS ports, authenticates with the password of this start and checks its
+    // hash, and gives each stream of the SOCKS listener its own circuit. An override of these keys would break the
+    // start of Tor or this isolation.
     private static final String AVOID_DISK_WRITES = "AvoidDiskWrites";
+    private static final String LOG = "Log";
     private static final Set<String> KEYS_OWNED_BY_BISQ = Stream.of(CONTROL_PORT, CONTROL_PORT_WRITE_TO_FILE,
                     SOCKS_PORT, DATA_DIRECTORY, HASHED_CONTROL_PASSWORD, DISABLE_NETWORK, CONFLUX_ENABLED)
             .map(key -> key.toLowerCase(Locale.ROOT))
@@ -74,21 +75,32 @@ public class TorrcClientConfigFactory {
     private final PasswordDigest hashedControlPassword;
     // With the bridges of the Bisq configuration, Bisq also sets the torrc keys of the bridges.
     private final boolean usesBridges;
+    // The loopback ports on which Tor listens
+    private final int controlPort;
+    private final int socksPort;
 
     public TorrcClientConfigFactory(boolean isTestNetwork,
                                     Path dataDirPath,
                                     PasswordDigest hashedControlPassword,
-                                    boolean usesBridges) {
+                                    boolean usesBridges,
+                                    int controlPort,
+                                    int socksPort) {
         this.isTestNetwork = isTestNetwork;
         this.dataDirPath = dataDirPath;
         this.hashedControlPassword = hashedControlPassword;
         this.usesBridges = usesBridges;
+        this.controlPort = controlPort;
+        this.socksPort = socksPort;
     }
 
     public Map<String, String> torrcClientConfigMap(Map<String, String> torrcOverrides) {
         Map<String, String> torrcClientConfig = clientTorrcGenerator().generate();
         // Tor writes its state less often, as in Tor Browser and in netlayer. A torrc override can change it.
         torrcClientConfig.put(AVOID_DISK_WRITES, "1");
+        // Tor writes its log to standard output, which Bisq redirects to a file outside the data directory of Tor. A
+        // log file in the data directory could be replaced with a link by a Tor which may write there. A torrc
+        // override can change it.
+        torrcClientConfig.put(LOG, (isTestNetwork ? "debug" : "notice") + " stdout");
         torrcOverrides.forEach((key, value) -> {
             // The rules below compare option names. Tor reads "+Key", "/Key" and "Key#x" as a change of the option
             // Key, which they would bypass.
@@ -107,6 +119,11 @@ public class TorrcClientConfigFactory {
                 torrcClientConfig.put(key, value);
             }
         });
+        // Bisq chooses the ports, because sandy needs them on its command line. The port file which Tor would write
+        // into its data directory is untrusted input once Tor runs in a sandbox which may write that directory.
+        torrcClientConfig.remove(CONTROL_PORT_WRITE_TO_FILE);
+        torrcClientConfig.put(CONTROL_PORT, "127.0.0.1:" + controlPort);
+        torrcClientConfig.put(SOCKS_PORT, "127.0.0.1:" + socksPort);
         torrcClientConfig.put(DISABLE_NETWORK, "1");
         torrcClientConfig.put(CONFLUX_ENABLED, "0");
         return torrcClientConfig;

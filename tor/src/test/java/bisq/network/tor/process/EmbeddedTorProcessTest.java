@@ -22,6 +22,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -84,6 +85,24 @@ class EmbeddedTorProcessTest {
         assertThat(EmbeddedTorProcess.inSessionOfItsOwn(command, Optional.of(setsidPath)))
                 .containsExactly(setsidPath.toString(), "/usr/bin/tor", "-f", "torrc");
         assertThat(EmbeddedTorProcess.inSessionOfItsOwn(command, Optional.empty())).isEqualTo(command);
+    }
+
+    @Test
+    void theLogIsKeptAcrossStartsUpToASizeLimit() throws IOException {
+        assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"));
+        Path stdoutLogPath = tempDir.resolve("tor-stdout.log");
+
+        runToCompletion("echo first", stdoutLogPath);
+        runToCompletion("echo second", stdoutLogPath);
+        assertThat(Files.readAllLines(stdoutLogPath)).containsExactly("first", "second");
+
+        try (RandomAccessFile file = new RandomAccessFile(stdoutLogPath.toFile(), "rw")) {
+            file.setLength(10 * 1024 * 1024 + 1);
+        }
+        runToCompletion("echo third", stdoutLogPath);
+
+        assertThat(Files.readAllLines(stdoutLogPath)).containsExactly("third");
+        assertThat(Files.size(tempDir.resolve("tor-stdout.log.1"))).isEqualTo(10 * 1024 * 1024 + 1);
     }
 
     private void runToCompletion(String shellCommand, Path stdoutLogPath) {

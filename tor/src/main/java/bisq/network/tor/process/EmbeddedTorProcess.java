@@ -26,8 +26,10 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.ArrayList;
 import java.util.List;
@@ -40,6 +42,8 @@ import java.util.function.Consumer;
 public class EmbeddedTorProcess {
     public static final String ARG_OWNER_PID = "__OwningControllerProcess";
     private static final int MAX_LOG_SNIPPET_BYTES = 4096;
+    // Above this size, the log of the last starts is moved to a single backup before the next start.
+    private static final long MAX_STDOUT_LOG_BYTES = 10 * 1024 * 1024;
 
     private final List<String> command;
     private final Path workingDirPath;
@@ -84,7 +88,9 @@ public class EmbeddedTorProcess {
         processBuilder.directory(workingDirPath.toFile());
         environmentAdjuster.accept(processBuilder.environment());
         processBuilder.redirectError(stderrLogPath.toFile());
-        processBuilder.redirectOutput(stdoutLogPath.toFile());
+        // The log of Tor. It is kept across starts, up to a size limit.
+        rotateStdoutLogIfTooLarge();
+        processBuilder.redirectOutput(ProcessBuilder.Redirect.appendTo(stdoutLogPath.toFile()));
 
         try {
             Process torProcess = processBuilder.start();
@@ -111,6 +117,25 @@ public class EmbeddedTorProcess {
         sessionCommand.add(setsidPath.get().toAbsolutePath().toString());
         sessionCommand.addAll(command);
         return sessionCommand;
+    }
+
+    /**
+     * @return the file next to the log of Tor to which the log is moved before a start when it exceeds its size limit
+     */
+    public static Path rotatedStdoutLogPath(Path stdoutLogPath) {
+        return stdoutLogPath.resolveSibling(stdoutLogPath.getFileName() + ".1");
+    }
+
+    private void rotateStdoutLogIfTooLarge() {
+        try {
+            if (Files.isRegularFile(stdoutLogPath, LinkOption.NOFOLLOW_LINKS) &&
+                    Files.size(stdoutLogPath) > MAX_STDOUT_LOG_BYTES) {
+                Path backupPath = rotatedStdoutLogPath(stdoutLogPath);
+                Files.move(stdoutLogPath, backupPath, StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (IOException e) {
+            log.warn("Could not move the Tor log {} to a backup", stdoutLogPath, e);
+        }
     }
 
     public void waitUntilExited() {
