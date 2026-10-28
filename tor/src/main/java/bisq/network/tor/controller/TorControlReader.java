@@ -23,9 +23,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 /**
- * Reads the lines that Tor sends on the control connection. The lines are untrusted input, from an external Tor or
- * from a process which took the control port: a malformed or oversized line must not stop the reader, use unbounded
- * memory, or block the callers of {@link #readLine()} forever.
+ * Reads the lines that Tor sends on the control connection. With the sandbox, Tor is not trusted: a malformed or
+ * oversized line must not stop the reader, use unbounded memory, or block the callers of {@link #readLine()} forever.
  * <p>
  * The listeners of events and of the end of the connection run on the thread of this reader, which also delivers the
  * replies to the commands. A listener must therefore return quickly and must not send a command or add or remove a

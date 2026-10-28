@@ -47,7 +47,8 @@ public class TorTransportConfig {
                 parseDirectoryAuthorities(config.getList("directoryAuthorities")),
                 parseTorrcOverrideConfig(config.getConfig("torrcOverrides")),
                 config.getBoolean("useExternalTor"),
-                parseBridgeConfig(config)
+                parseBridgeConfig(config),
+                TorSandboxConfig.from(config)
         );
     }
 
@@ -106,6 +107,8 @@ public class TorTransportConfig {
     private final boolean useExternalTor;
     // Only for the Tor which Bisq starts
     private final BridgeConfig bridgeConfig;
+    // Only for the Tor which Bisq starts
+    private final TorSandboxConfig sandboxConfig;
 
     public TorTransportConfig(Path dataDirPath,
                               int bootstrapTimeout,
@@ -132,6 +135,26 @@ public class TorTransportConfig {
                               Map<String, String> torrcOverrides,
                               boolean useExternalTor,
                               BridgeConfig bridgeConfig) {
+        this(dataDirPath,
+                bootstrapTimeout,
+                hsUploadTimeout,
+                isTestNetwork,
+                directoryAuthorities,
+                torrcOverrides,
+                useExternalTor,
+                bridgeConfig,
+                TorSandboxConfig.DISABLED);
+    }
+
+    public TorTransportConfig(Path dataDirPath,
+                              int bootstrapTimeout,
+                              int hsUploadTimeout,
+                              boolean isTestNetwork,
+                              Set<DirectoryAuthority> directoryAuthorities,
+                              Map<String, String> torrcOverrides,
+                              boolean useExternalTor,
+                              BridgeConfig bridgeConfig,
+                              TorSandboxConfig sandboxConfig) {
         this.dataDirPath = dataDirPath;
         this.bootstrapTimeout = bootstrapTimeout;
         this.hsUploadTimeout = hsUploadTimeout;
@@ -140,5 +163,6 @@ public class TorTransportConfig {
         this.torrcOverrides = torrcOverrides;
         this.useExternalTor = useExternalTor;
         this.bridgeConfig = bridgeConfig;
+        this.sandboxConfig = sandboxConfig;
     }
 }

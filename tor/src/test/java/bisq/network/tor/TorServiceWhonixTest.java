@@ -114,6 +114,7 @@ class TorServiceWhonixTest {
                 .anyMatch(command -> command.startsWith("ADD_ONION ED25519-V3:") &&
                         command.endsWith(" Port=9999," + serverSocket.getLocalPort()));
         assertThat(torService.getTorVersion()).contains("0.4.8.16");
+        assertThat(torService.getSandboxStatus()).isEqualTo(TorSandboxStatus.EXTERNAL_TOR);
     }
 
     @Test

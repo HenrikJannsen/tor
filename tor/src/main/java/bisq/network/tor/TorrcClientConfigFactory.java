@@ -28,6 +28,8 @@ import lombok.Builder;
 import lombok.extern.slf4j.Slf4j;
 
 import java.nio.file.Path;
+import java.util.Collection;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -65,6 +67,15 @@ public class TorrcClientConfigFactory {
     private static final Set<String> CONTROL_ACCESS_KEYS = Set.of("controlsocket", "controlsocketsgroupwritable",
             "owningcontrollerfd", "hashedcontrolsessionpassword", "cookieauthentication", "cookieauthfile",
             "cookieauthfilegroupreadable");
+
+    // Tor starts a process only for a pluggable transport (a managed proxy).
+    private static final Set<String> KEYS_STARTING_PROCESSES = Set.of("clienttransportplugin", "servertransportplugin");
+
+    // The options of the proxy through which Tor connects out. In its sandbox Tor connects out only through the egress
+    // broker of sandy, which Bisq sets as Socks5Proxy.
+    private static final Set<String> PROXY_KEYS = Set.of("socks4proxy", "socks5proxy", "socks5proxyusername",
+            "socks5proxypassword", "httpsproxy", "httpsproxyauthenticator", "httpproxy", "httpproxyauthenticator",
+            "tcpproxy");
 
     private static final Set<String> BRIDGE_KEYS = BridgeTorrcEntries.KEYS.stream()
             .map(key -> key.toLowerCase(Locale.ROOT))
@@ -127,6 +138,23 @@ public class TorrcClientConfigFactory {
         torrcClientConfig.put(DISABLE_NETWORK, "1");
         torrcClientConfig.put(CONFLUX_ENABLED, "0");
         return torrcClientConfig;
+    }
+
+    /**
+     * Whether Tor starts other processes with torrc entries of these keys. The option names must match exactly: a
+     * missed abbreviation makes a sandboxed start fail, because Tor cannot start the transport in the sandbox, while
+     * a wrong match would run Tor without the sandbox.
+     */
+    public static boolean startsChildProcesses(Collection<String> torrcKeys) {
+        return torrcKeys.stream().anyMatch(key -> KEYS_STARTING_PROCESSES.contains(key.toLowerCase(Locale.ROOT)));
+    }
+
+    /**
+     * The keys of {@code torrcKeys} that set the proxy through which Tor connects out, also as an abbreviation, which
+     * Tor accepts.
+     */
+    public static List<String> proxyKeys(Collection<String> torrcKeys) {
+        return torrcKeys.stream().filter(key -> isPrefixOfAny(key, PROXY_KEYS)).sorted().toList();
     }
 
     // Tor reads the hidden options __ControlPort and __SocksPort, also abbreviated, as ControlPort and SocksPort. The

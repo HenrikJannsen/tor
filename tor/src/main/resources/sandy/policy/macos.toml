@@ -1,0 +1,45 @@
+# The sandbox of the embedded Tor under sandy 2.2 on macOS. See linux.toml for what TorSandboxPolicy
+# fills in. Tor and sandy must both be arm64 code on Apple silicon.
+version = 1
+
+[filesystem]
+system = "minimal"
+view = "policy"
+read = @read@
+read_exec = @read_exec@
+read_write = [@data@]
+
+[network]
+ip = "private"
+unix_sockets = "none"
+egress = { port = @egress_port@, reach = "public" }
+expose = [
+  { listen = @control_listen@, port = @control_port@ },
+  { listen = @socks_listen@, port = @socks_port@ },
+]
+forward = @forward@
+
+[process]
+signals = "isolated"
+children = "none"
+end_with_parent = true
+
+[environment]
+set = @environment@
+
+[linux]
+path_metadata = "deny"
+
+# Tor reaches its forwarded ports and the egress broker over IPv4 only, which closes the route to a
+# host of the local network whose IPv6 link-local address equals one of the Mac's. C Tor connects to
+# 127.0.0.1 with IPv4 sockets, so it costs Tor nothing.
+[macos]
+relays = "ipv4"
+
+# For a Mac that cannot give the base: the network of the host, without the egress broker.
+[[fallback]]
+name = "host-network"
+network.ip = "all"
+network.egress = "none"
+filesystem.view = "all"
+macos.relays = "dual-stack"

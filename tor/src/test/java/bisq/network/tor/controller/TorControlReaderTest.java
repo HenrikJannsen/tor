@@ -39,8 +39,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-// The lines on the control connection are untrusted input: an external Tor or a process which took the control port
-// sends them.
+// With the sandbox, the lines on the control connection come from a process which an attacker may control.
 class TorControlReaderTest {
     @Test
     void malformedEventsDoNotStopTheReader() {

@@ -17,10 +17,20 @@
 
 package bisq.network.tor.process;
 
+import java.util.OptionalInt;
+
 /**
- * The loopback ports of the control and SOCKS listeners of the embedded Tor. Bisq chooses them before it starts Tor.
+ * The loopback ports of the control and SOCKS listeners of the embedded Tor, and in the sandbox the port of sandy's
+ * egress broker. Bisq chooses them before it starts Tor.
+ *
+ * @param egress the port inside the sandbox on which sandy's egress broker listens and to which Tor connects as its
+ *               SOCKS5 proxy (sandy {@code network.egress}); empty without the sandbox
  */
-public record TorListenerPorts(PortMapping control, PortMapping socks) {
+public record TorListenerPorts(PortMapping control, PortMapping socks, OptionalInt egress) {
+    public TorListenerPorts(PortMapping control, PortMapping socks) {
+        this(control, socks, OptionalInt.empty());
+    }
+
     /**
      * Tor listens on {@code innerPort}. Bisq connects to {@code outerPort}. Inside the sandbox they differ, because
      * sandy relays from the outer to the inner port. Without the sandbox they are equal.

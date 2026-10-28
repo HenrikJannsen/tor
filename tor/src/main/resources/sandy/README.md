@@ -12,7 +12,8 @@ Windows `sandy.exe`), and writes its SHA-256 hash into `sandy/SHA256SUMS`. The p
 sandboxed start of Tor, Bisq installs the binary into the directory `sandy` of the Tor directory, which Tor cannot
 write, and checks its hash against `SHA256SUMS`.
 
-sandy has no published release yet, so the build cannot download and verify a binary. The build packages a binary only
+The library needs sandy 2.2 or newer: it passes the policy on standard input and uses its fallback levels and
+`check --json`. The build does not download and verify sandy releases yet. The build packages a binary only
 if the Gradle property `sandy.binary` names one, for example `-Psandy.binary=/path/to/sandy`, built from the signed tag
 of a sandy release. A relative path is relative to the directory `tor/`. The content of the binary is an input of the
 build, so a rebuilt binary at the same path is packaged again. A build without the property contains no sandy binary,

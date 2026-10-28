@@ -22,6 +22,7 @@ import lombok.extern.slf4j.Slf4j;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -50,6 +51,8 @@ public class EmbeddedTorProcess {
     private final Consumer<Map<String, String>> environmentAdjuster;
     private final Path stdoutLogPath;
     private final Path stderrLogPath;
+    // Written to the standard input of the process, which is then closed: the sandy policy of a sandboxed Tor
+    private final Optional<byte[]> standardInput;
     private Optional<Process> process = Optional.empty();
 
     /**
@@ -62,11 +65,25 @@ public class EmbeddedTorProcess {
                               Consumer<Map<String, String>> environmentAdjuster,
                               Path stdoutLogPath,
                               Path stderrLogPath) {
+        this(command, workingDirPath, environmentAdjuster, stdoutLogPath, stderrLogPath, Optional.empty());
+    }
+
+    /**
+     * @param standardInput written to the standard input of the process, which is then closed. sandy reads its
+     *                      policy there ({@code --policy -}) and gives the program the null device instead.
+     */
+    public EmbeddedTorProcess(List<String> command,
+                              Path workingDirPath,
+                              Consumer<Map<String, String>> environmentAdjuster,
+                              Path stdoutLogPath,
+                              Path stderrLogPath,
+                              Optional<byte[]> standardInput) {
         this.command = List.copyOf(command);
         this.workingDirPath = workingDirPath;
         this.environmentAdjuster = environmentAdjuster;
         this.stdoutLogPath = stdoutLogPath;
         this.stderrLogPath = stderrLogPath;
+        this.standardInput = standardInput.map(byte[]::clone);
     }
 
     /**
@@ -95,6 +112,11 @@ public class EmbeddedTorProcess {
         try {
             Process torProcess = processBuilder.start();
             process = Optional.of(torProcess);
+            if (standardInput.isPresent()) {
+                try (OutputStream input = torProcess.getOutputStream()) {
+                    input.write(standardInput.get());
+                }
+            }
         } catch (IOException e) {
             String program = processBuilder.command().get(0);
             log.warn("Could not start {}", program, e);
@@ -104,10 +126,10 @@ public class EmbeddedTorProcess {
 
     /**
      * On Linux and macOS a child process is in the process group of Bisq. A Ctrl+C in the terminal of Bisq would then
-     * also reach Tor, and Tor would exit at once, before the shutdown of Bisq has used it, for example to remove the
-     * offers of the user. setsid starts the command in a session of its own and executes it in its own process, which it
-     * does not fork as the child of Bisq is no group leader, so the process stays the one which Bisq stops. macOS has no
-     * setsid; there the command stays in the process group of Bisq.
+     * also reach Tor, or sandy, which forwards it, and Tor would exit at once, before the shutdown of Bisq has used it,
+     * for example to remove the offers of the user. setsid starts the command in a session of its own and executes it
+     * in its own process, which it does not fork as the child of Bisq is no group leader, so the process stays the one
+     * which Bisq stops. macOS has no setsid; there the command stays in the process group of Bisq.
      */
     static List<String> inSessionOfItsOwn(List<String> command, Optional<Path> setsidPath) {
         if (setsidPath.isEmpty()) {

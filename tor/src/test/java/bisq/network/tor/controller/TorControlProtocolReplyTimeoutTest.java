@@ -35,8 +35,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * The reply of Tor is untrusted input: a reply which arrives one line at a time, each line just before the timeout of
- * a line, must not hold a command forever.
+ * With the sandbox, Tor is not trusted: a reply which arrives one line at a time, each line just before the timeout
+ * of a line, must not hold a command forever.
  */
 @Timeout(10)
 class TorControlProtocolReplyTimeoutTest {

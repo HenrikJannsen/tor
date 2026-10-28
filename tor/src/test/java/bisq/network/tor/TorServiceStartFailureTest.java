@@ -19,17 +19,21 @@ package bisq.network.tor;
 
 import bisq.network.tor.process.EmbeddedTorProcess;
 import bisq.network.tor.process.TorStartupFailedException;
+import bisq.network.tor.sandbox.SandboxUnavailableException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.net.InetAddress;
+import java.net.ServerSocket;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -37,17 +41,55 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * A failed start names its reason in an exception without a cause, because Bisq 2 shows only the root cause of a
- * failed start.
+ * The embedded Tor can exit before it answers on its control port. When sandy started it, the exit can be a refusal of
+ * sandy, for example because another process took a port of the policy between the check and the start. Then the user
+ * needs the reason of sandy and the hint how to turn the sandbox off, as for every other sandbox failure.
  */
 @Timeout(30)
 class TorServiceStartFailureTest {
+    private static final String OPT_OUT_HINT = "Start Bisq with the option --useTorSandbox=false";
+
     @TempDir
     Path tempDir;
+    private int closedPort;
 
     @BeforeEach
-    void setUp() {
+    void setUp() throws IOException {
         assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"));
+        try (ServerSocket serverSocket = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))) {
+            closedPort = serverSocket.getLocalPort();
+        }
+    }
+
+    @Test
+    void aRefusalOfSandyIsASandboxFailureWithTheReasonAndTheHint() {
+        EmbeddedTorProcess process = start("echo 'sandy: the port 12345 is in use' >&2; exit 125");
+
+        assertThatThrownBy(() -> TorService.waitUntilControlPortAnswers(closedPort, process, Optional.of(OPT_OUT_HINT)))
+                .isInstanceOf(SandboxUnavailableException.class)
+                .hasMessageContaining("sandy did not start Tor")
+                .hasMessageContaining("the port 12345 is in use")
+                .hasMessageContaining(OPT_OUT_HINT)
+                .hasNoCause();
+    }
+
+    @Test
+    void anExitOfTorInTheSandboxIsAStartFailure() {
+        EmbeddedTorProcess process = start("echo 'Could not bind to 127.0.0.1:9050' >&2; exit 1");
+
+        assertThatThrownBy(() -> TorService.waitUntilControlPortAnswers(closedPort, process, Optional.of(OPT_OUT_HINT)))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("exited before it answered")
+                .hasMessageContaining("Could not bind to 127.0.0.1:9050");
+    }
+
+    @Test
+    void anExitWithTheStatusOfSandyWithoutTheSandboxIsAStartFailure() {
+        EmbeddedTorProcess process = start("exit 125");
+
+        assertThatThrownBy(() -> TorService.waitUntilControlPortAnswers(closedPort, process, Optional.empty()))
+                .isInstanceOf(IOException.class)
+                .hasMessageContaining("exited before it answered");
     }
 
     // Bisq 2 shows only the root cause of a failed start, so the exception which names the reason has no cause.
@@ -70,6 +112,21 @@ class TorServiceStartFailureTest {
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Could not read " + torDir.resolve("external_tor.config"))
                 .hasNoCause();
+    }
+
+    @Test
+    void aFailureToWriteTheConfigurationOfOpenSslNamesItsReason() throws Exception {
+        Path torDir = Files.createDirectories(tempDir.resolve("tor"));
+        // The start does not install the bundle of the jar over the fake one.
+        try (FakeBundledTor ignored = FakeBundledTor.install(torDir)) {
+            Files.createDirectories(torDir.resolve("openssl.cnf"));
+
+            assertThatThrownBy(() -> createTorService(torDir).initialize())
+                    .isInstanceOf(TorStartupFailedException.class)
+                    .hasMessageContaining("Couldn't write " + torDir.resolve("openssl.cnf") + ": ")
+                    .hasMessageContaining("FileSystemException")
+                    .hasNoCause();
+        }
     }
 
     @Test
@@ -102,5 +159,13 @@ class TorServiceStartFailureTest {
                 return true;
             }
         }, false);
+    }
+
+    private EmbeddedTorProcess start(String shellCommand) {
+        var process = new EmbeddedTorProcess(List.of("/bin/sh", "-c", shellCommand), tempDir, environment -> {
+        }, tempDir.resolve("tor-stdout.log"), tempDir.resolve("tor-stderr.log"));
+        process.start();
+        process.waitUntilExited();
+        return process;
     }
 }
