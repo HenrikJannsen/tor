@@ -23,10 +23,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
-import java.net.ConnectException;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.util.List;
 import java.util.Set;
@@ -128,8 +128,8 @@ class TorControlProtocolConnectTest {
                 socket.connect(serverSocket.getLocalSocketAddress(), CONNECT_TIMEOUT_MS);
             } catch (SocketTimeoutException e) {
                 return serverSocket;
-            } catch (ConnectException e) {
-                assumeTrue(false, "This system refuses a connection to a listener whose backlog is full");
+            } catch (SocketException e) {
+                assumeTrue(false, "This system rejects a connection to a listener whose backlog is full: " + e);
             }
         }
         assumeTrue(false, "The backlog of the listener did not fill up");
