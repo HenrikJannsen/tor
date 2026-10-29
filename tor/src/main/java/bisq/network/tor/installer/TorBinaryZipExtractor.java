@@ -28,7 +28,11 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.stream.Stream;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 @Slf4j
 public class TorBinaryZipExtractor {
@@ -39,6 +43,28 @@ public class TorBinaryZipExtractor {
 
     public TorBinaryZipExtractor(Path destDirPath) {
         this.destDirPath = destDirPath;
+    }
+
+    /**
+     * The names of the files and directories which the bundle of this build installs at the top of its directory, or
+     * an empty set if the build has no bundle.
+     */
+    public static Set<String> readTopLevelNames() throws IOException {
+        InputStream zipFileInputStream = TorBinaryZipExtractor.class.getClassLoader().getResourceAsStream(ARCHIVE_FILENAME);
+        if (zipFileInputStream == null) {
+            return Set.of();
+        }
+        Set<String> names = new HashSet<>();
+        try (ZipInputStream zipInputStream = new ZipInputStream(zipFileInputStream)) {
+            ZipEntry zipEntry;
+            while ((zipEntry = zipInputStream.getNextEntry()) != null) {
+                String name = zipEntry.getName().split("/", 2)[0];
+                if (!name.isEmpty()) {
+                    names.add(name);
+                }
+            }
+        }
+        return names;
     }
 
     public void extractBinary() throws IOException {

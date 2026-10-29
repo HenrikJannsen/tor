@@ -1,0 +1,47 @@
+# The sandbox of the embedded Tor under sandy 2.4.1 on Windows. See linux.toml for what
+# TorSandboxPolicy fills in, here also the AppContainer names: every level needs one of its own.
+# Windows cannot hide the paths outside the policy, so there is no view. tor.exe must start in a
+# session whose window station admits AppContainers, such as a desktop session: in another one,
+# for example session 0 of the services or a session over SSH, user32.dll cannot initialize in an
+# AppContainer. sandy check only warns in session 0, without refusing, and does not detect other
+# such window stations (sandy docs/windows.md, limitation 13).
+version = 1
+
+[filesystem]
+system = "minimal"
+read = @read@
+read_exec = @read_exec@
+read_write = [@data@]
+
+[network]
+ip = "private"
+unix_sockets = "none"
+egress = { port = @egress_port@, reach = "public" }
+expose = [
+  { listen = @control_listen@, port = @control_port@ },
+  { listen = @socks_listen@, port = @socks_port@ },
+]
+forward = @forward@
+
+[process]
+signals = "isolated"
+children = "none"
+end_with_parent = true
+
+[environment]
+set = @environment@
+
+[linux]
+path_metadata = "deny"
+
+[windows]
+appcontainer_name = "@appcontainer_name@"
+# tor.exe loads user32.dll, so under win32k = "deny" it ends at once with STATUS_DLL_INIT_FAILED
+# (measured with Tor 0.4.9.14).
+win32k = "allow"
+
+[[fallback]]
+name = "host-network"
+network.ip = "all"
+network.egress = "none"
+windows.appcontainer_name = "@appcontainer_name@.h"

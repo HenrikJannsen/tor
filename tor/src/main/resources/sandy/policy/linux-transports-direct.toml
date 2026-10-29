@@ -1,0 +1,49 @@
+# The sandbox of the embedded Tor under sandy 2.4.1 on Linux with pluggable transports that resolve
+# names or use UDP (meek_lite, webtunnel, snowflake, conjure), which the egress broker does not
+# carry: the network of the host, without the egress broker. Otherwise as linux-transports.toml:
+# Tor may start the programs of the transports, and sandy ends them with Tor. On Linux sandy adds
+# the files for name resolution and the CA certificates to the system set with this network.
+version = 1
+
+[filesystem]
+system = "minimal"
+view = "policy"
+read = @read@
+read_exec = @read_exec@
+read_write = [@data@]
+
+[network]
+ip = "all"
+unix_sockets = "none"
+expose = [
+  { listen = @control_listen@, port = @control_port@ },
+  { listen = @socks_listen@, port = @socks_port@ },
+]
+forward = @forward@
+
+[process]
+signals = "isolated"
+children = "contained"
+end_with_parent = true
+
+[environment]
+set = @environment@
+
+[linux]
+path_metadata = "deny"
+
+# User namespaces restricted or turned off: without the view.
+[[fallback]]
+name = "host-network"
+filesystem.view = "all"
+
+# As host-network, below Landlock ABI 6: sandy cannot contain the transports there, so they can
+# outlive Tor until their standard input closes; Tor can signal the processes of this user, and
+# sandy does not end it with Bisq (Tor's owner check, and from the bootstrap on Bisq's ownership of
+# the control connection, still do).
+[[fallback]]
+name = "host-network-signals"
+filesystem.view = "all"
+process.signals = "any"
+process.children = "allowed"
+process.end_with_parent = false

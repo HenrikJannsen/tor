@@ -28,6 +28,8 @@ import lombok.Builder;
 import lombok.extern.slf4j.Slf4j;
 
 import java.nio.file.Path;
+import java.util.Collection;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -46,10 +48,11 @@ import static com.google.common.base.Preconditions.checkArgument;
 @Slf4j
 @Builder
 public class TorrcClientConfigFactory {
-    // TorService reads the control port from the file which Tor writes, authenticates with the password of this start
-    // and checks its hash, and gives each stream of the SOCKS listener its own circuit. An override of these keys
-    // would break the start of Tor or this isolation.
+    // TorService chooses the control and SOCKS ports, authenticates with the password of this start and checks its
+    // hash, and gives each stream of the SOCKS listener its own circuit. An override of these keys would break the
+    // start of Tor or this isolation.
     private static final String AVOID_DISK_WRITES = "AvoidDiskWrites";
+    private static final String LOG = "Log";
     private static final Set<String> KEYS_OWNED_BY_BISQ = Stream.of(CONTROL_PORT, CONTROL_PORT_WRITE_TO_FILE,
                     SOCKS_PORT, DATA_DIRECTORY, HASHED_CONTROL_PASSWORD, DISABLE_NETWORK, CONFLUX_ENABLED)
             .map(key -> key.toLowerCase(Locale.ROOT))
@@ -65,6 +68,18 @@ public class TorrcClientConfigFactory {
             "owningcontrollerfd", "hashedcontrolsessionpassword", "cookieauthentication", "cookieauthfile",
             "cookieauthfilegroupreadable");
 
+    // Tor starts a process only for a pluggable transport (a managed proxy).
+    private static final Set<String> KEYS_STARTING_PROCESSES = Set.of("clienttransportplugin", "servertransportplugin");
+
+    // The options of the proxy through which Tor connects out. In its sandbox Tor connects out only through the egress
+    // broker of sandy, which Bisq sets as Socks5Proxy.
+    private static final Set<String> PROXY_KEYS = Set.of("socks4proxy", "socks5proxy", "socks5proxyusername",
+            "socks5proxypassword", "httpsproxy", "httpsproxyauthenticator", "httpproxy", "httpproxyauthenticator",
+            "tcpproxy");
+
+    // The options which name the GeoIP files of Tor. In its sandbox Tor reads only the files of its installation.
+    private static final Set<String> GEOIP_FILE_KEYS = Set.of("geoipfile", "geoipv6file");
+
     private static final Set<String> BRIDGE_KEYS = BridgeTorrcEntries.KEYS.stream()
             .map(key -> key.toLowerCase(Locale.ROOT))
             .collect(Collectors.toUnmodifiableSet());
@@ -74,21 +89,32 @@ public class TorrcClientConfigFactory {
     private final PasswordDigest hashedControlPassword;
     // With the bridges of the Bisq configuration, Bisq also sets the torrc keys of the bridges.
     private final boolean usesBridges;
+    // The loopback ports on which Tor listens
+    private final int controlPort;
+    private final int socksPort;
 
     public TorrcClientConfigFactory(boolean isTestNetwork,
                                     Path dataDirPath,
                                     PasswordDigest hashedControlPassword,
-                                    boolean usesBridges) {
+                                    boolean usesBridges,
+                                    int controlPort,
+                                    int socksPort) {
         this.isTestNetwork = isTestNetwork;
         this.dataDirPath = dataDirPath;
         this.hashedControlPassword = hashedControlPassword;
         this.usesBridges = usesBridges;
+        this.controlPort = controlPort;
+        this.socksPort = socksPort;
     }
 
     public Map<String, String> torrcClientConfigMap(Map<String, String> torrcOverrides) {
         Map<String, String> torrcClientConfig = clientTorrcGenerator().generate();
         // Tor writes its state less often, as in Tor Browser and in netlayer. A torrc override can change it.
         torrcClientConfig.put(AVOID_DISK_WRITES, "1");
+        // Tor writes its log to standard output, which Bisq redirects to a file outside the data directory of Tor. A
+        // log file in the data directory could be replaced with a link by a Tor which may write there. A torrc
+        // override can change it.
+        torrcClientConfig.put(LOG, (isTestNetwork ? "debug" : "notice") + " stdout");
         torrcOverrides.forEach((key, value) -> {
             // The rules below compare option names. Tor reads "+Key", "/Key" and "Key#x" as a change of the option
             // Key, which they would bypass.
@@ -107,13 +133,46 @@ public class TorrcClientConfigFactory {
                 torrcClientConfig.put(key, value);
             }
         });
+        // Bisq chooses the ports, because sandy needs them on its command line. The port file which Tor would write
+        // into its data directory is untrusted input once Tor runs in a sandbox which may write that directory.
+        torrcClientConfig.remove(CONTROL_PORT_WRITE_TO_FILE);
+        torrcClientConfig.put(CONTROL_PORT, "127.0.0.1:" + controlPort);
+        torrcClientConfig.put(SOCKS_PORT, "127.0.0.1:" + socksPort);
         torrcClientConfig.put(DISABLE_NETWORK, "1");
         torrcClientConfig.put(CONFLUX_ENABLED, "0");
         return torrcClientConfig;
     }
 
+    /**
+     * The keys of the torrc overrides {@code torrcKeys} which stay in the torrc and make Tor start programs, also as an
+     * abbreviation, which Tor accepts. With the bridges of the Bisq configuration, the overrides of the bridge keys
+     * are ignored, which leaves {@code ServerTransportPlugin}.
+     */
+    public static List<String> processStartingKeys(Collection<String> torrcKeys, boolean usesBridges) {
+        return torrcKeys.stream()
+                .filter(key -> isPrefixOfAny(key, KEYS_STARTING_PROCESSES))
+                .filter(key -> !(usesBridges && isPrefixOfAny(key, BRIDGE_KEYS)))
+                .sorted()
+                .toList();
+    }
+
+    /**
+     * The keys of {@code torrcKeys} that set the proxy through which Tor connects out, also as an abbreviation, which
+     * Tor accepts.
+     */
+    public static List<String> proxyKeys(Collection<String> torrcKeys) {
+        return torrcKeys.stream().filter(key -> isPrefixOfAny(key, PROXY_KEYS)).sorted().toList();
+    }
+
     // Tor reads the hidden options __ControlPort and __SocksPort, also abbreviated, as ControlPort and SocksPort. The
     // other keys of Bisq have no hidden form: Tor refuses __DataDirectory, for example, as an unknown option.
+    /**
+     * The keys of {@code torrcKeys} that name a GeoIP file, also as an abbreviation, which Tor accepts.
+     */
+    public static List<String> geoIpFileKeys(Collection<String> torrcKeys) {
+        return torrcKeys.stream().filter(key -> isPrefixOfAny(key, GEOIP_FILE_KEYS)).sorted().toList();
+    }
+
     private static boolean isOwnedByBisq(String key) {
         return isPrefixOfAny(key.replaceFirst("^_+", ""), KEYS_OWNED_BY_BISQ);
     }

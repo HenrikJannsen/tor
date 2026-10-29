@@ -23,11 +23,14 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -92,6 +95,27 @@ class FileUtilsTest {
         assertThat(FileUtils.readUTF8String(filePath)).isEqualTo("second");
     }
 
+    // A process which has the old file open, or rights on it such as a sandboxed Tor, cannot read the new content.
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void writeToPathAtomicallyReplacesTheFileWithANewOwnerOnlyFile(@TempDir Path tempDirPath) throws IOException {
+        Path filePath = tempDirPath.resolve("torrc");
+        FileUtils.writeToPathAtomically("a longer first content", filePath);
+        Object firstFileKey = Files.readAttributes(filePath, BasicFileAttributes.class).fileKey();
+
+        try (InputStream oldFile = Files.newInputStream(filePath)) {
+            FileUtils.writeToPathAtomically("second", filePath);
+
+            assertThat(new String(oldFile.readAllBytes(), StandardCharsets.UTF_8)).isEqualTo("a longer first content");
+            assertThat(Files.readAttributes(filePath, BasicFileAttributes.class).fileKey()).isNotEqualTo(firstFileKey);
+        }
+        assertThat(FileUtils.readUTF8String(filePath)).isEqualTo("second");
+        assertThat(PosixFilePermissions.toString(Files.getPosixFilePermissions(filePath))).isEqualTo("rw-------");
+        try (Stream<Path> files = Files.list(tempDirPath)) {
+            assertThat(files).containsExactly(filePath);
+        }
+    }
+
     @Test
     void malformedUtf8IsRejected(@TempDir Path tempDirPath) throws IOException {
         Path filePath = Files.write(tempDirPath.resolve("file"), new byte[]{(byte) 0xC3, (byte) 0x28});
@@ -123,5 +147,25 @@ class FileUtilsTest {
         FileUtils.deleteFileAndWait(filePath, 1000);
 
         assertThat(filePath).doesNotExist();
+    }
+
+    @Test
+    @EnabledOnOs({OS.LINUX, OS.MAC})
+    void aRecursiveDeleteRemovesLinksButNotTheirTargets(@TempDir Path tempDirPath) throws IOException {
+        Path outsideDir = Files.createDirectories(tempDirPath.resolve("outside"));
+        Path outsideFile = Files.writeString(outsideDir.resolve("keep"), "keep");
+        Path dir = Files.createDirectories(tempDirPath.resolve("data").resolve("sub"));
+        Files.writeString(dir.resolve("file"), "content");
+        Files.createSymbolicLink(dir.resolve("linkToDir"), outsideDir);
+        Files.createSymbolicLink(dir.resolve("linkToFile"), outsideFile);
+        Path linkAsRoot = Files.createSymbolicLink(tempDirPath.resolve("root-link"), outsideDir);
+
+        FileUtils.deleteRecursively(tempDirPath.resolve("data"));
+        FileUtils.deleteRecursively(linkAsRoot);
+        FileUtils.deleteRecursively(tempDirPath.resolve("missing"));
+
+        assertThat(tempDirPath.resolve("data")).doesNotExist();
+        assertThat(linkAsRoot).doesNotExist();
+        assertThat(outsideFile).hasContent("keep");
     }
 }

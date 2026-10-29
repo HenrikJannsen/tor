@@ -28,6 +28,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
+import java.io.SequenceInputStream;
 import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -39,8 +40,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-// The lines on the control connection are untrusted input: an external Tor or a process which took the control port
-// sends them.
+// With the sandbox, the lines on the control connection come from a process which an attacker may control.
 class TorControlReaderTest {
     @Test
     void malformedEventsDoNotStopTheReader() {
@@ -170,29 +170,36 @@ class TorControlReaderTest {
         }
         byte[] bytes = lines.toString().getBytes(StandardCharsets.US_ASCII);
         AtomicLong bytesRead = new AtomicLong();
-        InputStream input = new FilterInputStream(new ByteArrayInputStream(bytes)) {
-            @Override
-            public int read(byte[] buffer, int offset, int length) throws IOException {
-                int read = super.read(buffer, offset, length);
-                bytesRead.addAndGet(Math.max(read, 0));
-                return read;
+        // Keep the connection open after the last reply. Ending it while the queue is full deliberately discards
+        // unread replies, which is covered by the separate connection-end test below.
+        try (PipedOutputStream keepOpen = new PipedOutputStream();
+             InputStream input = new FilterInputStream(new SequenceInputStream(
+                     new ByteArrayInputStream(bytes), new PipedInputStream(keepOpen))) {
+                 @Override
+                 public int read(byte[] buffer, int offset, int length) throws IOException {
+                     int read = super.read(buffer, offset, length);
+                     bytesRead.addAndGet(Math.max(read, 0));
+                     return read;
+                 }
+             }) {
+            TorControlReader reader = new TorControlReader();
+            reader.start(input);
+            try {
+                long readBefore;
+                do {
+                    readBefore = bytesRead.get();
+                    Thread.sleep(200);
+                } while (bytesRead.get() != readBefore || readBefore == 0);
+                // The queue and the buffer of the reader, far less than all lines
+                assertThat(bytesRead.get()).isLessThan(bytes.length / 2);
+
+                for (int i = 0; i < numLines; i++) {
+                    assertThat(reader.readLine()).startsWith("250-line" + i + "=");
+                }
+            } finally {
+                reader.close();
             }
-        };
-        TorControlReader reader = new TorControlReader();
-        reader.start(input);
-
-        long readBefore;
-        do {
-            readBefore = bytesRead.get();
-            Thread.sleep(200);
-        } while (bytesRead.get() != readBefore || readBefore == 0);
-        // The queue and the buffer of the reader, far less than all lines
-        assertThat(bytesRead.get()).isLessThan(bytes.length / 2);
-
-        for (int i = 0; i < numLines; i++) {
-            assertThat(reader.readLine()).startsWith("250-line" + i + "=");
         }
-        reader.close();
     }
 
     @Test

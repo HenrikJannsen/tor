@@ -35,8 +35,8 @@ import java.util.stream.Stream;
 /**
  * The Tor expert bundle for macOS ships its programs and libraries without a code signature; inside Tor Browser the
  * signature of the app covers them. On Apple silicon the kernel kills unsigned arm64 code at its first instruction
- * (SIGKILL, so Tor writes nothing). An ad-hoc signature is enough, so the installer signs every Mach-O file of the
- * bundle that has no signature, and keeps a signature that is there.
+ * (SIGKILL, so Tor writes nothing), also outside the sandbox. An ad-hoc signature is enough, so the installer signs every
+ * Mach-O file of the bundle that has no signature, and keeps a signature that is there.
  */
 @Slf4j
 final class MacOsCodeSignature {

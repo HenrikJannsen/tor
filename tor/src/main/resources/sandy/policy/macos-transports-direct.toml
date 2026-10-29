@@ -1,0 +1,45 @@
+# The sandbox of the embedded Tor under sandy 2.4 on macOS with pluggable transports, for every
+# transport: the private network of sandy has no loopback on macOS on which Tor could reach its
+# transports, so Tor and the transports get the network of the host, without the egress broker. Tor
+# may start the programs of the transports, which TorSandboxPolicy adds to read_exec, and sandy ends
+# them with Tor. Tor starts them with fork and exec, which contained allows (it denies posix_spawn).
+version = 1
+
+[filesystem]
+system = "minimal"
+view = "policy"
+read = @read@
+read_exec = @read_exec@
+read_write = [@data@]
+
+[network]
+ip = "all"
+unix_sockets = "none"
+expose = [
+  { listen = @control_listen@, port = @control_port@ },
+  { listen = @socks_listen@, port = @socks_port@ },
+]
+forward = @forward@
+
+[process]
+signals = "isolated"
+children = "contained"
+end_with_parent = true
+
+[environment]
+set = @environment@
+
+[linux]
+path_metadata = "deny"
+
+[macos]
+# The certificate verifier of the system, which runs in trustd, for the transports which verify
+# their server only with it: webtunnel fails with "x509: OSStatus -26276" without it (measured with
+# lyrebird 0.8.1). TorSandboxPolicy names it only for them, not for obfs4, which uses no TLS, nor
+# for meek_lite, which verifies with a root certificate of its own. The service fetches the URLs
+# that a certificate names, which ip = "all" reaches anyway, and makes no certificate trusted
+# (docs/macos.md of sandy, "Services a policy can allow").
+mach_services = @mach_services@
+
+# No fallback level: the base already has the network of the host, and a Mac gives the view whenever
+# Unix sockets are denied, so a level without the view would fail wherever the base fails.

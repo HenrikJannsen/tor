@@ -36,7 +36,7 @@ public final class BundledTorLibraries {
     }
 
     /**
-     * The variables for the libraries of the bundle.
+     * The variables for the libraries of the bundle, the whole environment which a sandboxed Tor gets for them.
      *
      * @throws TorStartupFailedException if the loader cannot take the binary directory from LD_LIBRARY_PATH
      */
@@ -45,8 +45,8 @@ public final class BundledTorLibraries {
     }
 
     /**
-     * Prepares the environment of Tor, which starts with the environment of Bisq. Every loader variable of Bisq's
-     * environment is removed, so that it loads no code into Tor.
+     * Prepares the environment of a Tor without the sandbox, which starts with the environment of Bisq. Every loader
+     * variable of Bisq's environment is removed, so that it loads no code into Tor.
      *
      * @throws TorStartupFailedException if the loader cannot take the binary directory from LD_LIBRARY_PATH
      */
@@ -61,7 +61,7 @@ public final class BundledTorLibraries {
         }
         String path = binaryDirPath.toAbsolutePath().toString();
         // The loader splits LD_LIBRARY_PATH at ":" and ";", and searches a part which is not absolute relative to the
-        // working directory of Tor.
+        // working directory of Tor, which in the sandbox is the data directory that Tor can write.
         if (path.contains(":") || path.contains(";")) {
             throw new TorStartupFailedException("Tor cannot load its libraries from " + path + ", because the path " +
                     "contains \":\" or \";\". Choose a data directory for Bisq without these characters.");

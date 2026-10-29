@@ -199,7 +199,7 @@ public class TorController {
                 }
                 if (System.currentTimeMillis() >= deadline) {
                     throw new TorBootstrapFailedException("The external Tor did not bootstrap within " +
-                            bootstrapTimeout / 1000 + " seconds. Its last state: " + bootstrapPhase);
+                            bootstrapTimeout / 1000 + " seconds. " + TorControlLogFormat.quoteOfTor(bootstrapPhase));
                 }
                 Thread.sleep(BOOTSTRAP_POLL_INTERVAL_MS);
                 bootstrapPhase = torControlProtocol.getInfo(BOOTSTRAP_PHASE_KEY);
@@ -402,8 +402,8 @@ public class TorController {
     static List<SocksListener> parseSocksListeners(String socksListenersReply) {
         String prefix = "250-" + SOCKS_LISTENERS_KEY + "=";
         if (!socksListenersReply.startsWith(prefix)) {
-            throw new ControlCommandFailedException("Invalid reply to GETINFO " + SOCKS_LISTENERS_KEY + ": " +
-                    socksListenersReply);
+            throw new ControlCommandFailedException("Invalid reply to GETINFO " + SOCKS_LISTENERS_KEY + ". " +
+                    TorControlLogFormat.quoteOfTor(socksListenersReply));
         }
         List<SocksListener> listeners = new ArrayList<>();
         Matcher listenerMatcher = QUOTED_STRING.matcher(socksListenersReply.substring(prefix.length()));
@@ -432,7 +432,7 @@ public class TorController {
         return parseSocksListeners(socksListenersReply).stream()
                 .findFirst()
                 .map(SocksListener::port)
-                .orElseThrow(() -> new ControlCommandFailedException("Tor has no TCP SOCKS listener: " +
-                        socksListenersReply));
+                .orElseThrow(() -> new ControlCommandFailedException("Tor has no TCP SOCKS listener. " +
+                        TorControlLogFormat.quoteOfTor(socksListenersReply)));
     }
 }

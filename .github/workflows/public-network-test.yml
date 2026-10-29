@@ -1,0 +1,50 @@
+name: Public Tor network test
+
+# PublicTorNetworkOnionServiceTest needs the public Tor network, whose state this repository does not control, so it
+# runs once a week and on request instead of at every change. GitHub runs scheduled workflows on the default branch.
+on:
+  schedule:
+    - cron: '23 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  public-network-test:
+    name: Onion services on the public Tor network
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify Gradle wrapper checksums
+        shell: bash
+        run: sha256sum -c gradle/wrapper/gradle-wrapper.sha256
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          java-version: '21.0.13+9'
+          distribution: 'zulu'
+          check-latest: false
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+        with:
+          cache-provider: basic
+          validate-wrappers: true
+
+      # As in the integration test job of build.yml: the peer in the sandbox then connects out through the egress broker
+      # of sandy, as on most Linux hosts, instead of falling back to the network of the host.
+      - name: Allow unprivileged user namespaces
+        shell: bash
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Run the public network test
+        shell: bash
+        run: ./gradlew :tor:integrationTest --rerun --tests bisq.network.tor.PublicTorNetworkOnionServiceTest -Ptor.publicNetworkTests=true

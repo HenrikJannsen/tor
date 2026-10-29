@@ -18,6 +18,7 @@
 package bisq.network.tor.bridges;
 
 import bisq.network.tor.BridgeConfig;
+import com.google.common.net.InetAddresses;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -70,6 +71,26 @@ class BridgeTorrcEntriesTest {
                 Map.entry("Bridge", VANILLA_BRIDGE),
                 Map.entry("ClientTransportPlugin", "obfs4,webtunnel exec pluggable_transports/lyrebird"),
                 Map.entry("ClientTransportPlugin", "snowflake exec pluggable_transports/lyrebird"));
+    }
+
+    // The sandbox lets Tor start these programs, and the transports decide its network.
+    @Test
+    void findsTheTransportsAndTheProgramOfEachPluginEntry() {
+        String conjureBridge = "conjure 143.110.214.222:80 0123456789ABCDEF0123456789ABCDEF01234567";
+        BridgeConfig bridgeConfig = BridgeConfig.custom(List.of(SNOWFLAKE_BRIDGE, OBFS4_BRIDGE, WEBTUNNEL_BRIDGE,
+                VANILLA_BRIDGE, conjureBridge));
+
+        List<Map.Entry<String, String>> entries = BridgeTorrcEntries.create(bridgeConfig, config,
+                program -> Optional.of(program.equals("conjure-client") ? "/usr/bin/" + program :
+                        "pluggable_transports/" + program));
+
+        assertThat(BridgeTorrcEntries.findClientTransportPlugins(entries)).containsExactly(
+                new BridgeTorrcEntries.ClientTransportPlugin(List.of("conjure"), "/usr/bin/conjure-client"),
+                new BridgeTorrcEntries.ClientTransportPlugin(List.of("obfs4", "webtunnel"),
+                        "pluggable_transports/lyrebird"),
+                new BridgeTorrcEntries.ClientTransportPlugin(List.of("snowflake"), "pluggable_transports/lyrebird"));
+        assertThat(BridgeTorrcEntries.findClientTransportPlugins(BridgeTorrcEntries.create(
+                BridgeConfig.custom(List.of(VANILLA_BRIDGE)), config, program -> Optional.empty()))).isEmpty();
     }
 
     @Test
@@ -138,5 +159,18 @@ class BridgeTorrcEntriesTest {
         assertThat(BridgeTorrcEntries.findTransport("[2001:db8::1]:443")).isEmpty();
         assertThatThrownBy(() -> BridgeTorrcEntries.findTransport("obfs-4 192.0.2.1:443"))
                 .isInstanceOf(BridgesUnavailableException.class);
+    }
+
+    @Test
+    void findsTheIpAddressOfABridgeLine() {
+        assertThat(BridgeTorrcEntries.findAddress("192.0.2.1:443 0123456789ABCDEF0123456789ABCDEF01234567"))
+                .contains(InetAddresses.forString("192.0.2.1"));
+        assertThat(BridgeTorrcEntries.findAddress(" obfs4  10.0.0.2:443 FINGERPRINT cert=x iat-mode=0"))
+                .contains(InetAddresses.forString("10.0.0.2"));
+        assertThat(BridgeTorrcEntries.findAddress("obfs4 [fd00::2]:443 FINGERPRINT"))
+                .contains(InetAddresses.forString("fd00::2"));
+        // A host name is not looked up.
+        assertThat(BridgeTorrcEntries.findAddress("obfs4 bridge.example:443 FINGERPRINT")).isEmpty();
+        assertThat(BridgeTorrcEntries.findAddress("obfs4")).isEmpty();
     }
 }

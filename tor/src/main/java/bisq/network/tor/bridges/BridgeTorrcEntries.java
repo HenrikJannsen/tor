@@ -18,7 +18,9 @@
 package bisq.network.tor.bridges;
 
 import bisq.network.tor.BridgeConfig;
+import com.google.common.net.InetAddresses;
 
+import java.net.InetAddress;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
@@ -96,6 +98,31 @@ public final class BridgeTorrcEntries {
         return entries;
     }
 
+    /**
+     * @return the transports and the program of each {@code ClientTransportPlugin} entry of {@code entries}, as
+     * {@link #create} writes them: the transports separated by commas, {@code exec}, the program and its arguments
+     */
+    public static List<ClientTransportPlugin> findClientTransportPlugins(List<Map.Entry<String, String>> entries) {
+        return entries.stream()
+                .filter(entry -> entry.getKey().equals(CLIENT_TRANSPORT_PLUGIN))
+                .map(entry -> {
+                    String[] tokens = entry.getValue().split(" ");
+                    return new ClientTransportPlugin(List.of(tokens[0].split(",")), tokens[2]);
+                })
+                .toList();
+    }
+
+    /**
+     * @param transports the transports which the program provides to Tor
+     * @param program    the path of the program as Tor starts it: relative to the directory of the bundle, which is
+     *                   the working directory of Tor, or absolute
+     */
+    public record ClientTransportPlugin(List<String> transports, String program) {
+        public ClientTransportPlugin {
+            transports = List.copyOf(transports);
+        }
+    }
+
     private static List<String> getBridgeLines(BridgeConfig bridgeConfig,
                                                PluggableTransportConfig pluggableTransportConfig) {
         if (bridgeConfig.getBuiltInBridges().isEmpty()) {
@@ -106,6 +133,28 @@ public final class BridgeTorrcEntries {
                 .orElseThrow(() -> new BridgesUnavailableException("The bundled Tor has no built-in bridges of the " +
                         "type " + name + ". It has built-in bridges of the types " +
                         String.join(", ", pluggableTransportConfig.getBuiltInBridgesNames()) + "."));
+    }
+
+    /**
+     * @return the IP address of a bridge line, which follows the name of its transport, or empty if the line names
+     * none, for example a host name. Nothing is looked up.
+     */
+    public static Optional<InetAddress> findAddress(String bridgeLine) {
+        String[] tokens = bridgeLine.trim().split("\\s+");
+        int addressIndex = findTransport(bridgeLine).isPresent() ? 1 : 0;
+        if (tokens.length <= addressIndex) {
+            return Optional.empty();
+        }
+        String addressAndPort = tokens[addressIndex];
+        int portSeparator = addressAndPort.lastIndexOf(':');
+        if (portSeparator <= 0) {
+            return Optional.empty();
+        }
+        String address = addressAndPort.substring(0, portSeparator);
+        if (address.startsWith("[") && address.endsWith("]")) {
+            address = address.substring(1, address.length() - 1);
+        }
+        return InetAddresses.isInetAddress(address) ? Optional.of(InetAddresses.forString(address)) : Optional.empty();
     }
 
     /**

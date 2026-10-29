@@ -49,7 +49,8 @@ public class FakeTorControlServer implements AutoCloseable {
     }
 
     /**
-     * A control port on the given port of 127.0.0.1, which answers one connection after the other.
+     * A control port on the given port of 127.0.0.1, which answers one connection after the other: TorService probes
+     * the control port of its Tor before its controller connects.
      */
     public static FakeTorControlServer onPort(int port, Function<String, String> replyByCommand) throws IOException {
         return new FakeTorControlServer(new ServerSocket(port, 1, InetAddress.getByName("127.0.0.1")),

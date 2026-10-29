@@ -36,6 +36,8 @@ class TorrcClientConfigFactoryTest {
             .isTestNetwork(false)
             .dataDirPath(DATA_DIR)
             .hashedControlPassword(passwordDigest)
+            .controlPort(41001)
+            .socksPort(41002)
             .build();
 
     @Test
@@ -53,8 +55,8 @@ class TorrcClientConfigFactoryTest {
         Map<String, String> torrc = factory.torrcClientConfigMap(overrides);
 
         assertThat(torrc)
-                .containsEntry("ControlPort", "127.0.0.1:auto")
-                .containsEntry("SocksPort", "auto")
+                .containsEntry("ControlPort", "127.0.0.1:41001")
+                .containsEntry("SocksPort", "127.0.0.1:41002")
                 .containsEntry("DataDirectory", DATA_DIR.toString())
                 .containsEntry("HashedControlPassword", passwordDigest.getHashedPassword())
                 .containsEntry("DisableNetwork", "1")
@@ -82,8 +84,8 @@ class TorrcClientConfigFactoryTest {
         Map<String, String> torrc = factory.torrcClientConfigMap(overrides);
 
         assertThat(torrc)
-                .containsEntry("ControlPort", "127.0.0.1:auto")
-                .containsEntry("SocksPort", "auto")
+                .containsEntry("ControlPort", "127.0.0.1:41001")
+                .containsEntry("SocksPort", "127.0.0.1:41002")
                 .doesNotContainKeys("__SocksPort", "__controlport", "__Sock", "__Control");
     }
 
@@ -104,7 +106,7 @@ class TorrcClientConfigFactoryTest {
         Map<String, String> torrc = factory.torrcClientConfigMap(overrides);
 
         assertThat(torrc)
-                .containsEntry("ControlPort", "127.0.0.1:auto")
+                .containsEntry("ControlPort", "127.0.0.1:41001")
                 .containsEntry("HashedControlPassword", passwordDigest.getHashedPassword())
                 .doesNotContainKeys(overrides.keySet().toArray(String[]::new));
     }
@@ -157,7 +159,7 @@ class TorrcClientConfigFactoryTest {
                 .containsEntry("ControlPortFileGroupReadable", "1")
                 .containsEntry("SocksPolicy", "accept 127.0.0.1");
         assertThat(factory.torrcClientConfigMap(Map.of("LogTimeGranularity", "1000")))
-                .containsEntry("Log", "notice file " + DATA_DIR.resolve("debug.log"))
+                .containsEntry("Log", "notice stdout")
                 .containsEntry("LogTimeGranularity", "1000");
     }
 
@@ -172,6 +174,8 @@ class TorrcClientConfigFactoryTest {
                 .dataDirPath(DATA_DIR)
                 .hashedControlPassword(passwordDigest)
                 .usesBridges(true)
+                .controlPort(41001)
+                .socksPort(41002)
                 .build();
 
         assertThat(factoryWithBridges.torrcClientConfigMap(overrides))
@@ -181,5 +185,23 @@ class TorrcClientConfigFactoryTest {
         assertThat(factory.torrcClientConfigMap(overrides))
                 .containsEntry("UseBridges", "0")
                 .containsEntry("bridge", "192.0.2.1:9001");
+    }
+
+    @Test
+    void torLogsToItsStandardOutputUnlessTheUserChangesIt() {
+        assertThat(factory.torrcClientConfigMap(Map.of())).containsEntry("Log", "notice stdout");
+        assertThat(factory.torrcClientConfigMap(Map.of("log", "info file /var/log/tor.log")))
+                .containsEntry("log", "info file /var/log/tor.log")
+                .doesNotContainKey("Log");
+    }
+
+    @Test
+    void bisqChoosesTheListenerPortsAndTorWritesNoPortFile() {
+        Map<String, String> torrc = factory.torrcClientConfigMap(Map.of());
+
+        assertThat(torrc)
+                .containsEntry("ControlPort", "127.0.0.1:41001")
+                .containsEntry("SocksPort", "127.0.0.1:41002")
+                .doesNotContainKey("ControlPortWriteToFile");
     }
 }

@@ -63,6 +63,17 @@ class TorControlProtocolAuthenticationTest {
                 .hasMessageContaining("514");
     }
 
+    // A compromised Tor in its sandbox chooses the text of its reply, and Bisq 2 shows the message of the failed start.
+    @Test
+    void aRefusalQuotesTheReplyOfTorLabeledAndLast() throws Exception {
+        connect("515 Your wallet is at risk, visit https://example.com\r\n");
+
+        assertThatThrownBy(() -> torControlProtocol.authenticate(PasswordDigest.generateDigest()))
+                .isInstanceOf(TorControlAuthenticationFailed.class)
+                .hasMessage("Tor did not accept the authentication. Tor reported (not verified by Bisq): 515 Your " +
+                        "wallet is at risk, visit https://example.com");
+    }
+
     @Test
     void aPasswordIsSentAsHexOfItsUtf8Bytes() throws Exception {
         connect("250 OK\r\n");

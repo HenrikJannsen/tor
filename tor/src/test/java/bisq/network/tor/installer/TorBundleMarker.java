@@ -15,14 +15,21 @@
  * along with Bisq. If not, see <http://www.gnu.org/licenses/>.
  */
 
-package bisq.network.tor.process.control_port;
+package bisq.network.tor.installer;
 
-public class ControlPortFileParseFailureException extends RuntimeException {
-    public ControlPortFileParseFailureException(String message) {
-        super(message);
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+/**
+ * Marks a binary directory as holding the bundle of this build, so that a start installs no bundle over the files of
+ * a test.
+ */
+public final class TorBundleMarker {
+    private TorBundleMarker() {
     }
 
-    public ControlPortFileParseFailureException(Throwable cause) {
-        super(cause);
+    public static void markAsInstalled(Path binaryDirPath) throws IOException {
+        Files.writeString(binaryDirPath.resolve("version"), TorInstaller.INSTALLATION_VERSION);
     }
 }

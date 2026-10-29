@@ -78,6 +78,13 @@ class TorControllerSocksPortTest {
     }
 
     @Test
+    void theReplyOfTorIsQuotedLabeledAndLast() {
+        assertThatThrownBy(() -> TorController.parseSocksPort("250-net/listeners/socks=\"unix:/run/tor/socks\""))
+                .hasMessage("Tor has no TCP SOCKS listener. Tor reported (not verified by Bisq): " +
+                        "250-net/listeners/socks=\"unix:/run/tor/socks\"");
+    }
+
+    @Test
     void withoutTcpListenerTheStartFails() {
         assertThatThrownBy(() -> TorController.parseSocksPort("250-net/listeners/socks=\"unix:/run/tor/socks\""))
                 .isInstanceOf(ControlCommandFailedException.class);
