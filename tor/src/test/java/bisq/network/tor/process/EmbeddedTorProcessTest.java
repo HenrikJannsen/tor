@@ -79,9 +79,10 @@ class EmbeddedTorProcessTest {
     @Test
     void setsidPrecedesTheCommandWhereTheSystemHasIt() {
         List<String> command = List.of("/usr/bin/tor", "-f", "torrc");
+        Path setsidPath = tempDir.resolve("setsid");
 
-        assertThat(EmbeddedTorProcess.inSessionOfItsOwn(command, Optional.of(Path.of("/usr/bin/setsid"))))
-                .containsExactly("/usr/bin/setsid", "/usr/bin/tor", "-f", "torrc");
+        assertThat(EmbeddedTorProcess.inSessionOfItsOwn(command, Optional.of(setsidPath)))
+                .containsExactly(setsidPath.toString(), "/usr/bin/tor", "-f", "torrc");
         assertThat(EmbeddedTorProcess.inSessionOfItsOwn(command, Optional.empty())).isEqualTo(command);
     }
 
