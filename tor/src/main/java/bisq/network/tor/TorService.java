@@ -1294,7 +1294,7 @@ public class TorService {
             return;
         }
         if (!Files.exists(filePath)) {
-            log.warn("The Tor bundle has no {}. Tor runs without its country data.", filePath);
+            log.warn("The Tor bundle has no {}. Tor runs without its country data.", filePath.getFileName());
         }
         torrcConfigMap.put(key, TorrcSyntax.toValue(filePath.toAbsolutePath().toString()));
     }
@@ -1304,8 +1304,8 @@ public class TorService {
         try {
             FileUtils.writeToPath("", openSslConfigPath, platformServices.supportsPosixPermissions());
         } catch (IOException e) {
-            log.warn("Couldn't write {}", openSslConfigPath, e);
-            throw new TorStartupFailedException("Couldn't write " + openSslConfigPath + ": " + e);
+            log.warn("Couldn't write {}", openSslConfigPath.getFileName(), e);
+            throw new TorStartupFailedException("Couldn't write " + openSslConfigPath.getFileName(), e);
         }
     }
 
