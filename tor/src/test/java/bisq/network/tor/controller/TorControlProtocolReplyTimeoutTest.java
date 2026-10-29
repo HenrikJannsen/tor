@@ -26,6 +26,7 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.charset.StandardCharsets;
@@ -74,13 +75,15 @@ class TorControlProtocolReplyTimeoutTest {
     @Test
     void aCommandWhichTorDoesNotTakeEndsAtTheTimeout() throws Exception {
         // Tor accepts the connection and reads nothing, so the write blocks once the buffers of the sockets are full.
-        serverSocket = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"));
+        serverSocket = new ServerSocket();
+        serverSocket.setReceiveBufferSize(1024);
+        serverSocket.bind(new InetSocketAddress(InetAddress.getByName("127.0.0.1"), 0), 1);
         serverThread = new Thread(this::acceptAndReadNothing, "SilentTorControlServer");
         serverThread.start();
         torControlProtocol = new TorControlProtocol(REPLY_TIMEOUT_MS);
         torControlProtocol.initialize(serverSocket.getLocalPort());
-        // Far more than the buffers of a loopback connection. The log form of SETCONF hides the value.
-        String value = "x".repeat(64 * 1024 * 1024);
+        // The small receive buffer makes this larger command block without allocating tens of megabytes in CI.
+        String value = "x".repeat(8 * 1024 * 1024);
 
         long start = System.currentTimeMillis();
         assertThatThrownBy(() -> torControlProtocol.setConfig("ContactInfo", value))
