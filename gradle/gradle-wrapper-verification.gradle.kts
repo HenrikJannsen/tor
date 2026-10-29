@@ -8,42 +8,44 @@ import java.util.TreeMap
 val gradleWrapperChecksums = layout.projectDirectory.file("gradle/wrapper/gradle-wrapper.sha256")
 val expectedReleaseGradleVersion = providers.gradleProperty("releaseBuild.gradleVersion")
 
-fun sha256(file: File): String {
-    val digest = MessageDigest.getInstance("SHA-256")
-    file.inputStream().use { input ->
-        val buffer = ByteArray(8192)
-        while (true) {
-            val read = input.read(buffer)
-            if (read == -1) {
-                break
+// An object, because the configuration cache cannot store a task action which calls a function of the script
+object GradleWrapperFiles {
+    fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(8192)
+            while (true) {
+                val read = input.read(buffer)
+                if (read == -1) {
+                    break
+                }
+                digest.update(buffer, 0, read)
             }
-            digest.update(buffer, 0, read)
         }
-    }
-    return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
-}
-
-fun loadGradleWrapperProperties(): Properties {
-    val wrapperProperties = Properties()
-    val wrapperPropertiesFile = file("gradle/wrapper/gradle-wrapper.properties")
-    if (wrapperPropertiesFile.isFile) {
-        wrapperPropertiesFile.inputStream().use { wrapperProperties.load(it) }
-    }
-    return wrapperProperties
-}
-
-fun isSafeRelativePath(path: String): Boolean {
-    if (path.isBlank() || path.contains('\\') || path.startsWith("/") || path.contains(":")) {
-        return false
+        return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 
-    val segments = path.split("/")
-    if (segments.any { it.isBlank() || it == "." || it == ".." }) {
-        return false
+    fun loadProperties(wrapperPropertiesFile: File): Properties {
+        val wrapperProperties = Properties()
+        if (wrapperPropertiesFile.isFile) {
+            wrapperPropertiesFile.inputStream().use { wrapperProperties.load(it) }
+        }
+        return wrapperProperties
     }
 
-    val rootPath = rootDir.toPath().normalize()
-    return rootPath.resolve(path).normalize().startsWith(rootPath)
+    fun isSafeRelativePath(path: String, rootDir: File): Boolean {
+        if (path.isBlank() || path.contains('\\') || path.startsWith("/") || path.contains(":")) {
+            return false
+        }
+
+        val segments = path.split("/")
+        if (segments.any { it.isBlank() || it == "." || it == ".." }) {
+            return false
+        }
+
+        val rootPath = rootDir.toPath().normalize()
+        return rootPath.resolve(path).normalize().startsWith(rootPath)
+    }
 }
 
 tasks.register("verifyGradleWrapperSecurity") {
@@ -61,9 +63,14 @@ tasks.register("verifyGradleWrapperSecurity") {
     inputs.property("expectedReleaseGradleVersion", expectedReleaseGradleVersion.orElse(""))
     inputs.files(requiredPaths.map { file(it) })
     outputs.upToDateWhen { false }
+    // Copies of the values of the script and the project, which the configuration cache cannot store
+    val checksumFile = gradleWrapperChecksums.asFile
+    val releaseGradleVersion = expectedReleaseGradleVersion
+    val rootDirectory = rootDir
+    val wrapperFiles = requiredPaths.associateWith { file(it) }
+    val wrapperPropertiesFile = file("gradle/wrapper/gradle-wrapper.properties")
 
     doLast {
-        val checksumFile = gradleWrapperChecksums.asFile
         if (!checksumFile.isFile) {
             throw GradleException("Missing $checksumFile. Record the approved Gradle wrapper file checksums first.")
         }
@@ -88,7 +95,7 @@ tasks.register("verifyGradleWrapperSecurity") {
                     )
 
                 val path = match.groupValues[2]
-                if (!isSafeRelativePath(path)) {
+                if (!GradleWrapperFiles.isSafeRelativePath(path, rootDirectory)) {
                     throw GradleException("Invalid Gradle wrapper checksum path at $checksumFile:$lineNumber: $path")
                 }
                 if (expectedHashes.put(path, match.groupValues[1]) != null) {
@@ -112,23 +119,23 @@ tasks.register("verifyGradleWrapperSecurity") {
         }
 
         requiredPaths.forEach { path ->
-            val wrapperFile = file(path)
+            val wrapperFile = wrapperFiles.getValue(path)
             if (!wrapperFile.isFile) {
                 violations += "Missing Gradle wrapper file: $path"
                 return@forEach
             }
 
             val expectedHash = expectedHashes[path] ?: return@forEach
-            val actualHash = sha256(wrapperFile)
+            val actualHash = GradleWrapperFiles.sha256(wrapperFile)
             if (actualHash != expectedHash) {
                 violations += "$path expected $expectedHash but was $actualHash"
             }
         }
 
-        val wrapperProperties = loadGradleWrapperProperties()
+        val wrapperProperties = GradleWrapperFiles.loadProperties(wrapperPropertiesFile)
         val distributionUrl = wrapperProperties.getProperty("distributionUrl")
         val distributionSha256Sum = wrapperProperties.getProperty("distributionSha256Sum")
-        val expectedGradleVersion = expectedReleaseGradleVersion.orNull?.trim()
+        val expectedGradleVersion = releaseGradleVersion.orNull?.trim()
         val distributionUrlRegex =
             Regex("""^https://services[.]gradle[.]org/distributions/gradle-[A-Za-z0-9][A-Za-z0-9_.+-]*-(bin|all)[.]zip$""")
         val sha256Regex = Regex("""^[0-9a-f]{64}$""")

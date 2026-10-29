@@ -3,7 +3,9 @@ import org.gradle.api.artifacts.Configuration
 import org.gradle.api.artifacts.component.ModuleComponentIdentifier
 import org.gradle.api.artifacts.verification.DependencyVerificationMode
 import org.gradle.api.artifacts.result.ResolvedDependencyResult
+import org.gradle.kotlin.dsl.newInstance
 import org.gradle.kotlin.dsl.register
+import org.gradle.process.ExecOperations
 import org.w3c.dom.Element
 import org.w3c.dom.NodeList
 import java.io.File
@@ -14,11 +16,18 @@ import java.util.Base64
 import java.util.Locale
 import java.util.TreeMap
 import java.util.TreeSet
+import javax.inject.Inject
 import javax.xml.XMLConstants
 import javax.xml.parsers.DocumentBuilderFactory
 
 val accessExternalDtd = "http://javax.xml.XMLConstants/property/accessExternalDTD"
 val accessExternalSchema = "http://javax.xml.XMLConstants/property/accessExternalSchema"
+
+// Gradle 9 removed Project.exec. A script gets ExecOperations only through an object which Gradle creates.
+interface InjectedExecOperations {
+    @get:Inject
+    val execOperations: ExecOperations
+}
 
 data class OpenPgpPacket(val tag: Int, val body: ByteArray)
 data class ResolvableConfiguration(val projectPath: String, val configuration: Configuration)
@@ -685,6 +694,9 @@ fun executableArtifactMetadataViolations(
 val resolveCurrentBuildTask = tasks.register("resolveAndVerifyDependenciesForCurrentBuild") {
     group = "verification"
     description = "Resolves every resolvable configuration in this Gradle build."
+    // Gradle verifies the artifacts when it resolves them. A stored configuration would skip the resolution, and with
+    // it the verification, so the task has to run without the configuration cache.
+    notCompatibleWithConfigurationCache("Resolves and verifies every configuration of the build in each invocation")
 
     // Resolve before checking task history so changed graphs and verification failures cannot be hidden by it.
     val resolved by lazy { resolveConfigurations() }
@@ -722,40 +734,46 @@ if (isBisqRepositoryRootBuild) {
         inputs.file(dependencyVerificationMetadata)
         outputs.file(dependencyVerificationKeyring)
         outputs.upToDateWhen { false }
+        val execOperations = objects.newInstance<InjectedExecOperations>().execOperations
+        // Copies of the values of the script, which the configuration cache cannot store
+        val repositoryRoot = bisqRepositoryRoot
+        val wrapperCommand = gradleWrapperCommand
+        val keyring = dependencyVerificationKeyring
+        val binaryKeyring = dependencyVerificationBinaryKeyring
 
         doLast {
-            val previousModified = if (dependencyVerificationKeyring.exists()) dependencyVerificationKeyring.lastModified() else 0L
-            val result = project.exec {
-                workingDir = bisqRepositoryRoot
-                commandLine(gradleWrapperCommand, "--no-daemon", "help", "--refresh-keys", "--export-keys")
+            val previousModified = if (keyring.exists()) keyring.lastModified() else 0L
+            val result = execOperations.exec {
+                workingDir = repositoryRoot
+                commandLine(wrapperCommand, "--no-daemon", "help", "--refresh-keys", "--export-keys")
                 isIgnoreExitValue = true
             }
 
-            if (!dependencyVerificationKeyring.exists()) {
+            if (!keyring.exists()) {
                 throw GradleException(
-                    "Failed to write $dependencyVerificationKeyring. " +
+                    "Failed to write $keyring. " +
                             "Check network access to the configured Gradle verification key servers."
                 )
             }
 
             if (result.exitValue != 0) {
-                if (dependencyVerificationKeyring.lastModified() <= previousModified) {
+                if (keyring.lastModified() <= previousModified) {
                     throw GradleException(
                         "Gradle --refresh-keys --export-keys failed with exit code ${result.exitValue} " +
-                                "and did not update $dependencyVerificationKeyring."
+                                "and did not update $keyring."
                     )
                 }
                 logger.warn(
                     "Gradle --refresh-keys --export-keys exited with ${result.exitValue} after updating " +
-                            "$dependencyVerificationKeyring. This can happen in some Gradle/Bouncy Castle combinations."
+                            "$keyring. This can happen in some Gradle/Bouncy Castle combinations."
                 )
             }
 
-            if (dependencyVerificationBinaryKeyring.exists()) {
-                logger.warn("Ignoring $dependencyVerificationBinaryKeyring; dependency verification is configured to use the armored keyring.")
+            if (binaryKeyring.exists()) {
+                logger.warn("Ignoring $binaryKeyring; dependency verification is configured to use the armored keyring.")
             }
 
-            logger.lifecycle("Refreshed $dependencyVerificationKeyring.")
+            logger.lifecycle("Refreshed $keyring.")
         }
     }
 
@@ -763,6 +781,8 @@ if (isBisqRepositoryRootBuild) {
         group = "verification"
         description = "Verifies all dependency artifacts and fails if checksum-only artifacts are not explicitly allowed " +
                 "or if the metadata does not turn the key servers off."
+        // It always runs with resolveAndVerifyDependencies, so Gradle never stores a configuration which contains it.
+        notCompatibleWithConfigurationCache("Runs with resolveAndVerifyDependencies, which resolves in each invocation")
 
         dependsOn("resolveAndVerifyDependencies")
         inputs.files(dependencyVerificationInventoryFiles).withPropertyName("dependencyInventories")
@@ -859,6 +879,8 @@ if (isBisqRepositoryRootBuild) {
     tasks.register("dependencySignatureReport") {
         group = "verification"
         description = "Writes a report of signed and checksum-only dependencies from Gradle verification metadata."
+        // It always runs with resolveAndVerifyDependencies, so Gradle never stores a configuration which contains it.
+        notCompatibleWithConfigurationCache("Runs with resolveAndVerifyDependencies, which resolves in each invocation")
 
         dependsOn("resolveAndVerifyDependencies")
         inputs.files(dependencyVerificationInventoryFiles).withPropertyName("dependencyInventories")

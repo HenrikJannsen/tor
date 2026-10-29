@@ -16,9 +16,12 @@ tasks.register("verifyGithubActionsSecurity") {
     inputs.files(workflowFiles)
     inputs.property("expectedReleaseJavaVersion", expectedReleaseJavaVersion.orElse(""))
     outputs.upToDateWhen { false }
+    // Copies of the values of the script and the project, which the configuration cache cannot store
+    val releaseJavaVersion = expectedReleaseJavaVersion
+    val rootDirectory = rootDir
 
     doLast {
-        val expectedJavaVersion = expectedReleaseJavaVersion.orNull?.trim()
+        val expectedJavaVersion = releaseJavaVersion.orNull?.trim()
         val violations = mutableListOf<String>()
         val usesRegex = Regex("""^\s*-?\s*uses:\s*([^#\s]+)(?:\s+#\s*(.+))?\s*$""")
         val floatingRunnerRegex = Regex("""\b(ubuntu|macos|windows)-latest\b""", RegexOption.IGNORE_CASE)
@@ -71,7 +74,7 @@ tasks.register("verifyGithubActionsSecurity") {
         }
 
         workflowFiles.files.sortedBy { it.path }.forEach { workflowFile ->
-            val workflowPath = rootProject.relativePath(workflowFile)
+            val workflowPath = workflowFile.relativeTo(rootDirectory).path
             val lines = workflowFile.readLines(StandardCharsets.UTF_8)
 
             if (lines.none { topLevelPermissionsRegex.containsMatchIn(it) }) {
