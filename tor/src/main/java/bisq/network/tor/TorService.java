@@ -106,6 +106,7 @@ public class TorService {
     public static final String TOR_SKIP_LAUNCH = "TOR_SKIP_LAUNCH";
 
     private final TorTransportConfig transportConfig;
+
     private final PlatformServices platformServices;
     private final TorDirectories torDirectories;
     // On Whonix, Bisq uses the Tor of the Whonix-Gateway through onion-grater.
