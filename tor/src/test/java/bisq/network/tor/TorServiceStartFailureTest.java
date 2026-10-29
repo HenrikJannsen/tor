@@ -27,6 +27,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.ServerSocket;
+import java.nio.file.FileSystemException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -223,9 +224,8 @@ class TorServiceStartFailureTest {
 
             assertThatThrownBy(() -> createTorService(torDir).initialize())
                     .isInstanceOf(TorStartupFailedException.class)
-                    .hasMessageContaining("Couldn't write " + torDir.resolve("openssl.cnf") + ": ")
-                    .hasMessageContaining("FileSystemException")
-                    .hasNoCause();
+                    .hasMessage("Couldn't write openssl.cnf")
+                    .hasCauseInstanceOf(FileSystemException.class);
         }
     }
 

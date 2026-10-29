@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.nio.file.FileSystemException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -96,7 +97,8 @@ class TorServiceStartAfterFailureTest {
 
         assertThatThrownBy(() -> torService.initialize())
                 .isInstanceOf(TorStartupFailedException.class)
-                .hasMessageContaining(openSslConfig.toString());
+                .hasMessage("Couldn't write openssl.cnf")
+                .hasCauseInstanceOf(FileSystemException.class);
         assertThat(fakeTor.hasStarted()).isFalse();
 
         Files.delete(openSslConfig);

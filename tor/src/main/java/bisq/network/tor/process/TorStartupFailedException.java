@@ -22,6 +22,10 @@ public class TorStartupFailedException extends RuntimeException {
         super(message);
     }
 
+    public TorStartupFailedException(String message, Throwable cause) {
+        super(message, cause);
+    }
+
     public TorStartupFailedException(Throwable cause) {
         super(cause);
     }
