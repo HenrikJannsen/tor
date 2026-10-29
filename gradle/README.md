@@ -105,7 +105,8 @@ through Gradle module metadata. To catch them, run the command with an empty Gra
 Use this to drop stale entries, for example after removing or upgrading dependencies.
 
 1. Reduce `gradle/verification-metadata.xml` to its configuration and keep only the entries Gradle cannot regenerate
-   (see [IDE import](#ide-import)):
+   (see [IDE import](#ide-import)) and the trusted keys narrowed by hand (see
+   [Trusted keys narrowed by hand](#trusted-keys-narrowed-by-hand)):
 
    ```xml
    <?xml version="1.0" encoding="UTF-8"?>
@@ -150,6 +151,16 @@ Use this to drop stale entries, for example after removing or upgrading dependen
 
 Review the generated diff and verify new signatures or checksums before committing. Metadata generation records
 downloaded artifacts; it does not independently establish their trustworthiness.
+
+### Trusted keys narrowed by hand
+
+A regeneration trusts a key which signs several artifacts of a group for the whole group, so the entry also accepts any
+future artifact of the group which that key signs. These entries are narrowed by hand and must be kept through a
+regeneration:
+
+- Key `D477D51812E692011DB11E66A6EA2E2BF22E0543`, which has no user ID in the keyring, is trusted only for
+  `io.github.java-diff-utils:java-diff-utils:4.12` and its parent POM `java-diff-utils-parent:4.12`, the two artifacts
+  of the group which the build resolves. Update the version when the build resolves another one.
 
 ### Keyring
 
