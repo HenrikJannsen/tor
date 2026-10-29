@@ -66,8 +66,8 @@ class PolicyTemplateTest {
     void writesArraysAndTables() {
         assertThat(PolicyTemplate.paths(List.of())).isEqualTo("[]");
         assertThat(PolicyTemplate.paths(List.of(Paths.get("/a/./b"), Paths.get("/c"))))
-                .isEqualTo("[\"" + Paths.get("/a/b").toAbsolutePath() + "\", \"" + Paths.get("/c").toAbsolutePath() +
-                        "\"]");
+                .isEqualTo("[" + PolicyTemplate.string(Paths.get("/a/b").toAbsolutePath().toString()) + ", " +
+                        PolicyTemplate.string(Paths.get("/c").toAbsolutePath().toString()) + "]");
         assertThat(PolicyTemplate.table(Map.of())).isEqualTo("{}");
         assertThat(PolicyTemplate.table(Map.of("B", "2", "A", "1"))).isEqualTo("{ \"A\" = \"1\", \"B\" = \"2\" }");
     }
