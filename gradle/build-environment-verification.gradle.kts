@@ -36,7 +36,9 @@ val verifyBuildEnvironmentTask = tasks.register("verifyBuildEnvironment") {
         val actualJavaVendor = System.getProperty("java.vendor")
         val violations = mutableListOf<String>()
 
-        if (actualJavaVersion != expectedJavaVersion) {
+        // Zulu can append numeric vendor components to the pinned Java update version.
+        val expectedJavaVersionPattern = Regex("^${Regex.escape(expectedJavaVersion)}(?:\\.\\d+)*$")
+        if (!expectedJavaVersionPattern.matches(actualJavaVersion)) {
             violations += "Java version expected $expectedJavaVersion but was $actualJavaVersion"
         }
         if (actualJavaVendor != expectedJavaVendor) {
