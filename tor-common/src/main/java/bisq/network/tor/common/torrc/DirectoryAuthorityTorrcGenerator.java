@@ -34,7 +34,7 @@ public class DirectoryAuthorityTorrcGenerator implements TorrcConfigGenerator {
 
         torConfigMap.put("AuthoritativeDirectory", "1");
         torConfigMap.put("V3AuthoritativeDirectory", "1");
-        torConfigMap.put("ContactInfo", "auth-" + nickname + "@test.test\n");
+        torConfigMap.put("ContactInfo", "auth-" + nickname + "@test.test");
 
         torConfigMap.put("AssumeReachable", "1");
         torConfigMap.put("TestingV3AuthInitialVotingInterval", "20");

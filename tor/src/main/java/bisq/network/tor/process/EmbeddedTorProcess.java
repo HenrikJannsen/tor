@@ -17,15 +17,19 @@
 
 package bisq.network.tor.process;
 
+import bisq.network.tor.common.platform.OS;
 import lombok.extern.slf4j.Slf4j;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -74,7 +78,9 @@ public class EmbeddedTorProcess {
     }
 
     public void start() {
-        var processBuilder = new ProcessBuilder(command);
+        Optional<Path> setsidPath = OS.isWindows() ? Optional.empty() : findExecutableInPath(System.getenv("PATH"),
+                "setsid");
+        var processBuilder = new ProcessBuilder(inSessionOfItsOwn(command, setsidPath));
         processBuilder.directory(workingDirPath.toFile());
         environmentAdjuster.accept(processBuilder.environment());
         processBuilder.redirectError(stderrLogPath.toFile());
@@ -88,6 +94,23 @@ public class EmbeddedTorProcess {
             log.warn("Could not start {}", program, e);
             throw new TorStartupFailedException("Could not start " + program + ": " + e);
         }
+    }
+
+    /**
+     * On Linux and macOS a child process is in the process group of Bisq. A Ctrl+C in the terminal of Bisq would then
+     * also reach Tor, and Tor would exit at once, before the shutdown of Bisq has used it, for example to remove the
+     * offers of the user. setsid starts the command in a session of its own and executes it in its own process, which it
+     * does not fork as the child of Bisq is no group leader, so the process stays the one which Bisq stops. macOS has no
+     * setsid; there the command stays in the process group of Bisq.
+     */
+    static List<String> inSessionOfItsOwn(List<String> command, Optional<Path> setsidPath) {
+        if (setsidPath.isEmpty()) {
+            return command;
+        }
+        List<String> sessionCommand = new ArrayList<>();
+        sessionCommand.add(setsidPath.get().toAbsolutePath().toString());
+        sessionCommand.addAll(command);
+        return sessionCommand;
     }
 
     public void waitUntilExited() {
@@ -166,17 +189,40 @@ public class EmbeddedTorProcess {
     }
 
     public static Optional<Path> getSystemTorPath() {
-        String pathEnvironmentVariable = System.getenv("PATH");
-        String[] searchPaths = pathEnvironmentVariable.split(":");
+        return findExecutableInPath(System.getenv("PATH"), "tor");
+    }
 
-        for (var path : searchPaths) {
-            Path torBinaryPath = Paths.get(path, "tor");
-            if (Files.exists(torBinaryPath)) {
-                return Optional.of(torBinaryPath);
+    /**
+     * @param pathEnvironmentVariable the value of PATH, or null if it is not set
+     */
+    static Optional<Path> findExecutableInPath(String pathEnvironmentVariable, String fileName) {
+        if (pathEnvironmentVariable == null) {
+            return Optional.empty();
+        }
+        for (String entry : pathEnvironmentVariable.split(File.pathSeparator)) {
+            // An empty or relative entry means a path relative to the working directory of Bisq. A tor file there
+            // must not be started instead of the tor of the system.
+            Optional<Path> directory = toAbsolutePath(entry);
+            if (directory.isPresent()) {
+                Path candidate = directory.get().resolve(fileName);
+                if (Files.isRegularFile(candidate) && Files.isExecutable(candidate)) {
+                    return Optional.of(candidate);
+                }
             }
         }
-
         return Optional.empty();
+    }
+
+    private static Optional<Path> toAbsolutePath(String pathEntry) {
+        if (pathEntry.isBlank()) {
+            return Optional.empty();
+        }
+        try {
+            Path path = Paths.get(pathEntry);
+            return path.isAbsolute() ? Optional.of(path) : Optional.empty();
+        } catch (InvalidPathException e) {
+            return Optional.empty();
+        }
     }
 
     private String readLogSnippet(Path logPath) {

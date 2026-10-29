@@ -17,11 +17,11 @@
 
 package bisq.network.tor.controller;
 
-import bisq.network.tor.common.util.StringUtils;
 import bisq.network.tor.controller.events.events.EventType;
 import bisq.network.tor.controller.events.events.HsDescEvent;
 import bisq.network.tor.controller.events.events.HsDescFailedEvent;
 import bisq.network.tor.controller.events.listener.FilteredHsDescEventListener;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import lombok.extern.slf4j.Slf4j;
@@ -32,11 +32,15 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 
 @Slf4j
 public class OnionServiceOnlineStateService extends FilteredHsDescEventListener {
+    private static final AtomicInteger INSTANCE_COUNTER = new AtomicInteger();
+
     private final TorControlProtocol torControlProtocol;
     private final String onionAddress;
     private final long timeout;
@@ -66,12 +70,20 @@ public class OnionServiceOnlineStateService extends FilteredHsDescEventListener 
         this.onionAddress = onionAddress;
         this.timeout = timeout;
         this.isControllerShutDown = isControllerShutDown;
-        String name = "OnionServiceOnlineStateService-" + StringUtils.truncate(onionAddress, 12);
-        executor = Executors.newSingleThreadExecutor(new ThreadFactoryBuilder()
-                .setNameFormat(name + "-%d")
+        executor = Executors.newSingleThreadExecutor(createThreadFactory());
+    }
+
+    /**
+     * The thread name carries a counter instead of the onion address: it appears in every log line of the thread, and
+     * a log which a user shares must not name the peers of the user.
+     */
+    @VisibleForTesting
+    static ThreadFactory createThreadFactory() {
+        return new ThreadFactoryBuilder()
+                .setNameFormat("OnionServiceOnlineStateService-" + INSTANCE_COUNTER.incrementAndGet() + "-%d")
                 .setDaemon(true)
                 .setPriority(Thread.NORM_PRIORITY)
-                .build());
+                .build();
     }
 
     public CompletableFuture<Boolean> isOnionServiceOnlineAsync() {
@@ -159,14 +171,15 @@ public class OnionServiceOnlineStateService extends FilteredHsDescEventListener 
         switch (hsDescEvent.getAction()) {
             case FAILED:
                 Optional<String> reason = ((HsDescFailedEvent) hsDescEvent).getReason();
-                log.info("hsFetch request for {} failed with reason {}", onionAddress, reason.orElse("none"));
+                // Debug level: the address of a peer must not appear in a shared log.
+                log.debug("hsFetch request for {} failed with reason {}", onionAddress, reason.orElse("none"));
                 if (!reason.equals(Optional.of("NOT_FOUND"))) {
                     failureReason = Optional.of(reason.map(value -> "REASON=" + value).orElse("no REASON"));
                 }
                 countDownLatch.countDown();
                 break;
             case RECEIVED:
-                log.info("hsFetch request for {} succeeded", onionAddress);
+                log.debug("hsFetch request for {} succeeded", onionAddress);
                 isOnline = true;
                 countDownLatch.countDown();
                 break;

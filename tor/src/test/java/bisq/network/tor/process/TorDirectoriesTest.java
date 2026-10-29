@@ -38,6 +38,9 @@ class TorDirectoriesTest {
         assertThat(directories.getStdoutLogPath()).isEqualTo(BASE.resolve("tor-stdout.log"));
         assertThat(directories.getStderrLogPath()).isEqualTo(BASE.resolve("tor-stderr.log"));
         assertThat(directories.getExternalTorConfigPath()).isEqualTo(BASE.resolve("external_tor.config"));
+        assertThat(directories.getOpenSslConfigPath()).isEqualTo(BASE.resolve("openssl.cnf"));
+        assertThat(directories.getBundledGeoIpFilePath()).isEqualTo(BASE.resolve("geoip"));
+        assertThat(directories.getBundledGeoIpv6FilePath()).isEqualTo(BASE.resolve("geoip6"));
     }
 
     @Test

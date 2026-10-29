@@ -22,6 +22,7 @@ import bisq.network.tor.common.platform.LinuxDistribution;
 import bisq.network.tor.common.platform.OS;
 import bisq.network.tor.common.torrc.BaseTorrcGenerator;
 import bisq.network.tor.common.torrc.TorrcFileGenerator;
+import bisq.network.tor.common.torrc.TorrcSyntax;
 import bisq.network.tor.controller.PasswordDigest;
 import bisq.network.tor.controller.TorControlAuthenticationFailed;
 import bisq.network.tor.controller.TorController;
@@ -70,6 +71,8 @@ import static com.google.common.base.Preconditions.checkArgument;
 public class TorService {
     private static final long CONTROL_PORT_FILE_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(30);
     private static final long CONTROL_PORT_FILE_POLL_INTERVAL_MS = 100;
+    private static final String GEOIP_FILE = "GeoIPFile";
+    private static final String GEOIP_V6_FILE = "GeoIPv6File";
     // Environment variable to not launch the embedded Tor process
     public static final String TOR_SKIP_LAUNCH = "TOR_SKIP_LAUNCH";
 
@@ -234,7 +237,11 @@ public class TorService {
         torController = torControllerFactory.get();
 
         PasswordDigest hashedControlPassword = PasswordDigest.generateDigest();
-        Map<String, String> torrcConfigMap = createTorrcConfigFile(hashedControlPassword);
+        boolean isBundledTor = torDirectories.isBundledTor(torBinaryPath);
+        createTorrcConfigFile(hashedControlPassword, isBundledTor);
+        if (isBundledTor) {
+            createEmptyOpenSslConfig();
+        }
 
         // remove the control port file before we launch tor, just in case it exists from
         // a previous run
@@ -260,6 +267,7 @@ public class TorService {
 
             torController.initialize(controlPort);
             torController.authenticate(hashedControlPassword);
+            torController.verifyHashedControlPassword(hashedControlPassword);
             torController.bootstrap();
             if (!embeddedTorProcess.isAlive()) {
                 throw new TorStartupFailedException("Embedded Tor exited during bootstrap. " +
@@ -286,7 +294,13 @@ public class TorService {
 
     private EmbeddedTorProcess createTorProcess(Path torBinaryPath) {
         Consumer<Map<String, String>> environmentAdjuster = torDirectories.isBundledTor(torBinaryPath) ?
-                environment -> LdPreload.applyToEnvironment(environment, torDirectories.getBinaryDirPath()) :
+                environment -> {
+                    LdPreload.applyToEnvironment(environment, torDirectories.getBinaryDirPath());
+                    // The OpenSSL of the bundled Tor reads openssl.cnf from a directory of its build below
+                    // /var/tmp/dist, where any local user can create files, unless OPENSSL_CONF names another file.
+                    // The configuration can load modules into Tor.
+                    environment.put("OPENSSL_CONF", torDirectories.getOpenSslConfigPath().toAbsolutePath().toString());
+                } :
                 environment -> {
                 };
         return new EmbeddedTorProcess(createTorCommand(torBinaryPath),
@@ -410,15 +424,18 @@ public class TorService {
 
     public CompletableFuture<String> publishOnionService(int localPort, int onionServicePort, OnionServiceKey onionServiceKey) {
         long ts = System.currentTimeMillis();
+        String onionAddress = onionServiceKey.getOnionAddress();
         try {
-            String onionAddress = onionServiceKey.getOnionAddress();
-            log.info("Publish onion service for address {}:{} (localPort={})", onionAddress, onionServicePort, localPort);
+            // The onion address only at debug level: a log which a user shares must not list the onion services of
+            // the user together.
+            log.debug("Publish onion service {}:{} (localPort={})", onionAddress, onionServicePort, localPort);
             int torTargetPort = onionServiceTargets.targetPortOf(onionAddress, localPort);
             // The controller publishes each onion address once per connection to Tor, also for concurrent calls.
             torController.publish(onionServiceKey, onionServicePort, torTargetPort);
 
-            log.info("Tor onion service Ready. Took {} ms. Onion address={}:{} (localPort={})",
-                    System.currentTimeMillis() - ts, onionAddress, onionServicePort, localPort);
+            log.info("Tor onion service ready. Took {} ms (onionServicePort={}, localPort={})",
+                    System.currentTimeMillis() - ts, onionServicePort, localPort);
+            log.debug("Onion service {} is ready", onionAddress);
 
             return CompletableFuture.completedFuture(onionAddress);
         } catch (InterruptedException e) {
@@ -426,11 +443,11 @@ public class TorService {
             Thread.currentThread().interrupt(); // Restore interrupted state
             return CompletableFuture.failedFuture(e);
         } catch (IOException e) {
-            log.error("Can't create onion service", e);
+            logPublicationFailure(onionAddress, e);
             return CompletableFuture.failedFuture(e);
         } catch (RuntimeException e) {
             Throwable cause = unwrapCompletionException(e);
-            log.error("Can't create onion service", cause);
+            logPublicationFailure(onionAddress, cause);
             return CompletableFuture.failedFuture(cause);
         }
     }
@@ -442,17 +459,17 @@ public class TorService {
         try {
             target = onionServiceTargets.bindServerSocket(onionAddress);
         } catch (IOException e) {
-            log.error("Can't create onion service", e);
+            logPublicationFailure(onionAddress, e);
             return CompletableFuture.failedFuture(e);
         }
 
         try {
-            log.info("Publish onion service for onion address {}:{}", onionAddress, port);
+            log.debug("Publish onion service {}:{}", onionAddress, port);
             // The controller publishes each onion address once per connection to Tor, also for concurrent calls.
             torController.publish(onionServiceKey, port, target.torTargetPort());
 
-            log.info("Tor onion service Ready. Took {} ms. Onion address={}:{}",
-                    System.currentTimeMillis() - ts, onionAddress, port);
+            log.info("Tor onion service ready. Took {} ms (onionServicePort={})", System.currentTimeMillis() - ts, port);
+            log.debug("Onion service {} is ready", onionAddress);
 
             return CompletableFuture.completedFuture(target.serverSocket());
         } catch (InterruptedException e) {
@@ -463,9 +480,16 @@ public class TorService {
         } catch (RuntimeException e) {
             closeQuietly(target.serverSocket());
             Throwable cause = unwrapCompletionException(e);
-            log.error("Can't create onion service", cause);
+            logPublicationFailure(onionAddress, cause);
             return CompletableFuture.failedFuture(cause);
         }
+    }
+
+    // The message of a failure can name onion addresses, which link the identities of a user in a log that the user
+    // shares. Above debug level only a fixed text and the type of the failure.
+    private static void logPublicationFailure(String onionAddress, Throwable cause) {
+        log.error("Can't create onion service: {}", cause.getClass().getSimpleName());
+        log.debug("Can't create onion service {}", onionAddress, cause);
     }
 
     // TorController.publish reports a failed publication as a CompletionException with the failure as its cause. The
@@ -654,7 +678,43 @@ public class TorService {
         torInstaller.installIfNotUpToDate();
     }
 
-    private Map<String, String> createTorrcConfigFile(PasswordDigest hashedControlPassword) {
+    private static boolean isSet(Map<String, String> torrcConfigMap, String key) {
+        return torrcConfigMap.keySet().stream().anyMatch(existingKey -> TorrcClientConfigFactory.sets(existingKey, key));
+    }
+
+    /**
+     * The bundled Tor looks for its GeoIP files in a directory of its build below /var/tmp/dist, where any local user
+     * can create files, unless the torrc names them. Bisq names the files of the bundle also when one is missing from a
+     * damaged installation: Tor then runs without country data instead of reading that directory. A torrc override of
+     * the user still applies.
+     */
+    @VisibleForTesting
+    static void putBundledGeoIpFiles(Map<String, String> torrcConfigMap, TorDirectories torDirectories) {
+        putIfNotSet(torrcConfigMap, GEOIP_FILE, torDirectories.getBundledGeoIpFilePath());
+        putIfNotSet(torrcConfigMap, GEOIP_V6_FILE, torDirectories.getBundledGeoIpv6FilePath());
+    }
+
+    private static void putIfNotSet(Map<String, String> torrcConfigMap, String key, Path filePath) {
+        if (isSet(torrcConfigMap, key)) {
+            return;
+        }
+        if (!Files.exists(filePath)) {
+            log.warn("The Tor bundle has no {}. Tor runs without its country data.", filePath);
+        }
+        torrcConfigMap.put(key, TorrcSyntax.toValue(filePath.toAbsolutePath().toString()));
+    }
+
+    private void createEmptyOpenSslConfig() {
+        Path openSslConfigPath = torDirectories.getOpenSslConfigPath();
+        try {
+            FileUtils.writeToPath("", openSslConfigPath, platformServices.supportsPosixPermissions());
+        } catch (IOException e) {
+            log.warn("Couldn't write {}", openSslConfigPath, e);
+            throw new TorStartupFailedException("Couldn't write " + openSslConfigPath + ": " + e);
+        }
+    }
+
+    private Map<String, String> createTorrcConfigFile(PasswordDigest hashedControlPassword, boolean isBundledTor) {
         TorrcClientConfigFactory torrcClientConfigFactory = TorrcClientConfigFactory.builder()
                 .isTestNetwork(transportConfig.isTestNetwork())
                 .dataDirPath(torDirectories.getDataDirPath())
@@ -663,6 +723,9 @@ public class TorService {
 
         Map<String, String> torrcOverrideConfigs = transportConfig.getTorrcOverrides();
         Map<String, String> torrcConfigMap = torrcClientConfigFactory.torrcClientConfigMap(torrcOverrideConfigs);
+        if (isBundledTor) {
+            putBundledGeoIpFiles(torrcConfigMap, torDirectories);
+        }
 
         var torrcFileGenerator = new TorrcFileGenerator(torDirectories.getTorrcPath(),
                 torrcConfigMap,

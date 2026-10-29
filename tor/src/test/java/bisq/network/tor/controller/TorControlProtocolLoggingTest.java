@@ -17,10 +17,16 @@
 
 package bisq.network.tor.controller;
 
+import bisq.network.tor.controller.events.events.EventType;
+import bisq.network.tor.controller.events.events.HsDescEvent;
+import bisq.network.tor.controller.events.events.TorBootstrapEvent;
+import bisq.network.tor.controller.events.listener.BootstrapEventListener;
+import bisq.network.tor.controller.events.listener.HsDescEventListener;
 import bisq.network.tor.onionservice.OnionServiceKey;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.classic.spi.IThrowableProxy;
 import ch.qos.logback.core.read.ListAppender;
 import com.google.common.io.BaseEncoding;
 import org.junit.jupiter.api.AfterEach;
@@ -31,6 +37,7 @@ import org.junit.jupiter.api.parallel.Isolated;
 import org.slf4j.LoggerFactory;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
@@ -64,6 +71,9 @@ class TorControlProtocolLoggingTest {
     @BeforeEach
     void setUp() throws IOException {
         appender.start();
+        // The control traffic is logged at debug level. The checks of the logged forms need it.
+        protocolLogger.setLevel(Level.DEBUG);
+        readerLogger.setLevel(Level.DEBUG);
         protocolLogger.addAppender(appender);
         readerLogger.addAppender(appender);
         // TorControlProtocol connects to 127.0.0.1
@@ -79,6 +89,8 @@ class TorControlProtocolLoggingTest {
         }
         protocolLogger.detachAppender(appender);
         readerLogger.detachAppender(appender);
+        protocolLogger.setLevel(null);
+        readerLogger.setLevel(null);
         appender.stop();
     }
 
@@ -96,6 +108,25 @@ class TorControlProtocolLoggingTest {
         assertThat(messages).contains("Send Tor control command: ADD_ONION ED25519-V3:[hidden] Port=9999,12345",
                 "Received reply from Tor control server: 250-ServiceID=" + serviceId,
                 "Received reply from Tor control server: 250 OK");
+    }
+
+    @Test
+    void theControlTrafficIsLoggedAtDebugLevel() {
+        // The commands, replies and events name the onion addresses of the user and of peers. A log at info level,
+        // which users share in bug reports, would link the identities of a user.
+        OnionServiceKey onionServiceKey = TestKeys.randomOnionServiceKey();
+        String serviceId = onionServiceKey.getOnionAddress().replace(".onion", "");
+        startControlServer(command -> "250-ServiceID=" + serviceId + "\r\n250 OK\r\n");
+
+        torControlProtocol.addOnion(onionServiceKey, 9999, 12345);
+
+        List<ILoggingEvent> eventsWithServiceId;
+        synchronized (appender) {
+            eventsWithServiceId = appender.list.stream()
+                    .filter(event -> event.getFormattedMessage().contains(serviceId))
+                    .toList();
+        }
+        assertThat(eventsWithServiceId).isNotEmpty().allMatch(event -> event.getLevel() == Level.DEBUG);
     }
 
     @Test
@@ -160,6 +191,94 @@ class TorControlProtocolLoggingTest {
                     .collect(Collectors.toList());
         }
         assertThat(warningsAndErrors).isEmpty();
+    }
+
+    @Test
+    void theMessageOfAnInvalidReplyHidesTheValuesOfItsData() {
+        // The message of the exception ends up in a log, and an unexpected reply can carry a key which Tor generated.
+        String secretScalar = TestKeys.randomBase64SecretScalar();
+        startControlServer(command -> "250-PrivateKey=ED25519-V3:" + secretScalar + "\r\n250 OK\r\n");
+
+        assertThatThrownBy(() -> torControlProtocol.getInfo("version"))
+                .isInstanceOf(ControlCommandFailedException.class)
+                .hasMessageContaining("250-PrivateKey=[hidden]")
+                .hasMessageNotContaining(secretScalar);
+        assertThat(loggedMessages()).noneMatch(message -> message.contains(secretScalar));
+    }
+
+    @Test
+    void anUnknownEventIsLoggedInItsLoggableForm() {
+        String secretValue = "secret-value";
+        TorControlReader reader = new TorControlReader();
+
+        readEventAndReply(reader, "650 PrivateKey=" + secretValue);
+
+        assertThat(loggedMessages())
+                .noneMatch(message -> message.contains(secretValue))
+                .contains("Unknown Tor event: 650 PrivateKey=[hidden]");
+    }
+
+    @Test
+    void aMalformedEventIsLoggedWithItsTextAtDebugLevelOnly() {
+        // The text of an event can name an onion address, and the parser quotes a malformed field in its exception.
+        String serviceId = TestKeys.randomOnionServiceKey().getOnionAddress().replace(".onion", "");
+        TorControlReader reader = new TorControlReader();
+        reader.addBootstrapEventListener(new BootstrapEventListener(EventType.STATUS_CLIENT) {
+            @Override
+            public void onBootstrapStatusEvent(TorBootstrapEvent torBootstrapEvent) {
+            }
+        });
+
+        readEventAndReply(reader, "650 STATUS_CLIENT NOTICE BOOTSTRAP PROGRESS=" + serviceId + " TAG=a SUMMARY=\"b\"");
+
+        assertEventTextOnlyAtDebugLevel(serviceId, "Could not handle a Tor event");
+    }
+
+    @Test
+    void anEventWhichAListenerCannotHandleIsLoggedWithItsTextAtDebugLevelOnly() {
+        String serviceId = TestKeys.randomOnionServiceKey().getOnionAddress().replace(".onion", "");
+        TorControlReader reader = new TorControlReader();
+        reader.addHsDescEventListener(new HsDescEventListener(EventType.HS_DESC) {
+            @Override
+            public void onHsDescEvent(HsDescEvent hsDescEvent) {
+                throw new IllegalStateException("Cannot handle the event of " + hsDescEvent.getHsAddress());
+            }
+        });
+
+        readEventAndReply(reader, "650 HS_DESC RECEIVED " + serviceId + " NO_AUTH " +
+                "$0123456789ABCDEF0123456789ABCDEF01234567 descriptorId");
+
+        assertEventTextOnlyAtDebugLevel(serviceId, "A listener could not handle a Tor event");
+    }
+
+    private static void readEventAndReply(TorControlReader reader, String event) {
+        reader.start(new ByteArrayInputStream((event + "\r\n250 OK\r\n").getBytes(StandardCharsets.US_ASCII)));
+        // The reader handles the event before it queues the reply which follows it.
+        assertThat(reader.readLine()).isEqualTo("250 OK");
+        reader.close();
+    }
+
+    private void assertEventTextOnlyAtDebugLevel(String serviceId, String warning) {
+        List<ILoggingEvent> events;
+        synchronized (appender) {
+            events = List.copyOf(appender.list);
+        }
+        assertThat(events)
+                .filteredOn(event -> event.getLevel().isGreaterOrEqual(Level.INFO))
+                .noneMatch(event -> textOf(event).contains(serviceId))
+                .anyMatch(event -> event.getLevel() == Level.WARN && event.getFormattedMessage().startsWith(warning));
+        assertThat(events)
+                .filteredOn(event -> event.getLevel() == Level.DEBUG && event.getThrowableProxy() != null)
+                .anyMatch(event -> event.getFormattedMessage().contains(serviceId));
+    }
+
+    // The message with the messages of the logged exception and its causes
+    private static String textOf(ILoggingEvent event) {
+        StringBuilder text = new StringBuilder(event.getFormattedMessage());
+        for (IThrowableProxy throwable = event.getThrowableProxy(); throwable != null; throwable = throwable.getCause()) {
+            text.append('\n').append(throwable.getMessage());
+        }
+        return text.toString();
     }
 
     private void startControlServer(Function<String, String> replyByCommand) {

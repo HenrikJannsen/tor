@@ -20,11 +20,14 @@ package bisq.network.tor.process;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.io.File;
 import java.io.IOException;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -56,5 +59,69 @@ class EmbeddedTorProcessTest {
         process.waitUntilExited();
 
         assertThat(Files.readString(stdoutLogPath).trim()).isEqualTo(workingDir.toRealPath().toString());
+    }
+
+    @Test
+    void torRunsInASessionOfItsOwnSoThatCtrlCInTheTerminalOfBisqDoesNotReachIt() throws IOException {
+        // The session ID is the sixth field of /proc/<pid>/stat on Linux
+        Path jvmStat = Path.of("/proc/self/stat");
+        assumeTrue(Files.isReadable(jvmStat));
+        assumeTrue(EmbeddedTorProcess.findExecutableInPath(System.getenv("PATH"), "setsid").isPresent());
+        Path stdoutLogPath = tempDir.resolve("tor-stdout.log");
+
+        runToCompletion("echo $$ $(cut -d ' ' -f 6 /proc/$$/stat)", stdoutLogPath);
+
+        String[] pidAndSession = Files.readString(stdoutLogPath).trim().split(" ");
+        assertThat(pidAndSession[1]).isEqualTo(pidAndSession[0]);
+        assertThat(pidAndSession[1]).isNotEqualTo(Files.readString(jvmStat).split(" ")[5]);
+    }
+
+    @Test
+    void setsidPrecedesTheCommandWhereTheSystemHasIt() {
+        List<String> command = List.of("/usr/bin/tor", "-f", "torrc");
+        Path setsidPath = tempDir.resolve("setsid");
+
+        assertThat(EmbeddedTorProcess.inSessionOfItsOwn(command, Optional.of(setsidPath)))
+                .containsExactly(setsidPath.toString(), "/usr/bin/tor", "-f", "torrc");
+        assertThat(EmbeddedTorProcess.inSessionOfItsOwn(command, Optional.empty())).isEqualTo(command);
+    }
+
+    private void runToCompletion(String shellCommand, Path stdoutLogPath) {
+        var process = new EmbeddedTorProcess(List.of("/bin/sh", "-c", shellCommand), tempDir, environment -> {
+        }, stdoutLogPath, tempDir.resolve("tor-stderr.log"));
+        process.start();
+        process.waitUntilExited();
+    }
+
+    @Test
+    void anUnsetPathFindsNothing() {
+        assertThat(EmbeddedTorProcess.findExecutableInPath(null, "tor")).isEmpty();
+    }
+
+    @Test
+    void onlyAnExecutableFileInAnAbsoluteDirectoryIsFound() throws IOException {
+        assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"));
+        Path withDirectory = Files.createDirectories(tempDir.resolve("withDirectory").resolve("tor")).getParent();
+        Path withNotExecutableFile = Files.createDirectories(tempDir.resolve("withNotExecutableFile"));
+        Files.createFile(withNotExecutableFile.resolve("tor"));
+        Path withExecutable = Files.createDirectories(tempDir.resolve("withExecutable"));
+        Path executable = Files.createFile(withExecutable.resolve("tor"));
+        Files.setPosixFilePermissions(executable, PosixFilePermissions.fromString("rwx------"));
+
+        // An empty entry and "." mean the working directory, "bin" a directory relative to it.
+        String path = String.join(File.pathSeparator, "", ".", "bin", withDirectory.toString(),
+                withNotExecutableFile.toString(), withExecutable.toString());
+
+        assertThat(EmbeddedTorProcess.findExecutableInPath(path, "tor")).contains(executable);
+    }
+
+    @Test
+    void relativeEntriesAreIgnored() throws IOException {
+        assumeTrue(FileSystems.getDefault().supportedFileAttributeViews().contains("posix"));
+        Path relativeDirectory = Path.of("").toAbsolutePath().relativize(Files.createDirectories(tempDir.resolve("relative")));
+        Path executable = Files.createFile(tempDir.resolve("relative").resolve("tor"));
+        Files.setPosixFilePermissions(executable, PosixFilePermissions.fromString("rwx------"));
+
+        assertThat(EmbeddedTorProcess.findExecutableInPath(relativeDirectory.toString(), "tor")).isEmpty();
     }
 }

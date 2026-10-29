@@ -52,6 +52,20 @@ class OnionServiceOnlineStateServiceTest {
     }
 
     @Test
+    void theThreadNameCarriesACounterInsteadOfTheOnionAddress() {
+        // The thread name is in every log line of the thread, and the address of a peer must not appear in a log
+        // which a user shares.
+        Thread first = OnionServiceOnlineStateService.createThreadFactory().newThread(() -> {
+        });
+        Thread second = OnionServiceOnlineStateService.createThreadFactory().newThread(() -> {
+        });
+
+        assertThat(first.getName()).matches("OnionServiceOnlineStateService-\\d+-\\d+");
+        assertThat(second.getName()).matches("OnionServiceOnlineStateService-\\d+-\\d+").isNotEqualTo(first.getName());
+        assertThat(first.isDaemon()).isTrue();
+    }
+
+    @Test
     void aReceivedDescriptorMeansOnline() throws Exception {
         connect(command -> command.startsWith("HSFETCH") ?
                 "250 OK\r\n650 HS_DESC RECEIVED " + serviceId + " NO_AUTH " + HS_DIR + " descriptorId\r\n" :
@@ -177,6 +191,22 @@ class OnionServiceOnlineStateServiceTest {
     }
 
     @Test
+    void aRefusedLookupDoesNotNameThePeerInTheMessage() throws Exception {
+        // Bisq 2 logs the failure at error level, and the address of a peer must not appear in a log which a user
+        // shares. Tor names the address in some refusals.
+        connect(command -> command.startsWith("HSFETCH") ?
+                "513 Invalid argument \"" + serviceId + "\"\r\n" :
+                "250 OK\r\n");
+
+        CompletableFuture<Boolean> lookup = torController.isOnionServiceOnlineAsync(onionAddress);
+
+        assertThatThrownBy(lookup::join)
+                .hasCauseInstanceOf(ControlCommandFailedException.class)
+                .hasMessageContaining("HSFETCH")
+                .hasMessageNotContaining(serviceId);
+    }
+
+    @Test
     void aShutdownFailsTheLookupInsteadOfAnsweringOffline() throws Exception {
         server = new FakeTorControlServer(command -> "250 OK\r\n");
         TorControlProtocol torControlProtocol = new TorControlProtocol();
@@ -193,6 +223,17 @@ class OnionServiceOnlineStateServiceTest {
         } finally {
             torControlProtocol.close();
         }
+    }
+
+    @Test
+    void anythingButAServiceIdIsRefusedBeforeItReachesTor() throws Exception {
+        // The address of a peer comes from the network. CR LF would carry a second command into the connection.
+        connect(command -> "250 OK\r\n");
+
+        CompletableFuture<Boolean> lookup = torController.isOnionServiceOnlineAsync(serviceId + "\r\nSIGNAL SHUTDOWN");
+
+        assertThatThrownBy(lookup::join).hasCauseInstanceOf(IllegalArgumentException.class);
+        assertThat(server.getCommands()).noneMatch(command -> command.startsWith("HSFETCH") || command.startsWith("SIGNAL"));
     }
 
     private void waitForCommand(String commandStart) throws InterruptedException {

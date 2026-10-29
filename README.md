@@ -62,6 +62,10 @@ fails if no HSDir has stored the descriptor within the upload timeout of `TorTra
 Bisq never deletes the `lock` file of Tor in its data directory: Tor locks it while it runs, so a file which an ended
 Tor left blocks no start, and a Tor which still runs on the directory makes the next one exit.
 
+`EmbeddedTorProcess` starts Tor with the `setsid` program of the system in a session of its own, if the system has
+one, as Linux does. A Ctrl+C in the terminal of Bisq then does not reach Tor, which would otherwise exit at once,
+before the shutdown of Bisq has used it. macOS has no `setsid`, so there Tor stays in the process group of Bisq.
+
 ## Build
 
 Run these commands in the repository root:

@@ -79,7 +79,17 @@ public class PublishOnionAddressService extends FilteredHsDescEventListener {
                     torControlProtocol.addHsDescEventListener(this);
 
                     String serviceId = onionServiceKey.getOnionAddress().replace(".onion", "");
-                    torControlProtocol.addOnion(onionServiceKey, onionServicePort, localPort);
+                    Optional<String> reportedServiceId = torControlProtocol.addOnion(onionServiceKey, onionServicePort, localPort);
+                    if (reportedServiceId.isPresent() && !reportedServiceId.get().equals(serviceId)) {
+                        // Tor derives the onion address from the key, so the key of the caller does not belong to
+                        // its onion address. Tor publishes the key under the address it reported. The addresses only
+                        // at debug level: the exception can end up in a log which the user shares.
+                        log.debug("The key of {} belongs to the onion address {}.onion",
+                                onionServiceKey.getOnionAddress(), reportedServiceId.get());
+                        removeOnionServiceQuietly(reportedServiceId.get());
+                        throw new HsDescUploadFailedException("The key of the onion service belongs to another onion " +
+                                "address");
+                    }
 
                     try {
                         awaitUpload();
@@ -147,7 +157,10 @@ public class PublishOnionAddressService extends FilteredHsDescEventListener {
         try {
             torControlProtocol.delOnion(serviceId);
         } catch (RuntimeException e) {
-            log.warn("Could not remove the onion service {}.onion from Tor", serviceId, e);
+            // The onion address, which the message of the exception carries, only at debug level
+            log.warn("Could not remove an onion service from Tor after its publication failed: {}",
+                    e.getClass().getSimpleName());
+            log.debug("Could not remove the onion service {}.onion from Tor", serviceId, e);
         }
     }
 
@@ -165,12 +178,12 @@ public class PublishOnionAddressService extends FilteredHsDescEventListener {
 
     @Override
     public void onFilteredEvent(HsDescEvent hsDescEvent) {
-        log.info("Received HsDescEvent: {}", StringUtils.truncate(hsDescEvent, 200));
+        log.debug("Received HsDescEvent: {}", StringUtils.truncate(hsDescEvent, 200));
         if (!completesThePublication(hsDescEvent)) {
             return;
         }
         if (countDownLatch.getCount() > 0) {
-            log.info("Publishing of onion address completed. Event {}", StringUtils.truncate(hsDescEvent, 200));
+            log.debug("Publishing of onion address completed. Event {}", StringUtils.truncate(hsDescEvent, 200));
         }
         countDownLatch.countDown();
     }

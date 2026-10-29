@@ -69,6 +69,15 @@ class TorControlLogFormatTest {
                 .isEqualTo("HSFETCH bedb3wpuybkuwvjat2zq5odtqbajq7x3ovllvh7l2kbxakbgkzgikqyd");
         assertThat(TorControlLogFormat.toLoggableCommand("RESETCONF __OwningControllerProcess\r\n"))
                 .isEqualTo("RESETCONF __OwningControllerProcess");
+        // RESETCONF can also set a value, which can be a password. Everything after the first value is hidden.
+        assertThat(TorControlLogFormat.toLoggableCommand("RESETCONF Socks5ProxyPassword=secret DisableNetwork\r\n"))
+                .isEqualTo("RESETCONF Socks5ProxyPassword=[hidden]");
+        assertThat(TorControlLogFormat.toLoggableCommand("RESETCONF DisableNetwork Socks5ProxyPassword=secret\r\n"))
+                .isEqualTo("RESETCONF DisableNetwork Socks5ProxyPassword=[hidden]");
+        // A quoted value with spaces must not show its tail
+        assertThat(TorControlLogFormat.toLoggableCommand(
+                "RESETCONF Socks5ProxyPassword=\"first \\\" second\" DisableNetwork\r\n"))
+                .isEqualTo("RESETCONF Socks5ProxyPassword=[hidden]");
         assertThat(TorControlLogFormat.toLoggableCommand("SETEVENTS STATUS_CLIENT HS_DESC\r\n"))
                 .isEqualTo("SETEVENTS STATUS_CLIENT HS_DESC");
         assertThat(TorControlLogFormat.toLoggableCommand("SETEVENTS\r\n"))

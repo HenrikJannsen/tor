@@ -55,6 +55,20 @@ public final class TorDirectories {
         externalTorConfigPath = baseDirPath.resolve(EXTERNAL_TOR_CONFIG_FILE_NAME);
     }
 
+    // The GeoIP files of the bundled Tor, which the bundle installs next to the binary.
+    public Path getBundledGeoIpFilePath() {
+        return binaryDirPath.resolve("geoip");
+    }
+
+    public Path getBundledGeoIpv6FilePath() {
+        return binaryDirPath.resolve("geoip6");
+    }
+
+    // An empty OpenSSL configuration for the bundled Tor
+    public Path getOpenSslConfigPath() {
+        return baseDirPath.resolve("openssl.cnf");
+    }
+
     public Path getBundledTorBinaryPath() {
         return getBundledTorBinaryPath(OS.isWindows());
     }

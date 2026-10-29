@@ -106,6 +106,16 @@ class PublishOnionAddressServiceTest {
     }
 
     @Test
+    void aReplyWithoutServiceIdIsAccepted() throws Exception {
+        // A filtering proxy of the control port, such as onion-grater on Whonix, may omit the service ID.
+        connect(1000, command -> command.startsWith("ADD_ONION") ?
+                "250 OK\r\n" + uploadEvents(serviceId) :
+                "250 OK\r\n");
+
+        assertThatCode(() -> torController.publish(onionServiceKey, 9999, 12345)).doesNotThrowAnyException();
+    }
+
+    @Test
     void theEndOfAnUploadAlsoPublishesTheOnionService() throws Exception {
         // A filtering control port may deliver only UPLOADED, here with a redacted HSDir as onion-grater on Whonix does
         connect(1000, command -> command.startsWith("ADD_ONION") ?
@@ -139,6 +149,22 @@ class PublishOnionAddressServiceTest {
 
         assertThatCode(() -> torController.publish(upperCaseKey, 9999, 12345)).doesNotThrowAnyException();
         assertThat(server.getCommands()).noneMatch(command -> command.startsWith("DEL_ONION"));
+    }
+
+    @Test
+    void aKeyOfAnotherOnionAddressFailsAndIsRemoved() throws Exception {
+        String otherServiceId = TestKeys.randomOnionServiceKey().getOnionAddress().replace(".onion", "");
+        connect(1000, command -> command.startsWith("ADD_ONION") ?
+                addOnionReply(otherServiceId) + uploadEvents(otherServiceId) :
+                "250 OK\r\n");
+
+        // The message names no onion address, because the apps log it.
+        assertThatThrownBy(() -> torController.publish(onionServiceKey, 9999, 12345))
+                .hasRootCauseInstanceOf(HsDescUploadFailedException.class)
+                .hasMessageContaining("another onion address")
+                .hasMessageNotContaining(serviceId)
+                .hasMessageNotContaining(otherServiceId);
+        assertThat(server.getCommands()).contains("DEL_ONION " + otherServiceId);
     }
 
     @Test
