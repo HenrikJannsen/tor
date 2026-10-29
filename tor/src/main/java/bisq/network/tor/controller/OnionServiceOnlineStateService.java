@@ -24,7 +24,6 @@ import bisq.network.tor.controller.events.events.HsDescFailedEvent;
 import bisq.network.tor.controller.events.listener.FilteredHsDescEventListener;
 import com.google.common.util.concurrent.MoreExecutors;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
-import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.Optional;
@@ -34,6 +33,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 
 @Slf4j
 public class OnionServiceOnlineStateService extends FilteredHsDescEventListener {
@@ -41,17 +41,31 @@ public class OnionServiceOnlineStateService extends FilteredHsDescEventListener 
     private final String onionAddress;
     private final long timeout;
     private final CountDownLatch countDownLatch = new CountDownLatch(1);
+    private final Runnable connectionEndListener = this::onConnectionEnd;
+    // The controller closes the connection before it shuts the service down, so an end of the connection during the
+    // shutdown of the controller is that shutdown.
+    private final BooleanSupplier isControllerShutDown;
+    private volatile boolean isShutdown;
+    private volatile boolean hasConnectionEnded;
+    // The result of the lookup, written by the first HS_DESC event before it opens the latch
     private boolean isOnline;
-    @Getter
-    private Optional<CompletableFuture<Boolean>> future = Optional.empty();
+    private Optional<String> failureReason = Optional.empty();
     private final ExecutorService executor;
 
     public OnionServiceOnlineStateService(TorControlProtocol torControlProtocol, String onionAddress, long timeout) {
+        this(torControlProtocol, onionAddress, timeout, () -> false);
+    }
+
+    OnionServiceOnlineStateService(TorControlProtocol torControlProtocol,
+                                   String onionAddress,
+                                   long timeout,
+                                   BooleanSupplier isControllerShutDown) {
         super(EventType.HS_DESC, onionAddress, Set.of(HsDescEvent.Action.FAILED, HsDescEvent.Action.RECEIVED));
 
         this.torControlProtocol = torControlProtocol;
         this.onionAddress = onionAddress;
         this.timeout = timeout;
+        this.isControllerShutDown = isControllerShutDown;
         String name = "OnionServiceOnlineStateService-" + StringUtils.truncate(onionAddress, 12);
         executor = Executors.newSingleThreadExecutor(new ThreadFactoryBuilder()
                 .setNameFormat(name + "-%d")
@@ -61,7 +75,8 @@ public class OnionServiceOnlineStateService extends FilteredHsDescEventListener 
     }
 
     public CompletableFuture<Boolean> isOnionServiceOnlineAsync() {
-        future = Optional.of(CompletableFuture.supplyAsync(() -> {
+        return CompletableFuture.supplyAsync(() -> {
+                    torControlProtocol.addConnectionEndListener(connectionEndListener);
                     torControlProtocol.addHsDescEventListener(this);
 
                     String serviceId = onionAddress.replace(".onion", "");
@@ -76,43 +91,86 @@ public class OnionServiceOnlineStateService extends FilteredHsDescEventListener 
                     } catch (Exception e) {
                         throw new RuntimeException(e);
                     }
+                    if (isShutdown || isControllerShutDown.getAsBoolean()) {
+                        throw new RuntimeException("The Tor controller was shut down before the lookup of the onion " +
+                                "service completed");
+                    }
+                    if (hasConnectionEnded) {
+                        throw new RuntimeException("The connection to the Tor control port ended before the lookup " +
+                                "of the onion service completed");
+                    }
                     if (!isSuccess) {
-                        throw new RuntimeException("Could not get onion address upload completed in " + timeout / 1000 + " seconds");
+                        throw new RuntimeException("Tor did not report the result of the lookup of the onion " +
+                                "service within " + timeout / 1000 + " seconds");
+                    }
+                    if (failureReason.isPresent()) {
+                        throw new RuntimeException("Tor could not look up the onion service: " + failureReason.get());
                     }
 
                     return isOnline;
                 }, executor)
                 .whenComplete((isOnline, throwable) -> {
-                    torControlProtocol.removeHsDescEventListener(this);
-                    executor.shutdown();
-                }));
-        return future.get();
+                    try {
+                        torControlProtocol.removeConnectionEndListener(connectionEndListener);
+                        removeHsDescEventListenerQuietly();
+                    } finally {
+                        executor.shutdown();
+                    }
+                });
     }
 
+    // The result of the lookup stands when Tor does not confirm the SETEVENTS of the removal: an exception here would
+    // replace it. Tor then reports HS_DESC events which no listener needs.
+    private void removeHsDescEventListenerQuietly() {
+        try {
+            torControlProtocol.removeHsDescEventListener(this);
+        } catch (RuntimeException e) {
+            log.warn("Could not remove the event listener of an onion service lookup", e);
+        }
+    }
+
+    // Tor exited or closed the connection: the result of the lookup cannot arrive any more.
+    private void onConnectionEnd() {
+        hasConnectionEnded = true;
+        countDownLatch.countDown();
+    }
+
+    // The lookup fails then: without the flag, the open latch would answer "offline". The lookup, which the count down
+    // ends, removes its listeners when it completes.
     public void shutdown() {
-        torControlProtocol.removeHsDescEventListener(this);
+        isShutdown = true;
         if (countDownLatch.getCount() > 0) {
             countDownLatch.countDown();
         }
         MoreExecutors.shutdownAndAwaitTermination(executor, 100, TimeUnit.MILLISECONDS);
     }
 
+    /**
+     * Tor fetches the descriptor from one HSDir per HSFETCH, so the first result is the answer. NOT_FOUND means that the
+     * service is offline. Another reason, for example QUERY_NO_HSDIR or QUERY_RATE_LIMITED, means that Tor could not
+     * look it up, so the lookup fails at once instead of waiting for its timeout. The events arrive on the one thread of
+     * the reader.
+     */
     @Override
     public void onFilteredEvent(HsDescEvent hsDescEvent) {
+        if (countDownLatch.getCount() == 0) {
+            return;
+        }
         switch (hsDescEvent.getAction()) {
             case FAILED:
-                HsDescFailedEvent hsDescFailedEvent = (HsDescFailedEvent) hsDescEvent;
-                if (hsDescFailedEvent.getReason().equals("REASON=NOT_FOUND")) {
-                    log.info("hsFetch request for {} failed with reason NOT_FOUND", onionAddress);
-                    countDownLatch.countDown();
+                Optional<String> reason = ((HsDescFailedEvent) hsDescEvent).getReason();
+                log.info("hsFetch request for {} failed with reason {}", onionAddress, reason.orElse("none"));
+                if (!reason.equals(Optional.of("NOT_FOUND"))) {
+                    failureReason = Optional.of(reason.map(value -> "REASON=" + value).orElse("no REASON"));
                 }
+                countDownLatch.countDown();
                 break;
             case RECEIVED:
                 log.info("hsFetch request for {} succeeded", onionAddress);
                 isOnline = true;
                 countDownLatch.countDown();
                 break;
-            case UPLOADED:
+            default:
                 break;
         }
     }

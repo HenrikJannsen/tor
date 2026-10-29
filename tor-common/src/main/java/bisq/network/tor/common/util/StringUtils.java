@@ -29,7 +29,13 @@ public class StringUtils {
         String string = value.toString();
         int ellipsisLength = UNICODE_ELLIPSIS.length();
         if (maxLength > ellipsisLength && string.length() > maxLength) {
-            return string.substring(0, maxLength - ellipsisLength) + UNICODE_ELLIPSIS;
+            int endIndex = maxLength - ellipsisLength;
+            // Do not cut between the two chars of a surrogate pair (e.g. an emoji). The lone high
+            // surrogate is not valid UTF-16 and gets replaced by '?' when the text is encoded as UTF-8.
+            if (Character.isHighSurrogate(string.charAt(endIndex - 1))) {
+                endIndex--;
+            }
+            return string.substring(0, endIndex) + UNICODE_ELLIPSIS;
         } else {
             return string;
         }

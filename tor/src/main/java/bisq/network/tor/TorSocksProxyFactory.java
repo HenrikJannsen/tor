@@ -55,6 +55,8 @@ public class TorSocksProxyFactory {
         checkArguments(host, port, streamId);
         Socket socket = new Socket();
         try {
+            // Bisq writes small messages and waits for the answer. Nagle's algorithm would delay them.
+            socket.setTcpNoDelay(true);
             socket.setSoTimeout(socketTimeout);
             socket.connect(new InetSocketAddress("127.0.0.1", socksPort), socketTimeout);
             performHandshake(socket, host, port, streamId);

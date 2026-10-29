@@ -22,6 +22,10 @@ import bisq.network.tor.controller.events.events.EventType;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
+/**
+ * Receives the bootstrap status events of Tor on the reader thread of the control connection. It must return quickly and must not
+ * send a command or add or remove a listener; see {@link bisq.network.tor.controller.TorControlReader}.
+ */
 @Slf4j
 public abstract class BootstrapEventListener {
     @Getter

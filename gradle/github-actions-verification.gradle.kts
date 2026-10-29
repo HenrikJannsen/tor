@@ -2,6 +2,7 @@ import org.gradle.api.GradleException
 import java.nio.charset.StandardCharsets
 
 val expectedReleaseJavaVersion = providers.gradleProperty("releaseBuild.javaVersion")
+val expectedReleaseJavaRuntimeVersion = providers.gradleProperty("releaseBuild.javaRuntimeVersion")
 
 tasks.register("verifyGithubActionsSecurity") {
     group = "verification"
@@ -15,13 +16,17 @@ tasks.register("verifyGithubActionsSecurity") {
 
     inputs.files(workflowFiles)
     inputs.property("expectedReleaseJavaVersion", expectedReleaseJavaVersion.orElse(""))
+    inputs.property("expectedReleaseJavaRuntimeVersion", expectedReleaseJavaRuntimeVersion.orElse(""))
     outputs.upToDateWhen { false }
     // Copies of the values of the script and the project, which the configuration cache cannot store
     val releaseJavaVersion = expectedReleaseJavaVersion
+    val releaseJavaRuntimeVersion = expectedReleaseJavaRuntimeVersion
     val rootDirectory = rootDir
 
     doLast {
         val expectedJavaVersion = releaseJavaVersion.orNull?.trim()
+        val expectedJavaRuntimeVersion = releaseJavaRuntimeVersion.orNull?.trim()
+        val expectedJavaBuildVersion = expectedJavaRuntimeVersion?.removeSuffix("-LTS")
         val violations = mutableListOf<String>()
         val usesRegex = Regex("""^\s*-?\s*uses:\s*([^#\s]+)(?:\s+#\s*(.+))?\s*$""")
         val floatingRunnerRegex = Regex("""\b(ubuntu|macos|windows)-latest\b""", RegexOption.IGNORE_CASE)
@@ -31,7 +36,7 @@ tasks.register("verifyGithubActionsSecurity") {
         val variableComparisonRegex = Regex("""\bvars\.[A-Za-z0-9_]+\s*==\s*'[^']*'""")
         val javaVersionRegex = Regex("""^\s*java-version:\s*([^#]+?)(?:\s+#.*)?$""")
         val javaMatrixRegex = Regex("""^\s*java:\s*\[([^]]+)]\s*(?:#.*)?$""")
-        val exactJavaVersionRegex = Regex("""\d+\.\d+\.\d+""")
+        val exactJavaVersionRegex = Regex("""\d+(?:\.\d+){2,}\+\d+""")
         val checkLatestTrueRegex = Regex("""^\s*check-latest:\s*['"]?true['"]?\s*$""", RegexOption.IGNORE_CASE)
         val checkLatestFalseRegex = Regex("""^\s*check-latest:\s*['"]?false['"]?\s*$""", RegexOption.IGNORE_CASE)
         val persistCredentialsFalseRegex = Regex("""^\s*persist-credentials:\s*['"]?false['"]?\s*$""", RegexOption.IGNORE_CASE)
@@ -46,6 +51,12 @@ tasks.register("verifyGithubActionsSecurity") {
 
         if (expectedJavaVersion.isNullOrEmpty()) {
             violations += "Missing releaseBuild.javaVersion in gradle.properties"
+        }
+        if (expectedJavaRuntimeVersion.isNullOrEmpty()) {
+            violations += "Missing releaseBuild.javaRuntimeVersion in gradle.properties"
+        } else if (expectedJavaVersion != null &&
+            !expectedJavaBuildVersion.orEmpty().startsWith("$expectedJavaVersion+")) {
+            violations += "releaseBuild.javaRuntimeVersion does not match releaseBuild.javaVersion"
         }
 
         fun cleanYamlScalar(value: String): String {
@@ -167,9 +178,9 @@ tasks.register("verifyGithubActionsSecurity") {
                     if (!javaVersion.startsWith("\${{") && !exactJavaVersionRegex.matches(javaVersion)) {
                         violations += "$workflowPath:$lineNumber uses a floating Java version: ${line.trim()}"
                     } else if (!javaVersion.startsWith("\${{") &&
-                        !expectedJavaVersion.isNullOrEmpty() &&
-                        javaVersion != expectedJavaVersion) {
-                        violations += "$workflowPath:$lineNumber uses Java version $javaVersion but releaseBuild.javaVersion is $expectedJavaVersion"
+                        !expectedJavaBuildVersion.isNullOrEmpty() &&
+                        javaVersion != expectedJavaBuildVersion) {
+                        violations += "$workflowPath:$lineNumber uses Java version $javaVersion but releaseBuild.javaRuntimeVersion is $expectedJavaRuntimeVersion"
                     }
                 }
 
@@ -182,8 +193,8 @@ tasks.register("verifyGithubActionsSecurity") {
                         .forEach {
                             if (!exactJavaVersionRegex.matches(it)) {
                                 violations += "$workflowPath:$lineNumber uses a floating Java matrix version: $it"
-                            } else if (!expectedJavaVersion.isNullOrEmpty() && it != expectedJavaVersion) {
-                                violations += "$workflowPath:$lineNumber uses Java matrix version $it but releaseBuild.javaVersion is $expectedJavaVersion"
+                            } else if (!expectedJavaBuildVersion.isNullOrEmpty() && it != expectedJavaBuildVersion) {
+                                violations += "$workflowPath:$lineNumber uses Java matrix version $it but releaseBuild.javaRuntimeVersion is $expectedJavaRuntimeVersion"
                             }
                         }
                 }

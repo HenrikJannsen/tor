@@ -27,8 +27,14 @@ public interface PlatformServices {
 
     /**
      * @return the executable paths of all running processes
+     * @deprecated the library no longer calls it: it served the deletion of the lock file of Tor, which Tor locks
+     * itself. It stays a default method so that the implementations of the applications compile; remove them, then
+     * this method.
      */
-    Stream<String> getProcessCommandStream();
+    @Deprecated
+    default Stream<String> getProcessCommandStream() {
+        return Stream.empty();
+    }
 
     /**
      * @return false if the Tor build must not set POSIX file permissions for the files and directories which it

@@ -31,6 +31,7 @@ import bisq.network.tor.onionservice.OnionServiceKey;
 import bisq.network.tor.onionservice.OnionServiceTargets;
 import bisq.network.tor.process.EmbeddedTorProcess;
 import bisq.network.tor.process.LdPreload;
+import bisq.network.tor.process.LoopbackPorts;
 import bisq.network.tor.process.TorDirectories;
 import bisq.network.tor.process.TorStartupFailedException;
 import bisq.network.tor.process.control_port.ControlPortFileParser;
@@ -40,7 +41,6 @@ import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
-import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
@@ -54,10 +54,9 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CopyOnWriteArraySet;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -77,19 +76,28 @@ public class TorService {
     private final TorTransportConfig transportConfig;
     private final PlatformServices platformServices;
     private final TorDirectories torDirectories;
-    // Creates the controller of each start
+    // Creates the controller of each start, see createControllerOfTheStart
     private final Supplier<TorController> torControllerFactory;
 
-    private TorController torController;
-    private final Set<String> publishedOnionServices = new CopyOnWriteArraySet<>();
+    private final Object lifecycleLock = new Object();
+    // The initialization which runs or succeeded, whose result every caller of initialize gets. Empty before the first
+    // initialization, after a failed one, and from the begin of a shutdown on. Guarded by lifecycleLock.
+    private Optional<CompletableFuture<Boolean>> initialization = Optional.empty();
+    // The shutdown which runs. Guarded by lifecycleLock.
+    private Optional<CompletableFuture<Boolean>> runningShutdown = Optional.empty();
+
+    // Written by initialize and by shutdown, which runs on another thread, and read by the API methods
+    private volatile TorController torController;
     // Written by initialize, read by the user interface
     @Getter
     private volatile boolean useExternalTor;
-    private final AtomicBoolean isRunning = new AtomicBoolean();
+    // The version which the running Tor reports. On Linux it is the tor of the system, not the bundled version.
+    @Getter
+    private volatile Optional<String> torVersion = Optional.empty();
 
-    private Optional<EmbeddedTorProcess> torProcess = Optional.empty();
-    private Optional<TorSocksProxyFactory> torSocksProxyFactory = Optional.empty();
-    private volatile OnionServiceTargets onionServiceTargets = new DirectOnionServiceTargets(getOnionServiceBindAddress());
+    private volatile Optional<EmbeddedTorProcess> torProcess = Optional.empty();
+    private volatile Optional<TorSocksProxyFactory> torSocksProxyFactory = Optional.empty();
+    private volatile OnionServiceTargets onionServiceTargets = new DirectOnionServiceTargets(LoopbackPorts.IPV4_LOOPBACK);
     private final Map<String, String> externalTorConfigMap = new HashMap<>();
 
     public TorService(TorTransportConfig transportConfig, PlatformServices platformServices) {
@@ -104,15 +112,93 @@ public class TorService {
         this.transportConfig = transportConfig;
         this.platformServices = platformServices;
         this.torDirectories = new TorDirectories(transportConfig.getDataDirPath());
-        this.torControllerFactory = torControllerFactory;
+        this.torControllerFactory = () -> createControllerOfTheStart(torControllerFactory);
     }
 
+    /**
+     * Starts Tor, or connects to the external Tor, in the thread of the caller. Callers share one initialization: a
+     * call while it runs gets its result, and a call after its success gets the success at once. A failure lets the
+     * next call start again, also a failure before the connection, for example an invalid external_tor.config. A
+     * shutdown while the initialization runs makes it fail. A call during a shutdown waits for the end of the shutdown
+     * and then starts again, as a call after a shutdown does.
+     *
+     * @return a future which completes with true once Tor runs. The caller whose thread runs the start gets a failure
+     * thrown; the callers which share the initialization get it in the future.
+     */
     public CompletableFuture<Boolean> initialize() {
-        boolean isNotRunning = isRunning.compareAndSet(false, true);
-        if (!isNotRunning) {
-            return CompletableFuture.completedFuture(true);
+        CompletableFuture<Boolean> ownInitialization = new CompletableFuture<>();
+        Optional<CompletableFuture<Boolean>> sharedInitialization = shareOrBeginInitialization(ownInitialization);
+        if (sharedInitialization.isPresent()) {
+            return sharedInitialization.get();
         }
+        try {
+            start();
+        } catch (RuntimeException | Error e) {
+            synchronized (lifecycleLock) {
+                if (isCurrentInitialization(ownInitialization)) {
+                    initialization = Optional.empty();
+                }
+            }
+            ownInitialization.completeExceptionally(e);
+            throw e;
+        }
+        boolean isEndedByShutdown;
+        synchronized (lifecycleLock) {
+            isEndedByShutdown = !isCurrentInitialization(ownInitialization);
+        }
+        if (isEndedByShutdown) {
+            // The shutdown stops what this start created once the future has completed.
+            TorStartupFailedException failure = shutDownDuringTheStart();
+            ownInitialization.completeExceptionally(failure);
+            throw failure;
+        }
+        ownInitialization.complete(true);
+        return ownInitialization;
+    }
 
+    // An initialization runs after a running shutdown has ended, never alongside it.
+    private Optional<CompletableFuture<Boolean>> shareOrBeginInitialization(CompletableFuture<Boolean> ownInitialization) {
+        while (true) {
+            CompletableFuture<Boolean> shutdown;
+            synchronized (lifecycleLock) {
+                if (runningShutdown.isEmpty()) {
+                    if (initialization.isPresent()) {
+                        return initialization;
+                    }
+                    initialization = Optional.of(ownInitialization);
+                    return Optional.empty();
+                }
+                shutdown = runningShutdown.get();
+            }
+            shutdown.handle((result, throwable) -> result).join();
+        }
+    }
+
+    // Only a shutdown replaces the initialization of a running start.
+    private boolean isCurrentInitialization(CompletableFuture<Boolean> ownInitialization) {
+        return initialization.isPresent() && initialization.get() == ownInitialization;
+    }
+
+    /**
+     * A start creates its controller only while no shutdown has ended its initialization. A shutdown before the start
+     * had a controller shuts down none of this start, so the start would otherwise start Tor after the shutdown.
+     */
+    private TorController createControllerOfTheStart(Supplier<TorController> factory) {
+        TorController controller = factory.get();
+        synchronized (lifecycleLock) {
+            if (initialization.isPresent()) {
+                return controller;
+            }
+        }
+        runQuietly(controller::shutdown, "Shutdown of the Tor controller failed");
+        throw shutDownDuringTheStart();
+    }
+
+    private static TorStartupFailedException shutDownDuringTheStart() {
+        return new TorStartupFailedException("The Tor service was shut down during its start");
+    }
+
+    private void start() {
         makeTorDir();
 
         readExternalTorConfigMap();
@@ -121,7 +207,7 @@ public class TorService {
         if (useExternalTor) {
             if (connectedToExternalTor(externalTorConfigMap)) {
                 log.info("External Tor will be used");
-                return CompletableFuture.completedFuture(true);
+                return;
             } else if (LinuxDistribution.isWhonix()) {
                 // In case we failed at connectedToExternalTor, we do not start the embedded Tor as fallback if we are on Whonix.
                 throw new RuntimeException("Bisq runs on a Whonix system but it could not connect to the Whonix system Tor. " +
@@ -133,7 +219,6 @@ public class TorService {
         }
 
         startEmbeddedTor();
-        return CompletableFuture.completedFuture(true);
     }
 
     private void startEmbeddedTor() {
@@ -142,14 +227,6 @@ public class TorService {
         }
 
         Path torBinaryPath = getTorBinaryPath();
-        if (!isTorRunning(torBinaryPath.toString())) {
-            Path lockFilePath = torDirectories.getDataDirPath().resolve("lock");
-            try {
-                Files.deleteIfExists(lockFilePath);
-            } catch (IOException e) {
-                throw new IllegalStateException("Couldn't remove tor lock file.", e);
-            }
-        }
 
         if (torController != null) {
             torController.shutdown();
@@ -176,29 +253,35 @@ public class TorService {
 
         try {
             waitUntilControlPortFileExists(controlPortFilePath, embeddedTorProcess);
+
+            int controlPort = ControlPortFileParser.parse(controlPortFilePath);
+
+            controlPortFilePath.toFile().deleteOnExit();
+
+            torController.initialize(controlPort);
+            torController.authenticate(hashedControlPassword);
+            torController.bootstrap();
+            if (!embeddedTorProcess.isAlive()) {
+                throw new TorStartupFailedException("Embedded Tor exited during bootstrap. " +
+                        embeddedTorProcess.getStartupDiagnostics());
+            }
+
+            torVersion = torController.getTorVersion();
+            log.info("Tor {} runs with the binary {}", torVersion.orElse("of unknown version"), torBinaryPath);
+
+            int port = torController.getSocksPort();
+            torSocksProxyFactory = Optional.of(new TorSocksProxyFactory(port));
         } catch (InterruptedException e) {
-            embeddedTorProcess.shutdown();
-            torProcess = Optional.empty();
-            isRunning.set(false);
+            stopEmbeddedTor(embeddedTorProcess);
             Thread.currentThread().interrupt();
             throw new RuntimeException("Interrupted while waiting for tor control port file to exist", e);
-        } catch (Exception e) {
-            embeddedTorProcess.shutdown();
-            torProcess = Optional.empty();
-            isRunning.set(false);
+        } catch (IOException e) {
+            stopEmbeddedTor(embeddedTorProcess);
             throw new RuntimeException("Error while waiting for tor control port file to exist", e);
+        } catch (RuntimeException e) {
+            stopEmbeddedTor(embeddedTorProcess);
+            throw e;
         }
-
-        int controlPort = ControlPortFileParser.parse(controlPortFilePath);
-
-        controlPortFilePath.toFile().deleteOnExit();
-
-        torController.initialize(controlPort);
-        torController.authenticate(hashedControlPassword);
-        torController.bootstrap();
-
-        int port = torController.getSocksPort();
-        torSocksProxyFactory = Optional.of(new TorSocksProxyFactory(port));
     }
 
     private EmbeddedTorProcess createTorProcess(Path torBinaryPath) {
@@ -216,6 +299,22 @@ public class TorService {
     private List<String> createTorCommand(Path torBinaryPath) {
         String ownerPid = platformServices.getMyPid();
         return EmbeddedTorProcess.torCommand(torBinaryPath, torDirectories.getTorrcPath(), ownerPid);
+    }
+
+    private void stopEmbeddedTor(EmbeddedTorProcess embeddedTorProcess) {
+        if (torController != null) {
+            runQuietly(torController::shutdown, "Shutdown of the Tor controller failed");
+        }
+        embeddedTorProcess.shutdown();
+        torProcess = Optional.empty();
+    }
+
+    private static void runQuietly(Runnable runnable, String errorMessage) {
+        try {
+            runnable.run();
+        } catch (RuntimeException e) {
+            log.warn(errorMessage, e);
+        }
     }
 
     private void createTorControlDirectory() {
@@ -254,21 +353,59 @@ public class TorService {
         }
     }
 
+    /**
+     * Stops Tor, and ends a running initialization, which then fails. The future completes once the start of that
+     * initialization has ended, so that no Tor of this service runs then. A call during a shutdown gets that shutdown.
+     * The service can be started again.
+     */
     public CompletableFuture<Boolean> shutdown() {
         log.info("shutdown");
-        return CompletableFuture.supplyAsync(() -> {
-            if (torController != null) {
-                torController.shutdown();
+        CompletableFuture<Boolean> shutdown = new CompletableFuture<>();
+        Optional<CompletableFuture<Boolean>> endedInitialization;
+        synchronized (lifecycleLock) {
+            if (runningShutdown.isPresent()) {
+                return runningShutdown.get();
             }
-            torController = null;
-            torProcess.ifPresent(EmbeddedTorProcess::shutdown);
-            torProcess = Optional.empty();
-            onionServiceTargets.close();
-            torSocksProxyFactory = Optional.empty();
-            publishedOnionServices.clear();
-            externalTorConfigMap.clear();
-            return true;
-        }, ForkJoinPool.commonPool());
+            endedInitialization = initialization;
+            initialization = Optional.empty();
+            runningShutdown = Optional.of(shutdown);
+        }
+        CompletableFuture.runAsync(() -> stopTor(endedInitialization), ForkJoinPool.commonPool())
+                .whenComplete((nil, throwable) -> {
+                    synchronized (lifecycleLock) {
+                        runningShutdown = Optional.empty();
+                    }
+                    if (throwable == null) {
+                        shutdown.complete(true);
+                    } else {
+                        shutdown.completeExceptionally(throwable);
+                    }
+                });
+        return shutdown;
+    }
+
+    private void stopTor(Optional<CompletableFuture<Boolean>> endedInitialization) {
+        // Ends a running start at its next step: its commands and its wait for the bootstrap fail, and its wait for the
+        // control port ends with the process.
+        stopControllerAndProcess();
+        // Until the start has ended, the fields belong to it, and it may still create a controller or a process.
+        endedInitialization.ifPresent(start -> start.handle((result, throwable) -> result).join());
+        stopControllerAndProcess();
+        torController = null;
+        torProcess = Optional.empty();
+        onionServiceTargets.close();
+        torSocksProxyFactory = Optional.empty();
+        externalTorConfigMap.clear();
+        torVersion = Optional.empty();
+    }
+
+    // Each step runs also when an earlier one fails, so that Tor is stopped in any case.
+    private void stopControllerAndProcess() {
+        TorController controller = torController;
+        if (controller != null) {
+            runQuietly(controller::shutdown, "Shutdown of the Tor controller failed");
+        }
+        torProcess.ifPresent(process -> runQuietly(process::shutdown, "Shutdown of the Tor process failed"));
     }
 
     public CompletableFuture<String> publishOnionService(int localPort, int onionServicePort, OnionServiceKey onionServiceKey) {
@@ -276,22 +413,25 @@ public class TorService {
         try {
             String onionAddress = onionServiceKey.getOnionAddress();
             log.info("Publish onion service for address {}:{} (localPort={})", onionAddress, onionServicePort, localPort);
-            if (!publishedOnionServices.contains(onionAddress)) {
-                int torTargetPort = onionServiceTargets.targetPortOf(onionAddress, localPort);
-                torController.publish(onionServiceKey, onionServicePort, torTargetPort);
-                publishedOnionServices.add(onionAddress);
-            }
+            int torTargetPort = onionServiceTargets.targetPortOf(onionAddress, localPort);
+            // The controller publishes each onion address once per connection to Tor, also for concurrent calls.
+            torController.publish(onionServiceKey, onionServicePort, torTargetPort);
 
             log.info("Tor onion service Ready. Took {} ms. Onion address={}:{} (localPort={})",
                     System.currentTimeMillis() - ts, onionAddress, onionServicePort, localPort);
 
             return CompletableFuture.completedFuture(onionAddress);
         } catch (InterruptedException e) {
-            log.error("Can't create onion service", e);
+            log.warn("Can't create onion service. Thread got interrupted at publishOnionService method", e);
+            Thread.currentThread().interrupt(); // Restore interrupted state
             return CompletableFuture.failedFuture(e);
         } catch (IOException e) {
             log.error("Can't create onion service", e);
             return CompletableFuture.failedFuture(e);
+        } catch (RuntimeException e) {
+            Throwable cause = unwrapCompletionException(e);
+            log.error("Can't create onion service", cause);
+            return CompletableFuture.failedFuture(cause);
         }
     }
 
@@ -308,10 +448,8 @@ public class TorService {
 
         try {
             log.info("Publish onion service for onion address {}:{}", onionAddress, port);
-            if (!publishedOnionServices.contains(onionAddress)) {
-                torController.publish(onionServiceKey, port, target.torTargetPort());
-                publishedOnionServices.add(onionAddress);
-            }
+            // The controller publishes each onion address once per connection to Tor, also for concurrent calls.
+            torController.publish(onionServiceKey, port, target.torTargetPort());
 
             log.info("Tor onion service Ready. Took {} ms. Onion address={}:{}",
                     System.currentTimeMillis() - ts, onionAddress, port);
@@ -319,9 +457,21 @@ public class TorService {
             return CompletableFuture.completedFuture(target.serverSocket());
         } catch (InterruptedException e) {
             log.warn("Can't create onion service. Thread got interrupted at publishOnionService method", e);
+            closeQuietly(target.serverSocket());
             Thread.currentThread().interrupt(); // Restore interrupted state
             return CompletableFuture.failedFuture(e);
+        } catch (RuntimeException e) {
+            closeQuietly(target.serverSocket());
+            Throwable cause = unwrapCompletionException(e);
+            log.error("Can't create onion service", cause);
+            return CompletableFuture.failedFuture(cause);
         }
+    }
+
+    // TorController.publish reports a failed publication as a CompletionException with the failure as its cause. The
+    // hosts wait on the returned future, so the failure belongs into the future, as for the other failures.
+    private static Throwable unwrapCompletionException(RuntimeException e) {
+        return e instanceof CompletionException && e.getCause() != null ? e.getCause() : e;
     }
 
     public CompletableFuture<Boolean> isOnionServiceOnlineAsync(String onionUrl) {
@@ -396,6 +546,13 @@ public class TorService {
             }
         }
 
+        onionServiceTargets.close();
+        onionServiceTargets = new DirectOnionServiceTargets(getExternalTorBindAddress());
+
+        torVersion = torController.getTorVersion();
+        log.info("The external Tor at {}:{} has version {}", controlHost, controlPort,
+                torVersion.orElse("unknown"));
+
         // We do not call torController.bootstrap as we do not need to bootstrap Tor.
         int port = torController.getSocksPort();
         log.info("Tor control provided SOCKS port: {}", port);
@@ -462,7 +619,9 @@ public class TorService {
         try {
             FileUtils.createDirectories(torDirectories.getBaseDirPath(), platformServices.supportsPosixPermissions());
         } catch (IOException e) {
-            throw new RuntimeException(e);
+            log.warn("Couldn't create the Tor directory", e);
+            throw new TorStartupFailedException("Couldn't create the Tor directory " +
+                    torDirectories.getBaseDirPath() + ": " + e);
         }
     }
 
@@ -490,10 +649,6 @@ public class TorService {
         return torDirectories.getBundledTorBinaryPath();
     }
 
-    private boolean isTorRunning(String absoluteTorBinaryPath) {
-        return platformServices.getProcessCommandStream().anyMatch(e -> e.equals(absoluteTorBinaryPath));
-    }
-
     private void installTorIfNotUpToDate() {
         var torInstaller = new TorInstaller(torDirectories.getBinaryDirPath());
         torInstaller.installIfNotUpToDate();
@@ -516,11 +671,12 @@ public class TorService {
         return torrcConfigMap;
     }
 
-    private static InetAddress getOnionServiceBindAddress() {
+    private static InetAddress getExternalTorBindAddress() {
         if (!LinuxDistribution.isWhonix()) {
-            return Inet4Address.getLoopbackAddress();
+            return LoopbackPorts.IPV4_LOOPBACK;
         }
         try {
+            // The Tor of Whonix runs on the Whonix-Gateway and connects to the workstation over the internal network.
             return InetAddress.getByName("0.0.0.0");
         } catch (IOException e) {
             throw new IllegalStateException(e);
@@ -528,5 +684,12 @@ public class TorService {
     }
 
     private record ControlHostAndPort(String host, int port) {
+    }
+
+    private static void closeQuietly(ServerSocket serverSocket) {
+        try {
+            serverSocket.close();
+        } catch (IOException ignore) {
+        }
     }
 }

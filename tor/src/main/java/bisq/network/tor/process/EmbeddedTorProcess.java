@@ -66,8 +66,9 @@ public class EmbeddedTorProcess {
      */
     public static List<String> torCommand(Path torBinaryPath, Path torrcPath, String ownerPid) {
         String absoluteTorrcPathAsString = torrcPath.toAbsolutePath().toString();
+        // -f instead of --torrc-file, which Tor only knows since 0.4.6.2-alpha
         return List.of(torBinaryPath.toAbsolutePath().toString(),
-                "--torrc-file", absoluteTorrcPathAsString,
+                "-f", absoluteTorrcPathAsString,
                 "--defaults-torrc", absoluteTorrcPathAsString,
                 ARG_OWNER_PID, ownerPid);
     }
@@ -83,7 +84,9 @@ public class EmbeddedTorProcess {
             Process torProcess = processBuilder.start();
             process = Optional.of(torProcess);
         } catch (IOException e) {
-            throw new TorStartupFailedException(e);
+            String program = processBuilder.command().get(0);
+            log.warn("Could not start {}", program, e);
+            throw new TorStartupFailedException("Could not start " + program + ": " + e);
         }
     }
 

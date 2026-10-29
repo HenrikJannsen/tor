@@ -18,12 +18,14 @@
 package bisq.network.tor.local_network;
 
 import bisq.network.tor.common.file.FileUtils;
+import bisq.network.tor.common.platform.OS;
 import bisq.network.tor.common.torrc.DirectoryAuthority;
 import bisq.network.tor.common.torrc.TorrcConfigGenerator;
 import bisq.network.tor.common.torrc.TorrcFileGenerator;
 import bisq.network.tor.installer.TorInstaller;
 import bisq.network.tor.local_network.da.DirectoryAuthorityFactory;
 import bisq.network.tor.local_network.torrc.TestNetworkTorrcGeneratorFactory;
+import bisq.network.tor.process.EmbeddedTorProcess;
 import bisq.network.tor.process.LdPreload;
 
 import java.io.IOException;
@@ -31,6 +33,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -173,8 +176,10 @@ public class TorNetwork {
     }
 
     private Process createAndStartTorProcess(TorNode torNode) throws IOException {
-        String absoluteTorBinaryPath = rootDataDirPath.resolve("tor_binary")
-                .resolve("tor")
+        Path torBinaryDirPath = rootDataDirPath.resolve("tor_binary");
+        boolean isLinux = OS.isLinux();
+        Optional<Path> systemTorPath = isLinux ? EmbeddedTorProcess.getSystemTorPath() : Optional.empty();
+        String absoluteTorBinaryPath = torBinaryPath(torBinaryDirPath, isLinux, OS.isWindows(), systemTorPath)
                 .toAbsolutePath()
                 .toString();
         String absoluteTorrcPathAsString = torNode.getTorrcPath()
@@ -183,12 +188,26 @@ public class TorNetwork {
         var processBuilder = new ProcessBuilder(absoluteTorBinaryPath, "-f", absoluteTorrcPathAsString);
 
         Map<String, String> environment = processBuilder.environment();
-        Path torDataDirPath = rootDataDirPath.resolve("tor_binary");
-        environment.put("LD_PRELOAD", LdPreload.computeLdPreloadVariable(torDataDirPath));
+        LdPreload.applyToEnvironment(environment, torBinaryDirPath);
 
         processBuilder.redirectError(ProcessBuilder.Redirect.DISCARD);
         processBuilder.redirectOutput(ProcessBuilder.Redirect.DISCARD);
         return processBuilder.start();
+    }
+
+    /**
+     * The Tor binary of the nodes, chosen as TorService chooses it: on Linux the tor of the system, because the bundle
+     * has no tor there, otherwise the bundled tor.
+     *
+     * @param systemTorPath the tor in PATH, if any
+     * @throws IllegalStateException on Linux without a tor in PATH
+     */
+    static Path torBinaryPath(Path torBinaryDirPath, boolean isLinux, boolean isWindows, Optional<Path> systemTorPath) {
+        if (isLinux) {
+            return systemTorPath.orElseThrow(() -> new IllegalStateException("The bundle has no tor for Linux and " +
+                    "PATH names no tor. Install the tor of the system."));
+        }
+        return torBinaryDirPath.resolve(isWindows ? "tor.exe" : "tor");
     }
 
     private void generateTorrc(TorNode torNode, Map<String, String> torrcConfigs, Set<TorNode> allDAs) {

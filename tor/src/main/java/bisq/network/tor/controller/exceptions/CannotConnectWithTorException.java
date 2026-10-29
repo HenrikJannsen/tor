@@ -4,4 +4,8 @@ public class CannotConnectWithTorException extends RuntimeException {
     public CannotConnectWithTorException(Throwable cause) {
         super(cause);
     }
+
+    public CannotConnectWithTorException(String message) {
+        super(message);
+    }
 }

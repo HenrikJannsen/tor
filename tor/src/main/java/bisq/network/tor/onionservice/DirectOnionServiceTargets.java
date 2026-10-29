@@ -20,6 +20,8 @@ package bisq.network.tor.onionservice;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.ServerSocket;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Tor connects directly to the server socket of the onion service.
@@ -28,6 +30,7 @@ public final class DirectOnionServiceTargets implements OnionServiceTargets {
     private static final int BACKLOG = 50;
 
     private final InetAddress bindAddress;
+    private final Map<String, Integer> portByOnionAddress = new HashMap<>();
 
     public DirectOnionServiceTargets(InetAddress bindAddress) {
         this.bindAddress = bindAddress;
@@ -35,7 +38,11 @@ public final class DirectOnionServiceTargets implements OnionServiceTargets {
 
     @Override
     public synchronized Target bindServerSocket(String onionAddress) throws IOException {
-        ServerSocket serverSocket = new ServerSocket(0, BACKLOG, bindAddress);
+        // The first socket of an onion service gets a free port. Later sockets need the same port, because Tor keeps
+        // connecting to it.
+        int port = portByOnionAddress.getOrDefault(onionAddress, 0);
+        ServerSocket serverSocket = new ServerSocket(port, BACKLOG, bindAddress);
+        portByOnionAddress.put(onionAddress, serverSocket.getLocalPort());
         return new Target(serverSocket, serverSocket.getLocalPort());
     }
 

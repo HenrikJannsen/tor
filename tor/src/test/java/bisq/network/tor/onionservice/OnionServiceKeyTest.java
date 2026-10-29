@@ -18,6 +18,8 @@ package bisq.network.tor.onionservice;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Locale;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class OnionServiceKeyTest {
@@ -29,5 +31,14 @@ class OnionServiceKeyTest {
         assertThat(key.toString())
                 .contains("abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuvwx.onion")
                 .doesNotContain(secret);
+    }
+
+    @Test
+    void theOnionAddressIsKeptInLowerCase() {
+        String onionAddress = "abcdefghijklmnopqrstuvwxyz234567abcdefghijklmnopqrstuvwx.onion";
+
+        OnionServiceKey key = new OnionServiceKey(onionAddress.toUpperCase(Locale.ROOT), "c2VjcmV0X3NjYWxhcg==");
+
+        assertThat(key.getOnionAddress()).isEqualTo(onionAddress);
     }
 }

@@ -80,6 +80,7 @@ class TorSocksProxyFactoryTest {
             assertTrue(socket.isConnected());
             // The established connection has no other timeout for its reads
             assertEquals(TIMEOUT, socket.getSoTimeout());
+            assertTrue(socket.getTcpNoDelay());
             assertArrayEquals("ok".getBytes(StandardCharsets.US_ASCII), readTwoBytes(socket));
         }
         Request received = request.get(TIMEOUT, TimeUnit.MILLISECONDS);
