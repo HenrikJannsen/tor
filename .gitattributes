@@ -10,6 +10,9 @@ gradle/wrapper/gradle-wrapper.jar binary
 # The build checks the sandy binaries against their pinned SHA-256 hashes.
 tor/sandy/** binary
 
+# Policy templates contain LF-delimited TOML checked by tests on every platform.
+tor/src/main/resources/sandy/policy/*.toml text eol=lf
+
 # The test resource checks the reading of a line which ends with CRLF, so its line endings must not be converted.
 tor-common/src/test/resources/file_utils_test_resource.txt -text
 
