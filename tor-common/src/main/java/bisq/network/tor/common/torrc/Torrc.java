@@ -23,6 +23,7 @@ public class Torrc {
         public static final String CONTROL_PORT = "ControlPort";
         public static final String SOCKS_PORT = "SocksPort";
         public static final String DISABLE_NETWORK = "DisableNetwork";
+        public static final String CONFLUX_ENABLED = "ConfluxEnabled";
         public static final String COOKIE_AUTHENTICATION = "CookieAuthentication";
         public static final String HASHED_CONTROL_PASSWORD = "HashedControlPassword";
         public static final String CONTROL_PORT_WRITE_TO_FILE = "ControlPortWriteToFile";

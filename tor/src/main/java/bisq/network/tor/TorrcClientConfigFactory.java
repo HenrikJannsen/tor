@@ -35,6 +35,7 @@ import java.util.stream.Stream;
 
 import static bisq.network.tor.common.torrc.Torrc.Keys.CONTROL_PORT;
 import static bisq.network.tor.common.torrc.Torrc.Keys.CONTROL_PORT_WRITE_TO_FILE;
+import static bisq.network.tor.common.torrc.Torrc.Keys.CONFLUX_ENABLED;
 import static bisq.network.tor.common.torrc.Torrc.Keys.DATA_DIRECTORY;
 import static bisq.network.tor.common.torrc.Torrc.Keys.DISABLE_NETWORK;
 import static bisq.network.tor.common.torrc.Torrc.Keys.HASHED_CONTROL_PASSWORD;
@@ -49,7 +50,7 @@ public class TorrcClientConfigFactory {
     // would break the start of Tor or this isolation.
     private static final String AVOID_DISK_WRITES = "AvoidDiskWrites";
     private static final Set<String> KEYS_OWNED_BY_BISQ = Stream.of(CONTROL_PORT, CONTROL_PORT_WRITE_TO_FILE,
-                    SOCKS_PORT, DATA_DIRECTORY, HASHED_CONTROL_PASSWORD, DISABLE_NETWORK)
+                    SOCKS_PORT, DATA_DIRECTORY, HASHED_CONTROL_PASSWORD, DISABLE_NETWORK, CONFLUX_ENABLED)
             .map(key -> key.toLowerCase(Locale.ROOT))
             .collect(Collectors.toUnmodifiableSet());
 
@@ -96,6 +97,7 @@ public class TorrcClientConfigFactory {
             }
         });
         torrcClientConfig.put(DISABLE_NETWORK, "1");
+        torrcClientConfig.put(CONFLUX_ENABLED, "0");
         return torrcClientConfig;
     }
 

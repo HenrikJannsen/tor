@@ -62,6 +62,14 @@ class TorrcClientConfigFactoryTest {
                 .doesNotContainKeys("controlport", "DATADIRECTORY", "HashedControlPass", "ControlPortWriteTo");
     }
 
+    @Test
+    void confluxIsDisabledAndCannotBeEnabledByAnOverride() {
+        assertThat(factory.torrcClientConfigMap(Map.of())).containsEntry("ConfluxEnabled", "0");
+        assertThat(factory.torrcClientConfigMap(Map.of("confluxenab", "1")))
+                .containsEntry("ConfluxEnabled", "0")
+                .doesNotContainKey("confluxenab");
+    }
+
     // An override of __SocksPort with NoIsolateSOCKSAuth would add a SOCKS listener without stream isolation.
     @Test
     void theHiddenFormsOfTheListenersBelongToBisqToo() {
