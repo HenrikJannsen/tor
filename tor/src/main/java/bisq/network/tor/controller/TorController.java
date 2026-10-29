@@ -3,7 +3,6 @@ package bisq.network.tor.controller;
 import bisq.network.tor.controller.exceptions.TorBootstrapFailedException;
 import bisq.network.tor.onionservice.OnionServiceKey;
 import lombok.extern.slf4j.Slf4j;
-import net.freehaven.tor.control.PasswordDigest;
 
 import java.util.Map;
 import java.util.Optional;

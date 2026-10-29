@@ -73,5 +73,4 @@ dependencies {
     implementation(libs.typesafe.config)
 
     api(project(":jsocks"))
-    implementation(project(":jtorctl"))
 }

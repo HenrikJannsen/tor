@@ -7,7 +7,6 @@ import bisq.network.tor.controller.exceptions.CannotSendCommandToTorException;
 import bisq.network.tor.onionservice.OnionServiceKey;
 import com.google.common.io.BaseEncoding;
 import lombok.extern.slf4j.Slf4j;
-import net.freehaven.tor.control.PasswordDigest;
 
 import java.io.IOException;
 import java.io.OutputStream;

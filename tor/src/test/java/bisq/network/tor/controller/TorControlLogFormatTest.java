@@ -18,7 +18,6 @@
 package bisq.network.tor.controller;
 
 import com.google.common.io.BaseEncoding;
-import net.freehaven.tor.control.PasswordDigest;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

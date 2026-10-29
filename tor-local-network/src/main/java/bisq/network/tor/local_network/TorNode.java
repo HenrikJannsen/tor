@@ -18,10 +18,10 @@
 package bisq.network.tor.local_network;
 
 import bisq.network.tor.common.torrc.DirectoryAuthority;
+import bisq.network.tor.controller.PasswordDigest;
 import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
-import net.freehaven.tor.control.PasswordDigest;
 
 import java.nio.file.Path;
 import java.util.Optional;

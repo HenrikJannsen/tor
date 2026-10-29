@@ -17,8 +17,6 @@
 
 package bisq.network.tor.process;
 
-import bisq.network.tor.common.file.FileUtils;
-import bisq.network.tor.common.torrc.BaseTorrcGenerator;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
@@ -28,46 +26,56 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 @Slf4j
 public class EmbeddedTorProcess {
     public static final String ARG_OWNER_PID = "__OwningControllerProcess";
     private static final int MAX_LOG_SNIPPET_BYTES = 4096;
 
-    private final Path torDataDirPath;
-    private final Path torBinaryPath;
-    private final Path torrcPath;
+    private final List<String> command;
+    private final Path workingDirPath;
+    private final Consumer<Map<String, String>> environmentAdjuster;
     private final Path stdoutLogPath;
     private final Path stderrLogPath;
-    private final String ownerPid;
     private Optional<Process> process = Optional.empty();
 
-    public EmbeddedTorProcess(Path torBinaryPath, Path torDataDirPath, String ownerPid) {
-        this.torBinaryPath = torBinaryPath;
-        this.torDataDirPath = torDataDirPath;
-        this.ownerPid = ownerPid;
-        this.torrcPath = torDataDirPath.resolve("torrc");
-        this.stdoutLogPath = torDataDirPath.resolve("tor-stdout.log");
-        this.stderrLogPath = torDataDirPath.resolve("tor-stderr.log");
+    /**
+     * @param workingDirPath      the directory of the bundle, so that Tor finds the programs of the pluggable
+     *                            transports with the relative paths of the torrc
+     * @param environmentAdjuster changes the environment that the process inherits from Bisq
+     */
+    public EmbeddedTorProcess(List<String> command,
+                              Path workingDirPath,
+                              Consumer<Map<String, String>> environmentAdjuster,
+                              Path stdoutLogPath,
+                              Path stderrLogPath) {
+        this.command = List.copyOf(command);
+        this.workingDirPath = workingDirPath;
+        this.environmentAdjuster = environmentAdjuster;
+        this.stdoutLogPath = stdoutLogPath;
+        this.stderrLogPath = stderrLogPath;
+    }
+
+    /**
+     * The command line of Tor itself.
+     */
+    public static List<String> torCommand(Path torBinaryPath, Path torrcPath, String ownerPid) {
+        String absoluteTorrcPathAsString = torrcPath.toAbsolutePath().toString();
+        return List.of(torBinaryPath.toAbsolutePath().toString(),
+                "--torrc-file", absoluteTorrcPathAsString,
+                "--defaults-torrc", absoluteTorrcPathAsString,
+                ARG_OWNER_PID, ownerPid);
     }
 
     public void start() {
-        createTorControlDirectory();
-        String absoluteTorrcPathAsString = torrcPath.toAbsolutePath().toString();
-
-        var processBuilder = new ProcessBuilder(
-                torBinaryPath.toAbsolutePath().toString(),
-                "--torrc-file", absoluteTorrcPathAsString,
-                "--defaults-torrc", absoluteTorrcPathAsString,
-                ARG_OWNER_PID, ownerPid
-        );
-
-        if (torBinaryPath.startsWith(torDataDirPath)) {
-            LdPreload.applyToEnvironment(processBuilder.environment(), torDataDirPath);
-        }
-
+        var processBuilder = new ProcessBuilder(command);
+        processBuilder.directory(workingDirPath.toFile());
+        environmentAdjuster.accept(processBuilder.environment());
         processBuilder.redirectError(stderrLogPath.toFile());
         processBuilder.redirectOutput(stdoutLogPath.toFile());
 
@@ -166,17 +174,6 @@ public class EmbeddedTorProcess {
         }
 
         return Optional.empty();
-    }
-
-    private void createTorControlDirectory() {
-        Path controlDirFilePath = torDataDirPath.resolve(BaseTorrcGenerator.CONTROL_DIR_NAME);
-        if (!Files.exists(controlDirFilePath)) {
-            try {
-                FileUtils.createDirectories(controlDirFilePath);
-            } catch (IOException e) {
-                throw new TorStartupFailedException("Couldn't create Tor control directory.");
-            }
-        }
     }
 
     private String readLogSnippet(Path logPath) {

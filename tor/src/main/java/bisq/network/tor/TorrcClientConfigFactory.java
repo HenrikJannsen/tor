@@ -21,8 +21,8 @@ import bisq.network.tor.common.torrc.BaseTorrcGenerator;
 import bisq.network.tor.common.torrc.ClientTorrcGenerator;
 import bisq.network.tor.common.torrc.TestNetworkTorrcGenerator;
 import bisq.network.tor.common.torrc.TorrcConfigGenerator;
+import bisq.network.tor.controller.PasswordDigest;
 import lombok.Builder;
-import net.freehaven.tor.control.PasswordDigest;
 
 import java.nio.file.Path;
 import java.util.Map;

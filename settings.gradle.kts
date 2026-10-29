@@ -21,7 +21,6 @@ toolchainManagement {
 
 include("tor-common")
 include("jsocks")
-include("jtorctl")
 include("tor")
 include("tor-local-network")
 include("tor-platform")
