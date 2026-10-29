@@ -17,6 +17,7 @@
 
 package bisq.network.tor.process;
 
+import bisq.network.tor.common.platform.OS;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Path;
@@ -26,12 +27,14 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 class BundledTorLibrariesTest {
     private static final Path BINARY_DIR = Paths.get("/home/user/.local/share/Bisq/tor/bin");
 
     @Test
     void onLinuxTheLoaderSearchesTheBinaryDirectoryOnly() {
+        assumeTrue(OS.isLinux());
         assertThat(BundledTorLibraries.environment(BINARY_DIR, true))
                 .containsExactly(Map.entry("LD_LIBRARY_PATH", BINARY_DIR.toString()));
     }
@@ -44,6 +47,7 @@ class BundledTorLibrariesTest {
     // The loader would search the parts of the path, also relative to the working directory of Tor.
     @Test
     void aPathWhichTheLoaderWouldSplitFailsTheStart() {
+        assumeTrue(OS.isLinux());
         Path withColon = Paths.get("/home/user/a:b/tor/bin");
         Path withSemicolon = Paths.get("/home/user/a;b/tor/bin");
 
@@ -58,6 +62,7 @@ class BundledTorLibrariesTest {
 
     @Test
     void noLoaderVariableOfBisqReachesTor() {
+        assumeTrue(OS.isLinux());
         Map<String, String> environment = new HashMap<>(Map.of("LD_PRELOAD", "/tmp/inject.so",
                 "LD_AUDIT", "/tmp/audit.so",
                 "LD_LIBRARY_PATH", "/opt/other/lib",
