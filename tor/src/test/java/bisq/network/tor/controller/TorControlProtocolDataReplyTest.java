@@ -52,10 +52,17 @@ class TorControlProtocolDataReplyTest {
 
     @Test
     void emptyDataLinesCountAgainstTheReplyLimit() throws Exception {
-        // Each line of the data is kept with its line feed, so a reply of empty lines must not grow without a bound.
-        String oversizedReply = "250+config-text=\r\n" +
-                "\r\n".repeat(TorControlProtocol.MAX_REPLY_LENGTH + 1) +
-                ".\r\n250 OK\r\n";
+        // The nonempty lines and final status exactly fill the limit. The empty line must count as one more
+        // character, without making the test process a million separate lines.
+        String header = "250+config-text=";
+        String status = "250 OK";
+        String dataLine = "x".repeat(8191);
+        int remaining = TorControlProtocol.MAX_REPLY_LENGTH - header.length() - 1 - status.length() - 1;
+        int lineLengthWithEnd = dataLine.length() + 1;
+        String oversizedReply = header + "\r\n" +
+                (dataLine + "\r\n").repeat(remaining / lineLengthWithEnd) +
+                "x".repeat(remaining % lineLengthWithEnd - 1) + "\r\n" +
+                "\r\n.\r\n" + status + "\r\n";
         server = new FakeTorControlServer(command -> command.equals("GETINFO config-text") ?
                 oversizedReply :
                 "250-version=0.4.9.14\r\n250 OK\r\n");
