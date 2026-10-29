@@ -91,6 +91,17 @@ class TorControllerVerificationTest {
                 .isInstanceOf(TorControlAuthenticationFailed.class);
     }
 
+    // Tor names an option without a value without "=".
+    @Test
+    void aTorWithoutControlPasswordIsRefused() {
+        startControlServer(command -> command.startsWith("GETCONF") ? "250 HashedControlPassword\r\n" : "250 OK\r\n");
+
+        torController.authenticate(passwordDigest);
+
+        assertThatThrownBy(() -> torController.verifyHashedControlPassword(passwordDigest))
+                .isInstanceOf(TorControlAuthenticationFailed.class);
+    }
+
     private void startControlServer(Function<String, String> replyByCommand) {
         serverThread = new Thread(() -> {
             try (Socket socket = serverSocket.accept();

@@ -110,7 +110,7 @@ class TorControllerShutdownTest {
         server = new FakeTorControlServer(command -> command.startsWith("ADD_ONION") ?
                 "250-ServiceID=" + serviceId + "\r\n250 OK\r\n" :
                 "250 OK\r\n");
-        TorControlProtocol torControlProtocol = new TorControlProtocol();
+        TorControlProtocol torControlProtocol = new TorControlProtocol(false);
         torControlProtocol.initialize(server.getPort());
         try {
             var publication = new PublishOnionAddressService(torControlProtocol, 10_000, onionServiceKey);
@@ -145,7 +145,7 @@ class TorControllerShutdownTest {
                 "250-ServiceID=" + serviceId + "\r\n250 OK\r\n" :
                 "250 OK\r\n");
         server.closeConnectionAfter("ADD_ONION");
-        TorControlProtocol torControlProtocol = new TorControlProtocol();
+        TorControlProtocol torControlProtocol = new TorControlProtocol(false);
         torControlProtocol.initialize(server.getPort());
         try {
             var publication = new PublishOnionAddressService(torControlProtocol, 10_000, onionServiceKey, () -> true);
@@ -162,7 +162,7 @@ class TorControllerShutdownTest {
     void theEndOfTheConnectionDuringTheShutdownOfTheControllerFailsTheBootstrapAsTheShutdown() throws Exception {
         server = new FakeTorControlServer(command -> "250 OK\r\n");
         server.closeConnectionAfter("SETCONF DisableNetwork");
-        TorControlProtocol torControlProtocol = new TorControlProtocol();
+        TorControlProtocol torControlProtocol = new TorControlProtocol(false);
         torControlProtocol.initialize(server.getPort());
         try {
             var bootstrap = new BootstrapService(torControlProtocol, 10_000, () -> true);
@@ -179,7 +179,7 @@ class TorControllerShutdownTest {
     void theEndOfTheConnectionDuringTheShutdownOfTheControllerFailsTheLookupAsTheShutdown() throws Exception {
         server = new FakeTorControlServer(command -> "250 OK\r\n");
         server.closeConnectionAfter("HSFETCH");
-        TorControlProtocol torControlProtocol = new TorControlProtocol();
+        TorControlProtocol torControlProtocol = new TorControlProtocol(false);
         torControlProtocol.initialize(server.getPort());
         try {
             var lookup = new OnionServiceOnlineStateService(torControlProtocol,

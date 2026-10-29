@@ -188,20 +188,16 @@ public class EmbeddedTorProcess {
                 ", stderr=" + readLogSnippet(stderrLogPath);
     }
 
-    public static Optional<Path> getSystemTorPath() {
-        return findExecutableInPath(System.getenv("PATH"), "tor");
-    }
-
     /**
      * @param pathEnvironmentVariable the value of PATH, or null if it is not set
      */
-    static Optional<Path> findExecutableInPath(String pathEnvironmentVariable, String fileName) {
+    public static Optional<Path> findExecutableInPath(String pathEnvironmentVariable, String fileName) {
         if (pathEnvironmentVariable == null) {
             return Optional.empty();
         }
         for (String entry : pathEnvironmentVariable.split(File.pathSeparator)) {
-            // An empty or relative entry means a path relative to the working directory of Bisq. A tor file there
-            // must not be started instead of the tor of the system.
+            // An empty or relative entry means a path relative to the working directory of Bisq. A file there must
+            // not be started instead of the program of the system.
             Optional<Path> directory = toAbsolutePath(entry);
             if (directory.isPresent()) {
                 Path candidate = directory.get().resolve(fileName);

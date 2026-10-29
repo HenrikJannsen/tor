@@ -28,7 +28,7 @@ public class PrivateTorNetworkTests {
 
     @Test
     public void createTestNetwork(@TempDir Path tempDirPath) throws IOException, InterruptedException {
-        new TorNetwork(tempDirPath)
+        try (TorNetwork torNetwork = new TorNetwork(tempDirPath, true)
                 .addDirAuth(PASSPHRASE)
                 .addDirAuth(PASSPHRASE)
                 .addDirAuth(PASSPHRASE)
@@ -40,8 +40,8 @@ public class PrivateTorNetworkTests {
                 .addRelay()
 
                 .addClient()
-                .addClient()
-
-                .start();
+                .addClient()) {
+            torNetwork.start();
+        }
     }
 }

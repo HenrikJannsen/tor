@@ -17,6 +17,9 @@
 
 package bisq.network.tor.common.torrc;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.StandardCharsets;
 import java.util.Optional;
 import java.util.regex.Pattern;
 
@@ -89,6 +92,67 @@ public final class TorrcSyntax {
             }
         }
         return -1;
+    }
+
+    /**
+     * Decodes one quoted torrc value. Tor's numeric C escapes represent bytes, so escaped UTF-8 bytes and literal
+     * UTF-8 characters must be decoded together.
+     *
+     * @throws IllegalArgumentException if the syntax or decoded UTF-8 is invalid. The message omits the value,
+     *                                  which may be a password.
+     */
+    public static String decodeQuotedString(String value) {
+        if (!value.startsWith("\"") || quotedStringLength(value) != value.length()) {
+            throw new IllegalArgumentException("Value is not one quoted torrc string");
+        }
+        byte[] encoded = value.getBytes(StandardCharsets.UTF_8);
+        byte[] decoded = new byte[encoded.length - 2];
+        int length = 0;
+        int end = encoded.length - 1;
+        for (int i = 1; i < end; i++) {
+            int character = encoded[i];
+            if (character == 0 || character == '\n') {
+                throw new IllegalArgumentException("Quoted torrc value contains a NUL or line break");
+            }
+            if (character == '\\') {
+                switch (encoded[++i]) {
+                    case 'n' -> character = '\n';
+                    case 'r' -> character = '\r';
+                    case 't' -> character = '\t';
+                    case '\'', '"', '\\' -> character = encoded[i];
+                    case 'x', 'X' -> {
+                        if (i + 2 >= end) {
+                            throw new IllegalArgumentException("Incomplete hex escape in quoted torrc value");
+                        }
+                        int high = Character.digit((char) encoded[++i], 16);
+                        int low = Character.digit((char) encoded[++i], 16);
+                        if (high < 0 || low < 0) {
+                            throw new IllegalArgumentException("Invalid hex escape in quoted torrc value");
+                        }
+                        character = high * 16 + low;
+                    }
+                    default -> {
+                        if (encoded[i] < '0' || encoded[i] > '7') {
+                            throw new IllegalArgumentException("Invalid escape in quoted torrc value");
+                        }
+                        character = encoded[i] - '0';
+                        for (int digits = 1; digits < 3 && i + 1 < end &&
+                                encoded[i + 1] >= '0' && encoded[i + 1] <= '7'; digits++) {
+                            character = character * 8 + encoded[++i] - '0';
+                        }
+                        if (character > 255) {
+                            throw new IllegalArgumentException("Octal escape exceeds one byte in quoted torrc value");
+                        }
+                    }
+                }
+            }
+            decoded[length++] = (byte) character;
+        }
+        try {
+            return StandardCharsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(decoded, 0, length)).toString();
+        } catch (CharacterCodingException e) {
+            throw new IllegalArgumentException("Quoted torrc value is not valid UTF-8", e);
+        }
     }
 
     // Tab is white space in a value; the other control characters have no use in an option value.

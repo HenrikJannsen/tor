@@ -44,18 +44,85 @@ dependency.
 ## Android
 
 The node app of bisq-mobile runs `TorService` with an external Tor on Android, from API level 33. Code which runs in
-this mode must only use Java APIs which Android 13 provides. This is `TorService.initialize` up to the connection to the
-external Tor, `TorController`, `TorControlProtocol` and `FileUtils`. If the connection fails, `TorService` starts the
-installer, which fails on Android because the app has no `tor.zip`. For example, `java.util.HexFormat` needs API level
-34, and `ProcessHandle` does not exist on Android. The Tor build uses Guava instead of `HexFormat`. The embedded Tor
-process and `tor-local-network` only run on desktop systems.
+this mode must only use Java APIs which Android 13 provides. This is all code which an external Tor needs:
+`TorService` without the start of the embedded Tor, `ExternalTorConfig`, `TorTransportConfig`, `BridgeConfig`,
+`TorDirectories`, `TorSocksProxyFactory` with `jsocks`, the packages `controller` (with the events and their parsers)
+and `onionservice`, and `OS`, `LinuxDistribution`, `StringUtils` and `FileUtils` of `tor-common`. Only the embedded Tor
+runs on desktop systems alone: `EmbeddedTorProcess`, `BundledTorLibraries`, the packages `installer` and `bridges`,
+`TorrcClientConfigFactory`, the torrc generators and `tor-local-network`. If the connection fails, `TorService` fails
+with `ExternalTorUnavailableException`; it never starts its own Tor instead of a configured external Tor. For example,
+`java.util.HexFormat` and `Stream.toList()` need API level 34, and `ProcessHandle` does not exist on Android. The Tor
+build uses Guava instead of `HexFormat` and `collect(Collectors.toList())` instead of `toList()`. Records and switch
+expressions can be used, because D8 desugars them for Android.
+
+`FileUtils` of `tor-common` reads and writes UTF-8 strictly on Android as well. The originals in `bisq.common` replace
+malformed input when the modern file API is turned off, as bisq-mobile does. With the copy, a damaged
+`external_tor.config` which is no valid UTF-8 fails `TorService.initialize()` with a message which names the file,
+instead of being read with replacement characters.
+
+## External Tor
+
+With `UseExternalTor 1` in `external_tor.config` of the Tor directory, Bisq uses a Tor which already runs instead of
+starting its own. The connection to its control port is plain TCP. It carries the private keys of the onion services
+of Bisq (`ADD_ONION`) and, with `ControlPassword`, the password. Use a `ControlPort` on the same system, or reach a Tor
+on another host only over a network which no untrusted system can use, such as the internal network of Whonix. While
+the control port refuses the connection, Bisq tries again for about two seconds, because the external Tor may not
+listen yet. If the control port does not accept the connection within 10 seconds, or its host cannot be reached, the
+start fails at once.
+
+Bisq asks the external Tor for its SOCKS listeners (`GETINFO net/listeners/socks`) and uses the first TCP listener which
+it can reach: one on a specific address at that address, one on a wildcard address (`0.0.0.0` or `::`) at the control
+host. A loopback address is an address of the host of Tor, so Bisq uses it only if the control host is a loopback
+address as well. If a Tor on another host listens for SOCKS connections only on its loopback address, the start fails.
+
+`TorService.getSocket` sends SOCKS credentials derived from the stream ID, so that Tor puts the streams of different
+stream IDs on different circuits. Tor does so on a SOCKS port with `IsolateSOCKSAuth`, which it sets by default. The
+start with an external Tor fails if a `SocksPort` or `__SocksPort` entry of its configuration which may have opened the
+SOCKS port that Bisq uses turns this off with `NoIsolateSOCKSAuth`. If the control port does not report the
+configuration, as onion-grater on Whonix does not, Bisq logs that it could not check the port and starts.
 
 ## Onion services
 
 A publication of an onion service completes once the first HSDir has stored its descriptor, which Tor reports with
 `HS_DESC UPLOADED`, not at the start of the upload (`HS_DESC UPLOAD`), when no peer could find the onion service yet. It
 fails if no HSDir has stored the descriptor within the upload timeout of `TorTransportConfig`. The exception is an
-`UPLOAD` which a filter in front of Tor shortened, as the onion-grater profiles of Whonix before September 2024 do.
+`UPLOAD` which a filter in front of Tor shortened, see "Whonix".
+
+## Whonix
+
+On Whonix, `TorService` always uses the Tor of the Whonix-Gateway and never starts its own Tor. The control port of the
+Gateway is filtered by onion-grater, so the Gateway needs an updated system and the onion-grater profile of Bisq, which
+Whonix ships: `sudo onion-grater-add 40_bisq`. The library authenticates without a secret, sends `ADD_ONION` with a bare
+local port as target, which onion-grater rewrites to the address of the Workstation, and listens on all addresses.
+Every profile delivers `HS_DESC UPLOADED` with the HSDir redacted, which completes a publication. Profiles before
+September 2024 shorten `HS_DESC UPLOAD` to `<address> <auth> redacted redacted`, without the `HSDIR_INDEX` which Tor
+sends with every upload of a v3 descriptor; there such an `UPLOAD` completes the publication, as before.
+`TorServiceWhonixTest` answers like onion-grater; there is no test on Whonix itself. Both Whonix systems have the
+markers by which `TorService` detects Whonix (`/usr/share/whonix/marker` and `/usr/share/anon-dist/marker`). On the
+Whonix-Gateway, which has `/usr/share/anon-gw-base-files/gateway` as well, `TorService` does not start and tells the
+user to run Bisq on a Whonix-Workstation.
+
+## Bridges and pluggable transports
+
+`TorTransportConfig` takes a `BridgeConfig`: no bridges, the built-in bridges of one type of the Tor Browser version of
+the bundle (`obfs4`, `snowflake` or `meek`), or bridge lines of the user. The built-in bridges and the programs of the
+transports come from `pluggable_transports/pt_config.json` of the expert bundle, which Tor Browser uses as well, so they
+change with `tor.version`.
+
+For the Tor which Bisq starts, `TorService` writes `UseBridges 1`, one `Bridge` entry per bridge and one
+`ClientTransportPlugin` entry per program which the bridges need. Tor splits a `ClientTransportPlugin` entry at white
+space, and the Bisq data directory of macOS is below "Application Support". Tor therefore runs in the directory of the
+bundle and gets the path of a program relative to it. If a bridge needs a transport without program, the start fails
+with `BridgesUnavailableException`: Tor must not connect without the bridges, because the user relies on them to get
+around a block or to hide the use of Tor. With bridges in the configuration, torrc overrides of `UseBridges`, `Bridge`
+and `ClientTransportPlugin` are ignored. Bisq does not log the bridge lines, because a bridge which a user got privately
+is blocked once it is known.
+
+An external Tor uses the bridges of its own configuration. `TorService` logs a warning if the configuration of Bisq has
+bridges as well.
+
+In the configuration of Bisq 2 (`TorTransportConfig.from`), `builtInBridges` names the type of the built-in bridges and
+`bridges` lists bridge lines. Both are optional, and at most one may be set.
 
 ## Embedded Tor
 
@@ -72,6 +139,13 @@ Run these commands in the repository root:
 
 - `./gradlew build` builds the Tor build and runs its tests and checks: the dependency verification, the Gradle wrapper
   checksums and the pinned GitHub Actions.
+- `./gradlew integrationTest` runs the integration tests, which start Tor; `build` does not run them. A test skips
+  itself if this host lacks what it needs. They start the bundled tor of the build. `PrivateTorNetworkOnionServiceTest`
+  starts a private Tor network on this host, so it needs no internet; to create the keys of its directory authorities
+  it needs tor and tor-gencert in `PATH` (on Debian and Ubuntu the package `tor`), and the tor in `PATH` is also its
+  external Tor. Two peers publish onion services and exchange messages, also after a restart, through the SOCKS5 proxy
+  and through an external Tor. `-Ptor.publicNetworkTests=true` adds `PublicTorNetworkOnionServiceTest`, which runs
+  these peers on the public Tor network.
 - `./gradlew :tor:verifyTorBinary` downloads and verifies the Tor expert bundle. See
   [build-logic/tor-binary/README.md](build-logic/tor-binary/README.md).
 - `./gradlew dependencySignatureReport` writes [docs/dependency-signature-report.md](docs/dependency-signature-report.md)
@@ -114,12 +188,16 @@ comm -23 <(constraints tor-platform/build.gradle.kts) <(constraints "$bisq2/plat
 `tor.zip` and `TorBuildVersion` are generated by Gradle tasks. An IDE build which does not run Gradle tasks needs one
 Gradle build first.
 
-On macOS and Windows the build downloads and verifies the Tor expert bundle and packages it as `tor.zip`, which
-`TorService` installs into the Tor directory. On Linux, Bisq uses the tor of the system, and the build packages no
-bundle. The download needs archive.torproject.org; it fails if it gets no connection in 30 seconds or no data for 60
-seconds, and is then tried once more. With `--offline`, the build keeps a bundle which it downloaded before. There is
-no expert bundle for Windows ARM64, and the build never packages the programs of another architecture, so a build in
-an ARM64 JVM on Windows fails when it needs the bundle.
+`tor.zip` contains the files of the Tor expert bundle of the platform of the build, which `TorService` installs into the
+Tor directory: Tor, its libraries, the GeoIP files and the pluggable transports (`lyrebird` and `conjure-client` with
+their configuration `pt_config.json`). Linux x86_64, macOS and Windows x86_64 take the bundle of `tor.version`. The
+stable releases have no bundle for Linux ARM64, so a Linux ARM64 build takes the bundle of the alpha release
+`tor.bundleVersion.linux_arm64` until a stable release has one; its tor must be `tor.binaryVersion`
+(`build-logic/tor-binary/README.md`). Every build downloads and verifies the expert bundle of its platform. The download
+needs archive.torproject.org; it fails if it gets no connection in 30 seconds or no data for 60 seconds, and is then
+tried once more. With `--offline`, the build keeps a bundle which it downloaded before. There is no expert bundle for
+Windows ARM64, and the build never packages the programs of another architecture, so a build in an ARM64 JVM on Windows
+fails when it needs the bundle.
 
 ## Use in Bisq 1 and Bisq 2
 

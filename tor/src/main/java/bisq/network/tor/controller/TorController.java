@@ -6,6 +6,7 @@ import bisq.network.tor.onionservice.OnionServiceKey;
 import com.google.common.annotations.VisibleForTesting;
 import lombok.extern.slf4j.Slf4j;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -18,15 +19,20 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 @Slf4j
 public class TorController {
     private static final String SOCKS_LISTENERS_KEY = "net/listeners/socks";
+    private static final String SOCKS_PORT_KEY = "SocksPort";
+    private static final String HIDDEN_SOCKS_PORT_KEY = "__SocksPort";
+    private static final String BOOTSTRAP_PHASE_KEY = "status/bootstrap-phase";
+    private static final long BOOTSTRAP_POLL_INTERVAL_MS = 1000;
     // For example 0.4.9.14 or 0.4.9.1-alpha
     private static final Pattern VERSION_PATTERN = Pattern.compile("\\d+(?:\\.\\d+)+(?:-[0-9A-Za-z]+)?");
     // A QuotedString of the control protocol, which escapes a quote and a backslash with a backslash
     private static final Pattern QUOTED_STRING = Pattern.compile("\"((?:[^\"\\\\]|\\\\.)*)\"");
-    private final TorControlProtocol torControlProtocol = new TorControlProtocol();
+    private final TorControlProtocol torControlProtocol;
     private final int bootstrapTimeout; // in ms
     private final int hsUploadTimeout; // in ms
     private final long isOnlineTimeout = TimeUnit.SECONDS.toMillis(30); // in ms
@@ -45,16 +51,40 @@ public class TorController {
     }
 
     public TorController(int bootstrapTimeout, int hsUploadTimeout) {
+        this(bootstrapTimeout, hsUploadTimeout, new TorControlProtocol());
+    }
+
+    /**
+     * @param isWhonix Bisq runs on a Whonix-Workstation, whose Gateway filters the control port with onion-grater
+     */
+    public TorController(int bootstrapTimeout, int hsUploadTimeout, boolean isWhonix) {
+        this(bootstrapTimeout, hsUploadTimeout, new TorControlProtocol(isWhonix));
+    }
+
+    private TorController(int bootstrapTimeout, int hsUploadTimeout, TorControlProtocol torControlProtocol) {
         this.bootstrapTimeout = bootstrapTimeout;
         this.hsUploadTimeout = hsUploadTimeout;
+        this.torControlProtocol = torControlProtocol;
     }
 
     public void initialize(int controlPort) {
         torControlProtocol.initialize(controlPort);
     }
 
+    public void initialize(String controlHost, int controlPort) {
+        torControlProtocol.initialize(controlHost, controlPort);
+    }
+
     public void authenticate(byte[] authCookie) {
         torControlProtocol.authenticate(authCookie);
+    }
+
+    public void authenticateWithSafeCookie(byte[] authCookie) {
+        torControlProtocol.authenticateWithSafeCookie(authCookie);
+    }
+
+    public void authenticateWithPassword(String password) {
+        torControlProtocol.authenticateWithPassword(password);
     }
 
     public void authenticate() {
@@ -151,6 +181,42 @@ public class TorController {
         CompletableFuture<Void> future = service.bootstrap();
         future.whenComplete((nil, throwable) -> bootstrapService = Optional.empty());
         return future;
+    }
+
+    /**
+     * Waits until a Tor which Bisq did not start has bootstrapped, as netlayer did. Unlike {@link #bootstrap()}, it
+     * does not change the configuration of that Tor: it asks Tor for its bootstrap phase once per second.
+     *
+     * @throws TorBootstrapFailedException if Tor has not bootstrapped within the bootstrap timeout
+     */
+    public void awaitBootstrapOfExternalTor() {
+        long deadline = System.currentTimeMillis() + bootstrapTimeout;
+        try {
+            String bootstrapPhase = torControlProtocol.getInfo(BOOTSTRAP_PHASE_KEY);
+            while (!isBootstrapDone(bootstrapPhase)) {
+                if (isShutdownInProgress) {
+                    throw new TorBootstrapFailedException("The Tor controller was shut down");
+                }
+                if (System.currentTimeMillis() >= deadline) {
+                    throw new TorBootstrapFailedException("The external Tor did not bootstrap within " +
+                            bootstrapTimeout / 1000 + " seconds. Its last state: " + bootstrapPhase);
+                }
+                Thread.sleep(BOOTSTRAP_POLL_INTERVAL_MS);
+                bootstrapPhase = torControlProtocol.getInfo(BOOTSTRAP_PHASE_KEY);
+            }
+        } catch (TorCommandFilteredException e) {
+            // A filtering proxy of the control port, such as onion-grater on Whonix, may refuse the request.
+            log.info("The control port does not report the bootstrap phase of the external Tor, so Bisq does not wait " +
+                    "for its bootstrap.");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new TorBootstrapFailedException(e);
+        }
+    }
+
+    // 250-status/bootstrap-phase=NOTICE BOOTSTRAP PROGRESS=100 TAG=done SUMMARY="Done"
+    static boolean isBootstrapDone(String bootstrapPhaseReply) {
+        return bootstrapPhaseReply.contains(" PROGRESS=100 ");
     }
 
     /**
@@ -261,28 +327,112 @@ public class TorController {
     }
 
     /**
+     * Tor puts streams with different SOCKS credentials on different circuits only on a SOCKS port with the flag
+     * IsolateSOCKSAuth, which it sets unless the configuration turns it off with NoIsolateSOCKSAuth. The listener of a
+     * port {@code auto} gets its port when Tor opens it, so such an entry may be the one of the listener.
+     *
+     * @return the entries of SocksPort and __SocksPort which may have opened the SOCKS listener on {@code socksPort}
+     * and turn the isolation by SOCKS credentials off, or empty if the control port does not report them, for example
+     * because a filter in front of Tor refuses GETCONF, as onion-grater on Whonix does
+     */
+    public Optional<List<String>> findSocksPortsWithoutSocksAuthIsolation(int socksPort) {
+        try {
+            List<String> entries = new ArrayList<>(torControlProtocol.getConf(SOCKS_PORT_KEY));
+            entries.addAll(torControlProtocol.getConf(HIDDEN_SOCKS_PORT_KEY));
+            return Optional.of(entries.stream()
+                    .filter(entry -> mayHaveOpenedListenerOn(entry, socksPort))
+                    .filter(entry -> !isolatesBySocksAuthentication(entry))
+                    .collect(Collectors.toList()));
+        } catch (TorCommandFilteredException | ControlCommandFailedException e) {
+            return Optional.empty();
+        }
+    }
+
+    // A SocksPort entry is [address:]port, auto, unix:path or 0, followed by flags.
+    @VisibleForTesting
+    static boolean mayHaveOpenedListenerOn(String socksPortEntry, int socksPort) {
+        String listener = socksPortEntry.trim().split("\\s+")[0];
+        if (listener.startsWith("unix:")) {
+            return false;
+        }
+        String port = listener.substring(listener.lastIndexOf(':') + 1);
+        if (port.equalsIgnoreCase("auto")) {
+            return true;
+        }
+        try {
+            return Integer.parseInt(port) == socksPort;
+        } catch (NumberFormatException e) {
+            return false;
+        }
+    }
+
+    // Tor reads the flags in any case, and the last of IsolateSOCKSAuth and NoIsolateSOCKSAuth counts.
+    @VisibleForTesting
+    static boolean isolatesBySocksAuthentication(String socksPortEntry) {
+        boolean isIsolated = true;
+        String[] fields = socksPortEntry.trim().split("\\s+");
+        for (int i = 1; i < fields.length; i++) {
+            if (fields[i].equalsIgnoreCase("IsolateSOCKSAuth")) {
+                isIsolated = true;
+            } else if (fields[i].equalsIgnoreCase("NoIsolateSOCKSAuth")) {
+                isIsolated = false;
+            }
+        }
+        return isIsolated;
+    }
+
+    /**
+     * A TCP listener of the SOCKS port of Tor, with the address as Tor reports it, an IPv6 address without brackets
+     */
+    public record SocksListener(String address, int port) {
+    }
+
+    /**
+     * @return the TCP listeners of the SOCKS port, in the order which Tor reports
+     */
+    public List<SocksListener> getSocksListeners() {
+        return parseSocksListeners(torControlProtocol.getInfo(SOCKS_LISTENERS_KEY));
+    }
+
+    /**
      * @param socksListenersReply the reply line of GETINFO net/listeners/socks, for example
      *                            {@code 250-net/listeners/socks="unix:/run/tor/socks" "127.0.0.1:9050"}
-     * @return the port of the first TCP listener. The system Tor of Debian lists its Unix socket first.
+     * @return the TCP listeners. The system Tor of Debian lists its Unix socket first.
      */
-    static int parseSocksPort(String socksListenersReply) {
+    static List<SocksListener> parseSocksListeners(String socksListenersReply) {
         String prefix = "250-" + SOCKS_LISTENERS_KEY + "=";
         if (!socksListenersReply.startsWith(prefix)) {
             throw new ControlCommandFailedException("Invalid reply to GETINFO " + SOCKS_LISTENERS_KEY + ": " +
                     socksListenersReply);
         }
+        List<SocksListener> listeners = new ArrayList<>();
         Matcher listenerMatcher = QUOTED_STRING.matcher(socksListenersReply.substring(prefix.length()));
         while (listenerMatcher.find()) {
             String listener = listenerMatcher.group(1);
             int portSeparator = listener.lastIndexOf(':');
             if (!listener.startsWith("unix:") && portSeparator >= 0) {
                 try {
-                    return Integer.parseInt(listener.substring(portSeparator + 1));
+                    int port = Integer.parseInt(listener.substring(portSeparator + 1));
+                    String address = listener.substring(0, portSeparator);
+                    boolean isInBrackets = address.startsWith("[") && address.endsWith("]");
+                    listeners.add(new SocksListener(isInBrackets ? address.substring(1, address.length() - 1) : address,
+                            port));
                 } catch (NumberFormatException ignore) {
                     // Not a TCP listener
                 }
             }
         }
-        throw new ControlCommandFailedException("Tor has no TCP SOCKS listener: " + socksListenersReply);
+        return listeners;
+    }
+
+    /**
+     * @return the port of the first TCP listener
+     */
+    static int parseSocksPort(String socksListenersReply) {
+        return parseSocksListeners(socksListenersReply).stream()
+                .findFirst()
+                .map(SocksListener::port)
+                .orElseThrow(() -> new ControlCommandFailedException("Tor has no TCP SOCKS listener: " +
+                        socksListenersReply));
     }
 }

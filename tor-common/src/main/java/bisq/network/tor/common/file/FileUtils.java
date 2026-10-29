@@ -43,7 +43,10 @@ import java.util.Set;
  * allow POSIX permissions, which is the default of the originals and the setting of all desktop applications.
  * <p>
  * The methods only use APIs which exist on Android: UTF-8 is encoded and decoded strictly, so malformed content fails
- * with an exception, as Files.readString and Files.writeString do.
+ * with an exception, as Files.readString and Files.writeString do. On Android this differs from the originals: where
+ * the modern file API is turned off, as bisq-mobile does, they replace malformed input with replacement characters.
+ * The copy stays strict there too, so that a damaged file, for example an external_tor.config which is no valid UTF-8,
+ * fails the start of TorService with a message which names the file, instead of being read with changed content.
  */
 @Slf4j
 public class FileUtils {

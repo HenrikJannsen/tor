@@ -33,41 +33,75 @@ import java.util.function.Function;
 /**
  * A local control port which answers each command with the reply of a function and records the commands.
  */
-class FakeTorControlServer implements AutoCloseable {
+public class FakeTorControlServer implements AutoCloseable {
     private final ServerSocket serverSocket;
     private final List<String> commands = new CopyOnWriteArrayList<>();
     private final Thread serverThread;
     private volatile Optional<String> closeAfterCommandStart = Optional.empty();
+    private volatile Optional<Socket> connection = Optional.empty();
 
-    FakeTorControlServer(Function<String, String> replyByCommand) throws IOException {
-        serverSocket = new ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"));
+    public FakeTorControlServer(Function<String, String> replyByCommand) throws IOException {
+        this(InetAddress.getByName("127.0.0.1"), replyByCommand);
+    }
+
+    public FakeTorControlServer(InetAddress bindAddress, Function<String, String> replyByCommand) throws IOException {
+        this(new ServerSocket(0, 1, bindAddress), 1, replyByCommand);
+    }
+
+    /**
+     * A control port on the given port of 127.0.0.1, which answers one connection after the other.
+     */
+    public static FakeTorControlServer onPort(int port, Function<String, String> replyByCommand) throws IOException {
+        return new FakeTorControlServer(new ServerSocket(port, 1, InetAddress.getByName("127.0.0.1")),
+                Integer.MAX_VALUE, replyByCommand);
+    }
+
+    private FakeTorControlServer(ServerSocket serverSocket,
+                                 int maxConnections,
+                                 Function<String, String> replyByCommand) {
+        this.serverSocket = serverSocket;
         serverThread = new Thread(() -> {
-            try (Socket socket = serverSocket.accept();
-                 BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII));
-                 OutputStream outputStream = socket.getOutputStream()) {
-                String command;
-                while ((command = reader.readLine()) != null) {
-                    commands.add(command);
-                    outputStream.write(replyByCommand.apply(command).getBytes(StandardCharsets.US_ASCII));
-                    outputStream.flush();
-                    String closedCommand = command;
-                    if (closeAfterCommandStart.filter(closedCommand::startsWith).isPresent()) {
-                        socket.close();
+            for (int i = 0; i < maxConnections; i++) {
+                try {
+                    if (!serve(serverSocket.accept(), replyByCommand)) {
                         return;
                     }
+                } catch (IOException ignore) {
+                    // The test closed the server socket
+                    return;
                 }
-            } catch (IOException ignore) {
-                // The test closes the sockets
             }
         }, "FakeTorControlServer");
         serverThread.start();
     }
 
-    int getPort() {
+    // false once the connection was closed after a command, as when Tor exits
+    private boolean serve(Socket socket, Function<String, String> replyByCommand) {
+        connection = Optional.of(socket);
+        try (socket;
+             BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.US_ASCII));
+             OutputStream outputStream = socket.getOutputStream()) {
+            String command;
+            while ((command = reader.readLine()) != null) {
+                commands.add(command);
+                outputStream.write(replyByCommand.apply(command).getBytes(StandardCharsets.US_ASCII));
+                outputStream.flush();
+                String closedCommand = command;
+                if (closeAfterCommandStart.filter(closedCommand::startsWith).isPresent()) {
+                    return false;
+                }
+            }
+        } catch (IOException ignore) {
+            // The client or the test closed the connection
+        }
+        return true;
+    }
+
+    public int getPort() {
         return serverSocket.getLocalPort();
     }
 
-    List<String> getCommands() {
+    public List<String> getCommands() {
         return commands;
     }
 
@@ -75,13 +109,20 @@ class FakeTorControlServer implements AutoCloseable {
      * Ends the connection after the reply to the first command which starts with {@code commandStart}, as when Tor
      * exits.
      */
-    void closeConnectionAfter(String commandStart) {
+    public void closeConnectionAfter(String commandStart) {
         closeAfterCommandStart = Optional.of(commandStart);
     }
 
     @Override
     public void close() throws Exception {
         serverSocket.close();
+        // A client which is not shut down keeps its connection open.
+        connection.ifPresent(socket -> {
+            try {
+                socket.close();
+            } catch (IOException ignore) {
+            }
+        });
         serverThread.join(5000);
     }
 }

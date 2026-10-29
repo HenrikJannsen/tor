@@ -160,4 +160,26 @@ class TorrcClientConfigFactoryTest {
                 .containsEntry("Log", "notice file " + DATA_DIR.resolve("debug.log"))
                 .containsEntry("LogTimeGranularity", "1000");
     }
+
+    @Test
+    void theBridgesOfTheConfigurationReplaceTheBridgeOverrides() {
+        Map<String, String> overrides = Map.of("UseBridges", "0",
+                "bridge", "192.0.2.1:9001",
+                "ClientTransportPlug", "obfs4 exec /usr/bin/obfs4proxy",
+                "ConnectionPadding", "1");
+        TorrcClientConfigFactory factoryWithBridges = TorrcClientConfigFactory.builder()
+                .isTestNetwork(false)
+                .dataDirPath(DATA_DIR)
+                .hashedControlPassword(passwordDigest)
+                .usesBridges(true)
+                .build();
+
+        assertThat(factoryWithBridges.torrcClientConfigMap(overrides))
+                .containsEntry("ConnectionPadding", "1")
+                .doesNotContainKeys("UseBridges", "bridge", "ClientTransportPlug");
+        // Without bridges in the configuration, a user can still set them with overrides.
+        assertThat(factory.torrcClientConfigMap(overrides))
+                .containsEntry("UseBridges", "0")
+                .containsEntry("bridge", "192.0.2.1:9001");
+    }
 }

@@ -17,6 +17,9 @@
 
 package bisq.network.tor;
 
+import bisq.network.tor.bridges.BridgeTorrcEntries;
+import bisq.network.tor.bridges.PluggableTransportConfig;
+import bisq.network.tor.bridges.PluggableTransportPrograms;
 import bisq.network.tor.common.file.FileUtils;
 import bisq.network.tor.common.platform.LinuxDistribution;
 import bisq.network.tor.common.platform.OS;
@@ -24,32 +27,34 @@ import bisq.network.tor.common.torrc.BaseTorrcGenerator;
 import bisq.network.tor.common.torrc.TorrcFileGenerator;
 import bisq.network.tor.common.torrc.TorrcSyntax;
 import bisq.network.tor.controller.PasswordDigest;
+import bisq.network.tor.controller.TorCommandFilteredException;
 import bisq.network.tor.controller.TorControlAuthenticationFailed;
 import bisq.network.tor.controller.TorController;
 import bisq.network.tor.installer.TorInstaller;
 import bisq.network.tor.onionservice.DirectOnionServiceTargets;
 import bisq.network.tor.onionservice.OnionServiceKey;
 import bisq.network.tor.onionservice.OnionServiceTargets;
+import bisq.network.tor.process.BundledTorLibraries;
 import bisq.network.tor.process.EmbeddedTorProcess;
-import bisq.network.tor.process.LdPreload;
 import bisq.network.tor.process.LoopbackPorts;
 import bisq.network.tor.process.TorDirectories;
 import bisq.network.tor.process.TorStartupFailedException;
 import bisq.network.tor.process.control_port.ControlPortFileParser;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.net.InetAddresses;
 import com.runjva.sourceforge.jsocks.protocol.Socks5Proxy;
 import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.UnknownHostException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -62,16 +67,13 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
-import static bisq.network.tor.common.torrc.Torrc.Keys.CONTROL_PORT;
-import static bisq.network.tor.common.torrc.Torrc.Keys.COOKIE_AUTHENTICATION;
-import static bisq.network.tor.common.torrc.Torrc.Keys.COOKIE_AUTH_FILE;
-import static com.google.common.base.Preconditions.checkArgument;
 
 @Slf4j
 public class TorService {
     private static final long CONTROL_PORT_FILE_TIMEOUT_MS = TimeUnit.SECONDS.toMillis(30);
     private static final long CONTROL_PORT_FILE_POLL_INTERVAL_MS = 100;
     private static final String GEOIP_FILE = "GeoIPFile";
+    private static final int AUTH_COOKIE_LENGTH = 32;
     private static final String GEOIP_V6_FILE = "GeoIPv6File";
     // Environment variable to not launch the embedded Tor process
     public static final String TOR_SKIP_LAUNCH = "TOR_SKIP_LAUNCH";
@@ -79,6 +81,10 @@ public class TorService {
     private final TorTransportConfig transportConfig;
     private final PlatformServices platformServices;
     private final TorDirectories torDirectories;
+    // On Whonix, Bisq uses the Tor of the Whonix-Gateway through onion-grater.
+    private final boolean isWhonix;
+    // On the Whonix-Gateway itself, Bisq does not start.
+    private final boolean isWhonixGateway;
     // Creates the controller of each start, see createControllerOfTheStart
     private final Supplier<TorController> torControllerFactory;
 
@@ -94,27 +100,51 @@ public class TorService {
     // Written by initialize, read by the user interface
     @Getter
     private volatile boolean useExternalTor;
-    // The version which the running Tor reports. On Linux it is the tor of the system, not the bundled version.
+    // The version which the running Tor reports
     @Getter
     private volatile Optional<String> torVersion = Optional.empty();
 
     private volatile Optional<EmbeddedTorProcess> torProcess = Optional.empty();
     private volatile Optional<TorSocksProxyFactory> torSocksProxyFactory = Optional.empty();
     private volatile OnionServiceTargets onionServiceTargets = new DirectOnionServiceTargets(LoopbackPorts.IPV4_LOOPBACK);
-    private final Map<String, String> externalTorConfigMap = new HashMap<>();
 
     public TorService(TorTransportConfig transportConfig, PlatformServices platformServices) {
-        this(transportConfig, platformServices, () -> new TorController(transportConfig.getBootstrapTimeout(),
-                transportConfig.getHsUploadTimeout()));
+        this(transportConfig, platformServices, LinuxDistribution.isWhonix(), LinuxDistribution.isWhonixGateway());
+    }
+
+    @VisibleForTesting
+    TorService(TorTransportConfig transportConfig, PlatformServices platformServices, boolean isWhonix) {
+        this(transportConfig, platformServices, isWhonix, false);
     }
 
     @VisibleForTesting
     TorService(TorTransportConfig transportConfig,
                PlatformServices platformServices,
+               boolean isWhonix,
+               boolean isWhonixGateway) {
+        this(transportConfig, platformServices, isWhonix, isWhonixGateway,
+                () -> new TorController(transportConfig.getBootstrapTimeout(), transportConfig.getHsUploadTimeout(),
+                        isWhonix));
+    }
+
+    @VisibleForTesting
+    TorService(TorTransportConfig transportConfig,
+               PlatformServices platformServices,
+               boolean isWhonix,
                Supplier<TorController> torControllerFactory) {
+        this(transportConfig, platformServices, isWhonix, false, torControllerFactory);
+    }
+
+    private TorService(TorTransportConfig transportConfig,
+                       PlatformServices platformServices,
+                       boolean isWhonix,
+                       boolean isWhonixGateway,
+                       Supplier<TorController> torControllerFactory) {
         this.transportConfig = transportConfig;
         this.platformServices = platformServices;
         this.torDirectories = new TorDirectories(transportConfig.getDataDirPath());
+        this.isWhonix = isWhonix;
+        this.isWhonixGateway = isWhonixGateway;
         this.torControllerFactory = () -> createControllerOfTheStart(torControllerFactory);
     }
 
@@ -202,34 +232,42 @@ public class TorService {
     }
 
     private void start() {
+        refuseWhonixGateway();
         makeTorDir();
 
-        readExternalTorConfigMap();
+        ExternalTorConfig externalTorConfig = readExternalTorConfig();
 
-        useExternalTor = evaluateUseExternalTor();
+        useExternalTor = evaluateUseExternalTor(externalTorConfig);
         if (useExternalTor) {
-            if (connectedToExternalTor(externalTorConfigMap)) {
-                log.info("External Tor will be used");
-                return;
-            } else if (LinuxDistribution.isWhonix()) {
-                // In case we failed at connectedToExternalTor, we do not start the embedded Tor as fallback if we are on Whonix.
-                throw new RuntimeException("Bisq runs on a Whonix system but it could not connect to the Whonix system Tor. " +
-                        "Please check the Bisq external_tor.config and the system Tor torrc config.");
-            } else {
-                // In case connectedToExternalTor failed we try embedded Tor (if not running on Whonix)
-                useExternalTor = false;
+            if (transportConfig.getBridgeConfig().isUsed()) {
+                log.warn("Bisq does not use the bridges of its configuration, because it uses an external Tor. The " +
+                        "external Tor uses the bridges of its own configuration.");
             }
+            try {
+                connectToExternalTor(externalTorConfig);
+            } catch (RuntimeException e) {
+                // The user may rely on the external Tor, for example for its bridges or for the Tor of Whonix. An own
+                // Tor would connect directly to the Tor network instead, so the start fails.
+                if (torController != null) {
+                    runQuietly(torController::shutdown, "Shutdown of the Tor controller failed");
+                    torController = null;
+                }
+                // Without the cause: Bisq 2 shows only the root cause of a failed start, and this exception has to be
+                // it, so that the user sees the explanation and the hint.
+                log.warn("Bisq cannot use the external Tor", e);
+                throw new ExternalTorUnavailableException(getExternalTorUnavailableMessage(externalTorConfig, e));
+            }
+            log.info("External Tor will be used");
+            return;
         }
 
         startEmbeddedTor();
     }
 
     private void startEmbeddedTor() {
-        if (!OS.isLinux()) {
-            installTorIfNotUpToDate();
-        }
+        installTorIfNotUpToDate();
 
-        Path torBinaryPath = getTorBinaryPath();
+        Path torBinaryPath = torDirectories.getBundledTorBinaryPath();
 
         if (torController != null) {
             torController.shutdown();
@@ -237,11 +275,8 @@ public class TorService {
         torController = torControllerFactory.get();
 
         PasswordDigest hashedControlPassword = PasswordDigest.generateDigest();
-        boolean isBundledTor = torDirectories.isBundledTor(torBinaryPath);
-        createTorrcConfigFile(hashedControlPassword, isBundledTor);
-        if (isBundledTor) {
-            createEmptyOpenSslConfig();
-        }
+        createTorrcConfigFile(hashedControlPassword);
+        createEmptyOpenSslConfig();
 
         // remove the control port file before we launch tor, just in case it exists from
         // a previous run
@@ -293,16 +328,13 @@ public class TorService {
     }
 
     private EmbeddedTorProcess createTorProcess(Path torBinaryPath) {
-        Consumer<Map<String, String>> environmentAdjuster = torDirectories.isBundledTor(torBinaryPath) ?
-                environment -> {
-                    LdPreload.applyToEnvironment(environment, torDirectories.getBinaryDirPath());
-                    // The OpenSSL of the bundled Tor reads openssl.cnf from a directory of its build below
-                    // /var/tmp/dist, where any local user can create files, unless OPENSSL_CONF names another file.
-                    // The configuration can load modules into Tor.
-                    environment.put("OPENSSL_CONF", torDirectories.getOpenSslConfigPath().toAbsolutePath().toString());
-                } :
-                environment -> {
-                };
+        Consumer<Map<String, String>> environmentAdjuster = environment -> {
+            BundledTorLibraries.applyToEnvironment(environment, torDirectories.getBinaryDirPath());
+            // The OpenSSL of the bundled Tor reads openssl.cnf from a directory of its build below /var/tmp/dist, where
+            // any local user can create files, unless OPENSSL_CONF names another file. The configuration can load
+            // modules into Tor.
+            environment.put("OPENSSL_CONF", torDirectories.getOpenSslConfigPath().toAbsolutePath().toString());
+        };
         return new EmbeddedTorProcess(createTorCommand(torBinaryPath),
                 torDirectories.getBinaryDirPath(),
                 environmentAdjuster,
@@ -331,6 +363,63 @@ public class TorService {
         }
     }
 
+    // With CookieAuthentication, Bisq only uses SAFECOOKIE: Tor proves that it knows the cookie before Bisq sends
+    // anything else. A process which listens on the port instead of Tor gets no secret. Bisq never falls back to
+    // another method, because each fallback would send the commands to a process which did not prove anything.
+    private void authenticateToExternalTor(ExternalTorConfig externalTorConfig) {
+        if (externalTorConfig.getControlPassword().isPresent()) {
+            // As with netlayer: for an external Tor which has a HashedControlPassword instead of a cookie
+            torController.authenticateWithPassword(externalTorConfig.getControlPassword().get());
+            return;
+        }
+        if (!externalTorConfig.isCookieAuthentication()) {
+            // No authentication required, but we still need to send an empty
+            // AUTHENTICATE call to be able to send control commands
+            torController.authenticate();
+            return;
+        }
+        if (isWhonix) {
+            // onion-grater, which filters the control port of the Whonix-Gateway, offers only authentication without a
+            // secret and filters AUTHCHALLENGE, so SAFECOOKIE cannot work. The cookie file of a Whonix-Workstation
+            // holds a fixed dummy value. netlayer and Bisq 2 before the library sent it, and onion-grater accepted it.
+            log.warn("On Whonix, Bisq does not use the cookie of external_tor.config, because onion-grater on the " +
+                    "Whonix-Gateway only accepts authentication without a secret");
+            torController.authenticate();
+            return;
+        }
+        Path authCookiePath = externalTorConfig.getCookieAuthFile()
+                .orElseThrow(() -> new TorControlAuthenticationFailed("CookieAuthentication is 1, but CookieAuthFile " +
+                        "is not set"));
+        byte[] authCookie;
+        // At most one byte more than a cookie: a large file, or a device such as /dev/zero, must not fill the memory
+        // of Bisq or block its start.
+        try (InputStream inputStream = Files.newInputStream(authCookiePath)) {
+            authCookie = inputStream.readNBytes(AUTH_COOKIE_LENGTH + 1);
+        } catch (IOException e) {
+            throw new TorControlAuthenticationFailed("Could not read the cookie file " + authCookiePath + ": " + e);
+        }
+        if (authCookie.length != AUTH_COOKIE_LENGTH) {
+            String length = authCookie.length > AUTH_COOKIE_LENGTH ?
+                    "more than " + AUTH_COOKIE_LENGTH :
+                    String.valueOf(authCookie.length);
+            throw new TorControlAuthenticationFailed("The cookie file " + authCookiePath + " has " + length +
+                    " bytes, but Tor writes " + AUTH_COOKIE_LENGTH + ". Check CookieAuthFile.");
+        }
+        torController.authenticateWithSafeCookie(authCookie);
+    }
+
+    /**
+     * The Whonix-Gateway has the markers of Whonix, so Bisq would take it for a Workstation and connect to the
+     * forwarded control port of the Gateway, which does not exist on the Gateway itself.
+     */
+    private void refuseWhonixGateway() {
+        if (isWhonixGateway) {
+            throw new TorStartupFailedException("Bisq does not run on a Whonix-Gateway, whose Tor serves the " +
+                    "Whonix-Workstations behind it. Run Bisq on a Whonix-Workstation, which uses the Tor of the " +
+                    "Gateway.");
+        }
+    }
+
     private void createTorControlDirectory() {
         Path controlDirFilePath = torDirectories.getDataDirPath().resolve(BaseTorrcGenerator.CONTROL_DIR_NAME);
         if (!Files.exists(controlDirFilePath)) {
@@ -342,8 +431,8 @@ public class TorService {
         }
     }
 
-    private boolean evaluateUseExternalTor() {
-        if (LinuxDistribution.isWhonix()) {
+    private boolean evaluateUseExternalTor(ExternalTorConfig externalTorConfig) {
+        if (isWhonix) {
             log.info("Bisq runs on a Whonix system and use the Whonix system Tor");
             return true;
         } else {
@@ -355,14 +444,9 @@ public class TorService {
                         torSkipLaunch.equalsIgnoreCase("true") ||
                         torSkipLaunch.equalsIgnoreCase("yes");
             } else {
-                // We check if external_tor.config value is set. If so we use that value
-                Optional<String> externalTorFromConfigMap = Optional.ofNullable(externalTorConfigMap.get("UseExternalTor"));
-                if (externalTorFromConfigMap.isPresent()) {
-                    return externalTorFromConfigMap.get().equals("1");
-                } else {
-                    // Last we take the value form the JVM config
-                    return transportConfig.isUseExternalTor();
-                }
+                // We check if external_tor.config value is set. If so we use that value.
+                // Last we take the value form the JVM config.
+                return externalTorConfig.getUseExternalTor().orElse(transportConfig.isUseExternalTor());
             }
         }
     }
@@ -409,7 +493,6 @@ public class TorService {
         torProcess = Optional.empty();
         onionServiceTargets.close();
         torSocksProxyFactory = Optional.empty();
-        externalTorConfigMap.clear();
         torVersion = Optional.empty();
     }
 
@@ -498,6 +581,16 @@ public class TorService {
         return e instanceof CompletionException && e.getCause() != null ? e.getCause() : e;
     }
 
+    /**
+     * @return the address on which a server of the application has to listen, which it publishes with
+     * {@link #publishOnionService}: the loopback address, except with the Tor of a Whonix-Gateway, which connects over
+     * the internal network of Whonix. It belongs to the running Tor, so it is known once {@link #initialize()} has
+     * returned.
+     */
+    public InetAddress getOnionServiceBindAddress() {
+        return onionServiceTargets.getBindAddress();
+    }
+
     public CompletableFuture<Boolean> isOnionServiceOnlineAsync(String onionUrl) {
         return torController.isOnionServiceOnlineAsync(onionUrl)
                 .orTimeout(1, TimeUnit.MINUTES);
@@ -513,62 +606,18 @@ public class TorService {
         return socksProxyFactory.getSocks5Proxy();
     }
 
-    private boolean connectedToExternalTor(Map<String, String> torConfigMap) {
-        ControlHostAndPort controlHostAndPort = getControlHostAndPort(torConfigMap);
-        String controlHost = controlHostAndPort.host();
-        int controlPort = controlHostAndPort.port();
-        if (!isTorControlAvailable(controlHost, controlPort)) {
-            log.warn("Couldn't connect to external Tor control server. " +
-                    "This could happen if the control port is not correctly set up in 'external_tor.config' file.");
-            return false;
-        }
-
+    private void connectToExternalTor(ExternalTorConfig externalTorConfig) {
+        String controlHost = externalTorConfig.getControlHost();
+        int controlPort = externalTorConfig.getControlPort();
         if (torController != null) {
             torController.shutdown();
         }
         torController = torControllerFactory.get();
-        torController.initialize(controlPort);
+        torController.initialize(controlHost, controlPort);
 
-        boolean isAuthenticated = false;
-        boolean noCookieAuthenticationRequired = Optional.ofNullable(torConfigMap.get(COOKIE_AUTHENTICATION)).orElse("0").equals("0");
-        if (noCookieAuthenticationRequired) {
-            // No authentication required, but we still need to send an empty
-            // AUTHENTICATE call to be able to send control commands
-            try {
-                torController.authenticate();
-                isAuthenticated = true;
-            } catch (TorControlAuthenticationFailed e) {
-                log.warn("Authentication to Tor Control failed.");
-                return false;
-            }
-        }
-
-        if (!isAuthenticated) {
-            if (torConfigMap.containsKey(COOKIE_AUTH_FILE)) {
-                String authCookiePath = torConfigMap.get(COOKIE_AUTH_FILE);
-                try {
-                    byte[] authCookie = Files.readAllBytes(Paths.get(authCookiePath));
-                    torController.authenticate(authCookie);
-                    isAuthenticated = true;
-                } catch (TorControlAuthenticationFailed e) {
-                    log.warn("Authentication with authCookie failed.");
-                } catch (IOException e) {
-                    log.warn("Couldn't read the COOKIE_AUTH_FILE '{}' from the config.", authCookiePath);
-                }
-            } else {
-                log.warn("The user did not provide the path to the COOKIE_AUTH_FILE.");
-            }
-        }
-
-        if (!isAuthenticated) {
-            log.info("We try to call authenticate without parameters for the case that authentication is not required.");
-            try {
-                torController.authenticate();
-            } catch (TorControlAuthenticationFailed ex) {
-                log.warn("Authentication to Tor Control failed.");
-                return false;
-            }
-        }
+        authenticateToExternalTor(externalTorConfig);
+        // A system Tor may still bootstrap, for example right after the start of the system.
+        torController.awaitBootstrapOfExternalTor();
 
         onionServiceTargets.close();
         onionServiceTargets = new DirectOnionServiceTargets(getExternalTorBindAddress());
@@ -577,65 +626,132 @@ public class TorService {
         log.info("The external Tor at {}:{} has version {}", controlHost, controlPort,
                 torVersion.orElse("unknown"));
 
-        // We do not call torController.bootstrap as we do not need to bootstrap Tor.
-        int port = torController.getSocksPort();
-        log.info("Tor control provided SOCKS port: {}", port);
-        torSocksProxyFactory = Optional.of(new TorSocksProxyFactory(port));
-        return true;
+        List<TorController.SocksListener> socksListeners = torController.getSocksListeners();
+        InetSocketAddress socksAddress = selectSocksAddress(controlHost, isLoopbackAddress(controlHost), socksListeners);
+        log.info("The external Tor listens for SOCKS connections on {}. Bisq connects to {}:{}",
+                describe(socksListeners), socksAddress.getHostString(), socksAddress.getPort());
+        refuseSocksPortWithoutStreamIsolation(socksAddress.getPort());
+        torSocksProxyFactory = Optional.of(new TorSocksProxyFactory(socksAddress.getHostString(), socksAddress.getPort()));
     }
 
-    private ControlHostAndPort getControlHostAndPort(Map<String, String> externalTorConfigMap) {
-        String controlPortString = externalTorConfigMap.get(CONTROL_PORT);
-        String[] tokens = controlPortString.split(":");
-        String controlHost;
-        int controlPort;
-        if (tokens.length == 2) {
-            controlHost = tokens[0];
-            controlPort = Integer.parseInt(tokens[1]);
-        } else {
-            checkArgument(tokens.length == 1,
-                    "Value for CONTROL_PORT must be in the form of 'host:port' or 'port' but was: " + controlPortString);
-            controlHost = "127.0.0.1";
-            controlPort = Integer.parseInt(tokens[0]);
+    /**
+     * The address of the SOCKS port of an external Tor: the first TCP listener which Bisq can reach. A listener on a
+     * specific address is reached there. A listener on a wildcard address accepts connections on every address of the
+     * host of Tor, so Bisq connects to the control host. A loopback address is an address of the host of Tor, which is
+     * this host only if the control host is a loopback address as well.
+     *
+     * @param isControlHostLoopback whether the control host is a loopback address, so that Tor runs on this host
+     * @throws TorStartupFailedException if Bisq can reach none of the listeners
+     */
+    @VisibleForTesting
+    static InetSocketAddress selectSocksAddress(String controlHost,
+                                                boolean isControlHostLoopback,
+                                                List<TorController.SocksListener> socksListeners) {
+        for (TorController.SocksListener listener : socksListeners) {
+            Optional<InetAddress> address = InetAddresses.isInetAddress(listener.address()) ?
+                    Optional.of(InetAddresses.forString(listener.address())) :
+                    Optional.empty();
+            if (address.filter(InetAddress::isAnyLocalAddress).isPresent()) {
+                return InetSocketAddress.createUnresolved(controlHost, listener.port());
+            }
+            if (address.filter(InetAddress::isLoopbackAddress).isEmpty() || isControlHostLoopback) {
+                return InetSocketAddress.createUnresolved(listener.address(), listener.port());
+            }
         }
-        return new ControlHostAndPort(controlHost, controlPort);
+        if (socksListeners.isEmpty()) {
+            throw new TorStartupFailedException("Tor has no TCP SOCKS listener");
+        }
+        throw new TorStartupFailedException("Tor listens for SOCKS connections only on the loopback address of its " +
+                "host " + controlHost + " (" + describe(socksListeners) + "), which Bisq cannot reach from this host. " +
+                "Add a SocksPort on an address of that host which this host can reach to the configuration of the " +
+                "external Tor");
     }
 
-    private void readExternalTorConfigMap() {
+    // IPv6 addresses in brackets, as Tor reports them
+    private static String describe(List<TorController.SocksListener> socksListeners) {
+        return socksListeners.stream()
+                .map(listener -> listener.address().contains(":") ?
+                        "[" + listener.address() + "]:" + listener.port() :
+                        listener.address() + ":" + listener.port())
+                .collect(Collectors.joining(", "));
+    }
+
+    // A host name which does not resolve is no loopback address. The control connection resolved it already.
+    private static boolean isLoopbackAddress(String host) {
         try {
-            Path torConfigFilePath = torDirectories.getExternalTorConfigPath();
-            String torConfig;
+            return InetAddress.getByName(host).isLoopbackAddress();
+        } catch (UnknownHostException e) {
+            return false;
+        }
+    }
+
+    /**
+     * {@link #getSocket} sends SOCKS credentials derived from the stream ID, so that Tor puts the streams of different
+     * stream IDs on different circuits, which both applications require for their connections. The Tor which Bisq
+     * starts always does so; the configuration of an external Tor can turn it off for its SOCKS port.
+     */
+    private void refuseSocksPortWithoutStreamIsolation(int socksPort) {
+        Optional<List<String>> entriesWithoutIsolation = torController.findSocksPortsWithoutSocksAuthIsolation(socksPort);
+        if (entriesWithoutIsolation.isEmpty()) {
+            log.info("The control port of the external Tor does not report its SocksPort configuration, so Bisq " +
+                    "cannot check that the SOCKS port {} isolates streams by their SOCKS credentials", socksPort);
+            return;
+        }
+        if (!entriesWithoutIsolation.get().isEmpty()) {
+            throw new TorStartupFailedException("Its SOCKS port " + socksPort + " does not isolate streams by their " +
+                    "SOCKS credentials (SocksPort " + String.join(", ", entriesWithoutIsolation.get()) + "), so Tor " +
+                    "could put the connections of different identities of Bisq on one circuit. Remove " +
+                    "NoIsolateSOCKSAuth from that SocksPort in the configuration of the external Tor");
+        }
+    }
+
+    private String getExternalTorUnavailableMessage(ExternalTorConfig externalTorConfig, RuntimeException cause) {
+        String location = externalTorConfig.getControlHost() + ":" + externalTorConfig.getControlPort();
+        String hint;
+        if (!isWhonix) {
+            hint = "Start the external Tor or correct " + torDirectories.getExternalTorConfigPath() + ". Bisq uses an " +
+                    "external Tor if UseExternalTor is 1 there, if the environment variable " + TOR_SKIP_LAUNCH +
+                    " is 1, or if the application is configured to use one.";
+        } else if (cause instanceof TorCommandFilteredException) {
+            // Its message gives the advice for onion-grater already.
+            hint = "Check also " + torDirectories.getExternalTorConfigPath() + ".";
+        } else {
+            hint = "Check that the Tor of the Whonix-Gateway runs, that the system of the Whonix-Gateway is updated " +
+                    "and that the onion-grater profile of Bisq is enabled there with \"sudo onion-grater-add 40_bisq\". " +
+                    "Check also " + torDirectories.getExternalTorConfigPath() + ".";
+        }
+        return "Bisq is configured to use a Tor which runs outside Bisq, but it cannot use the Tor at " + location +
+                ": " + withoutFinalPeriod(cause.getMessage()) + ". Bisq does not start its own Tor instead, because it " +
+                "would connect to the Tor network without the settings of the external Tor, for example its bridges. " +
+                hint;
+    }
+
+    // The message of the cause goes into a sentence of another message, which ends it.
+    private static String withoutFinalPeriod(String message) {
+        String text = String.valueOf(message);
+        return text.endsWith(".") ? text.substring(0, text.length() - 1) : text;
+    }
+
+    private ExternalTorConfig readExternalTorConfig() {
+        Path torConfigFilePath = torDirectories.getExternalTorConfigPath();
+        String torConfig;
+        try {
             if (!Files.exists(torConfigFilePath)) {
                 torConfig = FileUtils.readStringFromResource("tor/" + TorDirectories.EXTERNAL_TOR_CONFIG_FILE_NAME);
                 FileUtils.writeToPath(torConfig, torConfigFilePath, platformServices.supportsPosixPermissions());
             } else {
                 torConfig = FileUtils.readUTF8String(torConfigFilePath);
             }
-            Set<String> lines = torConfig.lines().collect(Collectors.toSet());
-            for (String line : lines) {
-                line = line.trim();
-                if (!line.isEmpty() && !line.startsWith("#")) {
-                    int firstSpaceIndex = line.indexOf(" ");
-                    if (firstSpaceIndex != -1) {
-                        String key = line.substring(0, firstSpaceIndex);
-                        String value = line.substring(firstSpaceIndex + 1);
-                        externalTorConfigMap.put(key, value);
-                    }
-                }
-            }
         } catch (IOException e) {
-            log.warn("Could not read external tor config file.", e);
+            // Without the file, Bisq cannot know whether the user wants to use an external Tor.
+            log.warn("Could not read {}", torConfigFilePath, e);
+            throw new IllegalStateException("Could not read " + torConfigFilePath + ": " + e);
         }
-    }
-
-    private boolean isTorControlAvailable(String controlHost, int controlPort) {
-        try (Socket socket = new Socket()) {
-            var socketAddress = new InetSocketAddress(controlHost, controlPort);
-            socket.connect(socketAddress);
-            log.info("Test connection to control server of external tor process successful.");
-            return true;
-        } catch (IOException e) {
-            return false;
+        try {
+            return ExternalTorConfig.parse(torConfig);
+        } catch (IllegalArgumentException e) {
+            // Without the cause, so that the message which names the file is the root cause which Bisq 2 shows
+            throw new IllegalArgumentException("Invalid " + torConfigFilePath + ": " + e.getMessage());
         }
     }
 
@@ -663,14 +779,6 @@ public class TorService {
             }
             Thread.sleep(CONTROL_PORT_FILE_POLL_INTERVAL_MS);
         }
-    }
-
-    private Path getTorBinaryPath() {
-        if (OS.isLinux()) {
-            Optional<Path> systemTorBinaryPath = EmbeddedTorProcess.getSystemTorPath();
-            return systemTorBinaryPath.orElseThrow(TorNotInstalledException::new);
-        }
-        return torDirectories.getBundledTorBinaryPath();
     }
 
     private void installTorIfNotUpToDate() {
@@ -714,28 +822,48 @@ public class TorService {
         }
     }
 
-    private Map<String, String> createTorrcConfigFile(PasswordDigest hashedControlPassword, boolean isBundledTor) {
+    private Map<String, String> createTorrcConfigFile(PasswordDigest hashedControlPassword) {
+        BridgeConfig bridgeConfig = transportConfig.getBridgeConfig();
         TorrcClientConfigFactory torrcClientConfigFactory = TorrcClientConfigFactory.builder()
                 .isTestNetwork(transportConfig.isTestNetwork())
                 .dataDirPath(torDirectories.getDataDirPath())
                 .hashedControlPassword(hashedControlPassword)
+                .usesBridges(bridgeConfig.isUsed())
                 .build();
 
         Map<String, String> torrcOverrideConfigs = transportConfig.getTorrcOverrides();
         Map<String, String> torrcConfigMap = torrcClientConfigFactory.torrcClientConfigMap(torrcOverrideConfigs);
-        if (isBundledTor) {
-            putBundledGeoIpFiles(torrcConfigMap, torDirectories);
-        }
+        putBundledGeoIpFiles(torrcConfigMap, torDirectories);
+
+        List<Map.Entry<String, String>> bridgeEntries = bridgeConfig.isUsed() ?
+                createBridgeTorrcEntries(bridgeConfig) :
+                List.of();
 
         var torrcFileGenerator = new TorrcFileGenerator(torDirectories.getTorrcPath(),
                 torrcConfigMap,
+                bridgeEntries,
                 transportConfig.getDirectoryAuthorities());
         torrcFileGenerator.generate();
         return torrcConfigMap;
     }
 
-    private static InetAddress getExternalTorBindAddress() {
-        if (!LinuxDistribution.isWhonix()) {
+    private List<Map.Entry<String, String>> createBridgeTorrcEntries(BridgeConfig bridgeConfig) {
+        PluggableTransportConfig pluggableTransportConfig =
+                PluggableTransportConfig.read(torDirectories.getPluggableTransportConfigPath());
+        Path bundleDirPath = torDirectories.getBinaryDirPath();
+        List<Map.Entry<String, String>> bridgeEntries = BridgeTorrcEntries.create(bridgeConfig,
+                pluggableTransportConfig,
+                programName -> PluggableTransportPrograms.find(bundleDirPath, programName));
+        // The bridge lines are not logged: a bridge which the user got privately would be blocked once it is known.
+        log.info("The embedded Tor connects through {}",
+                bridgeConfig.getBuiltInBridges()
+                        .map(name -> "the built-in bridges of the type " + name)
+                        .orElse(bridgeConfig.getCustomBridgeLines().size() + " bridges of the user"));
+        return bridgeEntries;
+    }
+
+    private InetAddress getExternalTorBindAddress() {
+        if (!isWhonix) {
             return LoopbackPorts.IPV4_LOOPBACK;
         }
         try {
@@ -746,8 +874,6 @@ public class TorService {
         }
     }
 
-    private record ControlHostAndPort(String host, int port) {
-    }
 
     private static void closeQuietly(ServerSocket serverSocket) {
         try {

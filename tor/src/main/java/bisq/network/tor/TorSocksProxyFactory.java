@@ -51,9 +51,15 @@ public class TorSocksProxyFactory {
     private static final byte[] USERNAME_KEY = createUsernameKey();
     private static final String USERNAME_MAC_ALGORITHM = "HmacSHA256";
 
+    private final String socksHost;
     private final int socksPort;
 
     public TorSocksProxyFactory(int socksPort) {
+        this("127.0.0.1", socksPort);
+    }
+
+    public TorSocksProxyFactory(String socksHost, int socksPort) {
+        this.socksHost = socksHost;
         this.socksPort = socksPort;
     }
 
@@ -66,7 +72,7 @@ public class TorSocksProxyFactory {
             // Bisq writes small messages and waits for the answer. Nagle's algorithm would delay them.
             socket.setTcpNoDelay(true);
             socket.setSoTimeout(socketTimeout);
-            socket.connect(new InetSocketAddress("127.0.0.1", socksPort), socketTimeout);
+            socket.connect(new InetSocketAddress(socksHost, socksPort), socketTimeout);
             performHandshake(socket, host, port, streamId);
             return socket;
         } catch (IOException | RuntimeException e) {
@@ -163,7 +169,7 @@ public class TorSocksProxyFactory {
     }
 
     public Socks5Proxy getSocks5Proxy() throws IOException {
-        Socks5Proxy socks5Proxy = new Socks5Proxy("127.0.0.1", socksPort);
+        Socks5Proxy socks5Proxy = new Socks5Proxy(socksHost, socksPort);
         socks5Proxy.resolveAddrLocally(false);
         return socks5Proxy;
     }

@@ -82,11 +82,6 @@ class TorBinaryPackager(
                 filePermissions { unix("0644") }
             }
 
-        if (getOS() == OS.LINUX) {
-            // The Bisq package depends on Tor and the OS's package manager installs Tor and its dependencies for us.
-            return
-        }
-
         val processResourcesTask = project.tasks.named("processResources")
         processResourcesTask.configure {
             dependsOn(packageTorBinary)

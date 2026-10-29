@@ -5,7 +5,6 @@ import bisq.gradle.tasks.PerPlatformUrlProvider
 import bisq.gradle.tasks.signature.SignatureVerificationTask
 import org.gradle.api.GradleException
 import org.gradle.api.Project
-import org.gradle.api.provider.Property
 import org.gradle.api.provider.Provider
 import org.gradle.api.tasks.TaskProvider
 import org.gradle.kotlin.dsl.register
@@ -15,7 +14,7 @@ import java.security.MessageDigest
 class SignedBinaryDownloader(
     private val project: Project,
     private val binaryName: String,
-    private val version: Property<String>,
+    private val version: Provider<String>,
 
     // The platform of the binary to download
     private val platform: Platform,

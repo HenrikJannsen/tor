@@ -41,6 +41,9 @@ class TorDirectoriesTest {
         assertThat(directories.getOpenSslConfigPath()).isEqualTo(BASE.resolve("openssl.cnf"));
         assertThat(directories.getBundledGeoIpFilePath()).isEqualTo(BASE.resolve("geoip"));
         assertThat(directories.getBundledGeoIpv6FilePath()).isEqualTo(BASE.resolve("geoip6"));
+        assertThat(directories.getPluggableTransportsDirPath()).isEqualTo(BASE.resolve("pluggable_transports"));
+        assertThat(directories.getPluggableTransportConfigPath())
+                .isEqualTo(BASE.resolve("pluggable_transports").resolve("pt_config.json"));
     }
 
     @Test
@@ -49,13 +52,5 @@ class TorDirectoriesTest {
         assertThat(directories.getBundledTorBinaryPath(false)).isEqualTo(BASE.resolve("tor"));
         assertThat(directories.getBundledTorBinaryPath())
                 .isEqualTo(directories.getBundledTorBinaryPath(OS.isWindows()));
-    }
-
-    @Test
-    void onlyABinaryInTheTorDirectoryIsTheBundledTor() {
-        assertThat(directories.isBundledTor(BASE.resolve("tor"))).isTrue();
-        assertThat(directories.isBundledTor(Paths.get("/usr/bin/tor"))).isFalse();
-        // The path is normalized, so one which leaves the Tor directory is not the bundled Tor.
-        assertThat(directories.isBundledTor(BASE.resolve("..").resolve("other").resolve("tor"))).isFalse();
     }
 }

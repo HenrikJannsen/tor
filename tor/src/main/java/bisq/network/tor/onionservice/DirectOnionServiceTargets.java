@@ -52,6 +52,11 @@ public final class DirectOnionServiceTargets implements OnionServiceTargets {
     }
 
     @Override
+    public InetAddress getBindAddress() {
+        return bindAddress;
+    }
+
+    @Override
     public void close() {
     }
 }

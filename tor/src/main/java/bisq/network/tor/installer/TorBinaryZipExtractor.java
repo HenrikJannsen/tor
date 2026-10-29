@@ -20,11 +20,15 @@ package bisq.network.tor.installer;
 import bisq.network.tor.common.archive.ZipFileExtractionFailedException;
 import bisq.network.tor.common.archive.ZipFileExtractor;
 import bisq.network.tor.common.platform.OS;
+import bisq.network.tor.process.TorDirectories;
+import com.google.common.annotations.VisibleForTesting;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.stream.Stream;
 
 @Slf4j
 public class TorBinaryZipExtractor {
@@ -38,10 +42,14 @@ public class TorBinaryZipExtractor {
     }
 
     public void extractBinary() throws IOException {
-        InputStream zipFileInputStream = openBinaryZipAsStream();
+        extract(openBinaryZipAsStream());
+    }
+
+    @VisibleForTesting
+    void extract(InputStream zipFileInputStream) throws IOException {
         try (ZipFileExtractor zipFileExtractor = new ZipFileExtractor(zipFileInputStream, destDirPath)) {
             zipFileExtractor.extractArchive();
-            makeTorBinaryExecutable();
+            makeProgramsExecutable();
         }
         if (OS.isMacOs()) {
             MacOsCodeSignature.signUnsignedCode(destDirPath);
@@ -58,14 +66,29 @@ public class TorBinaryZipExtractor {
         return inputStream;
     }
 
-    private void makeTorBinaryExecutable() {
+    // The zip archive does not keep the file modes.
+    private void makeProgramsExecutable() throws IOException {
         if (!isMacOsOrLinux()) {
             return;
         }
 
-        Path torBinaryFilePath = destDirPath.resolve("tor");
-        if (!torBinaryFilePath.toFile().setExecutable(true)) {
-            throw new ZipFileExtractionFailedException("Couldn't make tor binary executable: " + ARCHIVE_FILENAME);
+        makeExecutable(destDirPath.resolve("tor"));
+
+        Path pluggableTransportsDirPath = destDirPath.resolve(TorDirectories.PLUGGABLE_TRANSPORTS_DIR_NAME);
+        if (Files.isDirectory(pluggableTransportsDirPath)) {
+            try (Stream<Path> files = Files.list(pluggableTransportsDirPath)) {
+                // The programs of the pluggable transports have no file extension, unlike pt_config.json and the
+                // README files next to them.
+                files.filter(Files::isRegularFile)
+                        .filter(path -> !path.getFileName().toString().contains("."))
+                        .forEach(this::makeExecutable);
+            }
+        }
+    }
+
+    private void makeExecutable(Path programPath) {
+        if (!programPath.toFile().setExecutable(true)) {
+            throw new ZipFileExtractionFailedException("Couldn't make " + programPath + " executable");
         }
     }
 

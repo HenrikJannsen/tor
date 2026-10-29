@@ -50,6 +50,34 @@ class TorrcFileGeneratorTest {
     }
 
     @Test
+    void repeatedEntriesFollowTheOtherEntriesInTheirOrder() throws IOException {
+        Path torrcPath = tempDir.resolve("torrc");
+        List<Map.Entry<String, String>> bridges = List.of(Map.entry("Bridge", "obfs4 192.0.2.1:443 A"),
+                Map.entry("Bridge", "obfs4 192.0.2.2:443 B"),
+                Map.entry("ClientTransportPlugin", "obfs4 exec pluggable_transports/lyrebird"));
+
+        new TorrcFileGenerator(torrcPath, Map.of("UseBridges", "1"), bridges, Set.of()).generate();
+
+        assertThat(Files.readString(torrcPath)).isEqualTo("""
+                UseBridges 1
+                Bridge obfs4 192.0.2.1:443 A
+                Bridge obfs4 192.0.2.2:443 B
+                ClientTransportPlugin obfs4 exec pluggable_transports/lyrebird
+                """);
+    }
+
+    @Test
+    void aLineBreakInARepeatedEntryIsRefused() {
+        Path torrcPath = tempDir.resolve("torrc");
+        List<Map.Entry<String, String>> bridges = List.of(Map.entry("Bridge", "obfs4 192.0.2.1:443\nUseBridges 0"));
+
+        assertThatThrownBy(() -> new TorrcFileGenerator(torrcPath, Map.of(), bridges, Set.of()).generate())
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("line break");
+        assertThat(torrcPath).doesNotExist();
+    }
+
+    @Test
     void aLineBreakInAValueCannotAddAnEntry() {
         // For example a torrc override of the user, which would otherwise set a key that the caller ignores
         Map<String, String> torrc = Map.of("Log", "notice stdout\nControlPort 9051");
@@ -78,6 +106,10 @@ class TorrcFileGeneratorTest {
             assertThatThrownBy(() -> new TorrcFileGenerator(torrcPath, Map.of("Log", value), Set.of()).generate())
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("Log")
+                    .hasMessageContaining(problem);
+            List<Map.Entry<String, String>> bridges = List.of(Map.entry("Bridge", value));
+            assertThatThrownBy(() -> new TorrcFileGenerator(torrcPath, Map.of(), bridges, Set.of()).generate())
+                    .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining(problem);
         });
         assertThat(torrcPath).doesNotExist();

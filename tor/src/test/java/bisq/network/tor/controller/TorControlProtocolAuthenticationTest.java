@@ -21,6 +21,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -60,6 +61,15 @@ class TorControlProtocolAuthenticationTest {
         assertThatThrownBy(() -> torControlProtocol.authenticate(PasswordDigest.generateDigest()))
                 .isInstanceOf(TorControlAuthenticationFailed.class)
                 .hasMessageContaining("514");
+    }
+
+    @Test
+    void aPasswordIsSentAsHexOfItsUtf8Bytes() throws Exception {
+        connect("250 OK\r\n");
+
+        torControlProtocol.authenticateWithPassword("bisq \u00fc");
+
+        assertThat(server.getCommands()).containsExactly("AUTHENTICATE 62697371" + "20" + "c3bc");
     }
 
     private void connect(String reply) throws Exception {

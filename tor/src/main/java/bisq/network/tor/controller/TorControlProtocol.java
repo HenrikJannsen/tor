@@ -1,21 +1,30 @@
 package bisq.network.tor.controller;
 
+import bisq.network.tor.common.platform.LinuxDistribution;
 import bisq.network.tor.controller.events.listener.BootstrapEventListener;
 import bisq.network.tor.controller.events.listener.HsDescEventListener;
 import bisq.network.tor.controller.exceptions.CannotConnectWithTorException;
 import bisq.network.tor.controller.exceptions.CannotSendCommandToTorException;
 import bisq.network.tor.onionservice.OnionServiceKey;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.io.BaseEncoding;
 import com.google.common.util.concurrent.ThreadFactoryBuilder;
 import lombok.extern.slf4j.Slf4j;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.security.GeneralSecurityException;
+import java.security.MessageDigest;
+import java.security.SecureRandom;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ScheduledFuture;
@@ -46,7 +55,18 @@ import java.util.stream.Stream;
 @Slf4j
 public class TorControlProtocol implements AutoCloseable {
     private static final int MAX_CONNECTION_ATTEMPTS = 10;
+    private static final int CONNECT_TIMEOUT_MS = 10_000;
+    private static final String LOOPBACK_HOST = "127.0.0.1";
     private static final String SERVICE_ID_REPLY_PREFIX = "250-ServiceID=";
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
+    private static final int SAFE_COOKIE_NONCE_LENGTH = 32;
+    private static final String SAFE_COOKIE_SERVER_TO_CONTROLLER_KEY =
+            "Tor safe cookie authentication server-to-controller hash";
+    private static final String SAFE_COOKIE_CONTROLLER_TO_SERVER_KEY =
+            "Tor safe cookie authentication controller-to-server hash";
+    // 250 AUTHCHALLENGE SERVERHASH=<64 hex digits> SERVERNONCE=<64 hex digits>
+    private static final Pattern AUTHCHALLENGE_REPLY_PATTERN =
+            Pattern.compile("^250 AUTHCHALLENGE SERVERHASH=([0-9A-Fa-f]{64}) SERVERNONCE=([0-9A-Fa-f]{64})$");
     // Far more than any reply to the commands of Bisq.
     static final int MAX_REPLY_LENGTH = 1024 * 1024;
     // The service ID of a v3 onion service: its address without ".onion"
@@ -68,11 +88,21 @@ public class TorControlProtocol implements AutoCloseable {
     private static final String DATA_END = ".";
     // Set by close() and never reset: a TorControlProtocol serves one connection.
     private volatile boolean isClosed;
+    // The name of the command whose reply is read next. The command methods hold the lock of this object.
+    private String lastCommandName = "";
     // The time in which Tor must send the whole reply to a command
     private final long replyTimeoutMs;
+    // The time in which the control port must accept the connection
+    private final int connectTimeoutMs;
+    // A filtered command then names the onion-grater profile of Bisq.
+    private final boolean isWhonix;
 
     public TorControlProtocol() {
-        this(TorControlReader.REPLY_TIMEOUT_MS);
+        this(LinuxDistribution.isWhonix());
+    }
+
+    public TorControlProtocol(boolean isWhonix) {
+        this(TorControlReader.REPLY_TIMEOUT_MS, isWhonix);
     }
 
     private static ScheduledThreadPoolExecutor createWriteTimeoutScheduler() {
@@ -86,13 +116,46 @@ public class TorControlProtocol implements AutoCloseable {
     }
 
     TorControlProtocol(long replyTimeoutMs) {
+        this(replyTimeoutMs, false);
+    }
+
+    @VisibleForTesting
+    TorControlProtocol(long replyTimeoutMs, int connectTimeoutMs) {
+        this(replyTimeoutMs, connectTimeoutMs, false);
+    }
+
+    private TorControlProtocol(long replyTimeoutMs, boolean isWhonix) {
+        this(replyTimeoutMs, CONNECT_TIMEOUT_MS, isWhonix);
+    }
+
+    private TorControlProtocol(long replyTimeoutMs, int connectTimeoutMs, boolean isWhonix) {
         this.replyTimeoutMs = replyTimeoutMs;
+        this.connectTimeoutMs = connectTimeoutMs;
+        this.isWhonix = isWhonix;
         torControlReader = new TorControlReader();
     }
 
+    /**
+     * Connects to the control port of the Tor which Bisq started on this host. Every failure of a connection is tried
+     * again a few times.
+     */
     public void initialize(int port) {
+        initialize(LOOPBACK_HOST, port, true);
+    }
+
+    /**
+     * Connects to the control port of a Tor which runs outside Bisq. Only a refused connection is tried again, because
+     * that Tor may not listen yet. Any other failure ends the attempts at once: a host which drops the packets would
+     * hold every attempt for the whole connect timeout, and an unreachable or unknown host does not change between
+     * the attempts.
+     */
+    public void initialize(String host, int port) {
+        initialize(host, port, false);
+    }
+
+    private void initialize(String host, int port, boolean isEveryFailureRetried) {
         try {
-            Socket socket = createAndConnectControlSocket(port);
+            Socket socket = createAndConnectControlSocket(host, port, isEveryFailureRetried);
             controlSocket = socket;
             if (isClosed) {
                 // close() ran while the socket connected and may not have seen it.
@@ -157,6 +220,64 @@ public class TorControlProtocol implements AutoCloseable {
         authenticate(BaseEncoding.base16().lowerCase().encode(authCookie));
     }
 
+    /**
+     * Authenticates with the plain password of the HashedControlPassword of Tor. The password is sent to the
+     * process on the control port, which cannot prove that it is Tor.
+     */
+    public void authenticateWithPassword(String password) {
+        authenticate(BaseEncoding.base16().lowerCase().encode(password.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    /**
+     * Authenticates with the SAFECOOKIE method of the control protocol (control-spec, AUTHCHALLENGE). Unlike the
+     * COOKIE method, it never sends the cookie: Tor first proves that it knows the cookie, so a process which only
+     * listens on the control port gets neither the cookie nor the commands which follow.
+     *
+     * <p>
+     * The method holds the lock for AUTHCHALLENGE and AUTHENTICATE, because Tor expects AUTHENTICATE as the next
+     * command.
+     *
+     * @throws TorControlAuthenticationFailed if the process on the control port does not prove that it knows the
+     *                                        cookie, or if it does not accept the authentication
+     */
+    public synchronized void authenticateWithSafeCookie(byte[] authCookie) {
+        byte[] clientNonce = new byte[SAFE_COOKIE_NONCE_LENGTH];
+        SECURE_RANDOM.nextBytes(clientNonce);
+        sendCommand("AUTHCHALLENGE SAFECOOKIE " + BaseEncoding.base16().encode(clientNonce) + "\r\n");
+        String reply = receiveReply().findFirst().orElseThrow();
+
+        Matcher matcher = AUTHCHALLENGE_REPLY_PATTERN.matcher(reply);
+        if (!matcher.matches()) {
+            throw new TorControlAuthenticationFailed("Invalid reply to AUTHCHALLENGE: " + reply);
+        }
+        byte[] serverHash = BaseEncoding.base16().decode(matcher.group(1).toUpperCase(Locale.ROOT));
+        byte[] serverNonce = BaseEncoding.base16().decode(matcher.group(2).toUpperCase(Locale.ROOT));
+
+        byte[] expectedServerHash = safeCookieHash(SAFE_COOKIE_SERVER_TO_CONTROLLER_KEY, authCookie, clientNonce, serverNonce);
+        if (!MessageDigest.isEqual(expectedServerHash, serverHash)) {
+            // Nothing more may be sent to this process.
+            close();
+            throw new TorControlAuthenticationFailed("The process on the Tor control port does not know the " +
+                    "authentication cookie. Another process may listen on the port.");
+        }
+        byte[] clientHash = safeCookieHash(SAFE_COOKIE_CONTROLLER_TO_SERVER_KEY, authCookie, clientNonce, serverNonce);
+        authenticate(BaseEncoding.base16().lowerCase().encode(clientHash));
+    }
+
+    // HMAC-SHA256(key, CookieString | ClientNonce | ServerNonce)
+    private static byte[] safeCookieHash(String key, byte[] authCookie, byte[] clientNonce, byte[] serverNonce) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(key.getBytes(StandardCharsets.US_ASCII), "HmacSHA256"));
+            mac.update(authCookie);
+            mac.update(clientNonce);
+            mac.update(serverNonce);
+            return mac.doFinal();
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     private synchronized void authenticate(String secretAsHex) {
         String command = "AUTHENTICATE " + secretAsHex + "\r\n";
         sendCommand(command);
@@ -215,22 +336,25 @@ public class TorControlProtocol implements AutoCloseable {
     }
 
     /**
-     * @return the values of the configuration option {@code key}
+     * @return the values of the configuration option {@code key}, none if the option is not set and has no default
+     * value, for which Tor replies with the keyword alone, for example {@code 250 SocksPort}
      */
     public synchronized List<String> getConf(String key) {
         String command = "GETCONF " + key + "\r\n";
         sendCommand(command);
-        List<String> replies = receiveReply().toList();
-        Pattern valuePattern = Pattern.compile("^250[- ]" + Pattern.quote(key) + "=(.*)$", Pattern.CASE_INSENSITIVE);
-        List<String> values = replies.stream()
+        List<String> replies = receiveReply().collect(Collectors.toList());
+        Pattern valuePattern = Pattern.compile("^250[- ]" + Pattern.quote(key) + "(?:=(.*))?$", Pattern.CASE_INSENSITIVE);
+        List<Matcher> valueMatchers = replies.stream()
                 .map(valuePattern::matcher)
                 .filter(Matcher::matches)
-                .map(matcher -> matcher.group(1))
-                .toList();
-        if (values.isEmpty() || !replies.get(replies.size() - 1).startsWith("250 ")) {
+                .collect(Collectors.toList());
+        if (valueMatchers.isEmpty() || !replies.get(replies.size() - 1).startsWith("250 ")) {
             throw invalidReply("GETCONF", replies);
         }
-        return values;
+        return valueMatchers.stream()
+                .filter(matcher -> matcher.group(1) != null)
+                .map(matcher -> matcher.group(1))
+                .collect(Collectors.toList());
     }
 
     /**
@@ -396,7 +520,9 @@ public class TorControlProtocol implements AutoCloseable {
         }
     }
 
-    private Socket createAndConnectControlSocket(int port) throws InterruptedException, CannotConnectWithTorException {
+    private Socket createAndConnectControlSocket(String host,
+                                                 int port,
+                                                 boolean isEveryFailureRetried) throws InterruptedException, CannotConnectWithTorException {
         int connectionAttempt = 0;
         Exception lastException = null;
 
@@ -407,14 +533,12 @@ public class TorControlProtocol implements AutoCloseable {
             }
             Socket attemptSocket = new Socket();
             try {
-                // The Tor Control Port communication is typically unencrypted. 
-                // This is considered safe because the connection is made to 127.0.0.1 (localhost),
-                // ensuring that the communication does not leave the local machine and is not 
-                // exposed to external networks. Authentication (via cookie or password) 
-                // is handled by the Tor control protocol itself after connection.
-                var socketAddress = new InetSocketAddress("127.0.0.1", port);
+                // The control connection is not encrypted. It carries the private keys of the onion services
+                // (ADD_ONION). The embedded Tor listens on 127.0.0.1. An external Tor on another host, for example
+                // the Whonix-Gateway, must be reached over a network which only trusted systems can use.
+                var socketAddress = new InetSocketAddress(host, port);
                 log.debug("Attempting to connect to Tor control port {} ({}/{})", socketAddress, connectionAttempt + 1, MAX_CONNECTION_ATTEMPTS);
-                attemptSocket.connect(socketAddress);
+                attemptSocket.connect(socketAddress, connectTimeoutMs);
                 log.info("Successfully connected control socket to Tor port {} after {} attempts", port, connectionAttempt + 1);
                 return attemptSocket;
             } catch (ConnectException e) {
@@ -434,6 +558,14 @@ public class TorControlProtocol implements AutoCloseable {
                     attemptSocket.close();
                 } catch (IOException closeEx) {
                     log.warn("Failed to close attemptSocket after IOException on port {}: {}", port, closeEx.getMessage(), closeEx);
+                }
+                if (!isEveryFailureRetried) {
+                    String reason = e instanceof SocketTimeoutException ?
+                            "did not accept the connection within " + connectTimeoutMs + " ms. The host may be down, " +
+                                    "or a firewall may drop the connection" :
+                            "cannot be reached: " + e;
+                    throw new CannotConnectWithTorException("The Tor control port " + host + ":" + port + " " + reason,
+                            e);
                 }
             }
 
@@ -471,6 +603,8 @@ public class TorControlProtocol implements AutoCloseable {
         if (outputStream.isEmpty()) {
             throw new IllegalStateException("TorControlProtocol output stream not initialized. Cannot send command.");
         }
+        // Only the name: the arguments can contain onion addresses or secrets, and an error can end up in a log.
+        lastCommandName = command.trim().split(" ", 2)[0];
         // Debug level: the commands name onion addresses, which link the identities of a user in a shared log.
         log.debug("Send Tor control command: {}", TorControlLogFormat.toLoggableCommand(command));
         @SuppressWarnings("resource") OutputStream os = this.outputStream.orElseThrow();
@@ -558,7 +692,7 @@ public class TorControlProtocol implements AutoCloseable {
     private String tryReadNextReply(long deadline) {
         String reply = readLineOfReply(deadline);
         if (reply.equals("510 Command filtered")) {
-            throw new TorCommandFilteredException();
+            throw new TorCommandFilteredException(lastCommandName, isWhonix);
         }
         return reply;
     }

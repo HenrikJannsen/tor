@@ -62,6 +62,17 @@ class TorServiceStartFailureTest {
     }
 
     @Test
+    void aFailureToReadTheExternalTorConfigurationIsTheRootCause() throws IOException {
+        Path torDir = Files.createDirectories(tempDir.resolve("tor"));
+        Files.createDirectories(torDir.resolve("external_tor.config"));
+
+        assertThatThrownBy(() -> createTorService(torDir).initialize())
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("Could not read " + torDir.resolve("external_tor.config"))
+                .hasNoCause();
+    }
+
+    @Test
     void aProgramWhichCannotStartIsTheRootCause() {
         var process = new EmbeddedTorProcess(List.of(tempDir.resolve("missing").toString()), tempDir.resolve("missing"),
                 environment -> {
@@ -90,6 +101,6 @@ class TorServiceStartFailureTest {
             public boolean supportsPosixPermissions() {
                 return true;
             }
-        });
+        }, false);
     }
 }

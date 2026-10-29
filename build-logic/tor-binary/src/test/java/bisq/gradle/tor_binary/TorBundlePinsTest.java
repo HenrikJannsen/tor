@@ -38,8 +38,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The SHA-256 pins of the expert bundles in gradle.properties are copies of sha256sums-signed-build.txt of the release
- * tor.version, which the Tor Browser developers sign. The test resources keep that file of the release with its
- * signature, so the pins are checked against their signed source.
+ * of each bundle, which the Tor Browser developers sign: tor.version, or the tor.bundleVersion of a platform. The test
+ * resources keep that file of each release with its signature, so the pins are checked against their signed source.
  */
 class TorBundlePinsTest {
     // The test runs in the directory of this project, build-logic/tor-binary
@@ -53,8 +53,24 @@ class TorBundlePinsTest {
             gradleProperties.load(inputStream);
         }
         String torVersion = gradleProperties.getProperty("tor.version");
-        File sums = resource("torbrowser-" + torVersion + "/sha256sums-signed-build.txt");
-        File signature = resource("torbrowser-" + torVersion + "/sha256sums-signed-build.txt.asc");
+
+        for (Platform platform : Platform.values()) {
+            String platformName = platform.getPlatformName();
+            String bundleVersion = gradleProperties.getProperty("tor.bundleVersion." + platformName, torVersion);
+            String url = new TorBinaryUrlProvider(bundleVersion).urlFor(platform);
+            if (url == null) {
+                continue;
+            }
+            String fileName = url.substring(url.lastIndexOf('/') + 1);
+            String pinnedSha256 = gradleProperties.getProperty("tor.bundleSha256." + platformName);
+            assertNotNull(pinnedSha256, "No pin for " + platformName);
+            assertEquals(signedSha256ByFileName(bundleVersion).get(fileName), pinnedSha256, fileName);
+        }
+    }
+
+    private static Map<String, String> signedSha256ByFileName(String release) throws IOException, URISyntaxException {
+        File sums = resource("torbrowser-" + release + "/sha256sums-signed-build.txt");
+        File signature = resource("torbrowser-" + release + "/sha256sums-signed-build.txt.asc");
         String keyUrl = BisqTorBinaryPlugin.class.getResource("/Tor_Browser_Developers_(signing_key).asc").toString();
         assertTrue(new SignatureVerifier(Map.of(PRIMARY_KEY_FINGERPRINT, keyUrl)).verifySignature(sums, signature),
                 "The signature of " + sums + " does not verify");
@@ -63,17 +79,7 @@ class TorBundlePinsTest {
             String[] hashAndFileName = line.split(" +");
             signedSha256ByFileName.put(hashAndFileName[1], hashAndFileName[0]);
         }
-
-        for (Platform platform : Platform.values()) {
-            String url = new TorBinaryUrlProvider(torVersion).urlFor(platform);
-            if (url == null) {
-                continue;
-            }
-            String fileName = url.substring(url.lastIndexOf('/') + 1);
-            String pinnedSha256 = gradleProperties.getProperty("tor.bundleSha256." + platform.getPlatformName());
-            assertNotNull(pinnedSha256, "No pin for " + platform.getPlatformName());
-            assertEquals(signedSha256ByFileName.get(fileName), pinnedSha256, fileName);
-        }
+        return signedSha256ByFileName;
     }
 
     private static File resource(String name) throws URISyntaxException {

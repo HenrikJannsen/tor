@@ -18,7 +18,7 @@
 package bisq.network.tor;
 
 import bisq.network.tor.installer.TorInstaller;
-import bisq.network.tor.process.LdPreload;
+import bisq.network.tor.process.BundledTorLibraries;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -40,7 +40,7 @@ public class InstallerAndRunRaceConditionTest {
                 "--version"
         );
 
-        LdPreload.applyToEnvironment(processBuilder.environment(), tempDirPath);
+        BundledTorLibraries.applyToEnvironment(processBuilder.environment(), tempDirPath);
 
         Process process = processBuilder.start();
         boolean isSuccess = process.waitFor(30, TimeUnit.SECONDS);
