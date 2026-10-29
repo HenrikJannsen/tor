@@ -1,0 +1,29 @@
+# Version catalog of the Tor build. The versions are the same as in the version catalog of Bisq 2.
+
+# Convention: mark all versions using 'strictly'. This ensures only one version is allowed in the dependency tree, even
+# when multiple versions are attempted to be brought in as transitive dependencies of other requirements.
+[versions]
+assertj-core-lib = { strictly = '3.27.7' }
+bouncycastle-lib = { strictly = '1.84' }
+findbugs-jsr305-lib = { strictly = '3.0.2' }
+google-guava-lib = { strictly = '33.6.0-jre' }
+junit-jupiter-lib = { strictly = '6.0.3' }
+logback-lib = { strictly = '1.5.32' }
+lombok-lib = { strictly = '1.18.46' }
+mockito-lib = { strictly = '5.23.0' }
+slf4j-lib = { strictly = '2.0.18' }
+typesafe-config-lib = { strictly = '1.4.8' }
+
+[libraries]
+assertj-core = { module = 'org.assertj:assertj-core', version.ref = 'assertj-core-lib' }
+bouncycastle-pg = { module = 'org.bouncycastle:bcpg-jdk18on', version.ref = 'bouncycastle-lib' }
+findbugs-jsr305 = { module = 'com.google.code.findbugs:jsr305', version.ref = 'findbugs-jsr305-lib' }
+google-guava = { module = 'com.google.guava:guava', version.ref = 'google-guava-lib' }
+junit-jupiter = { module = 'org.junit.jupiter:junit-jupiter', version.ref = 'junit-jupiter-lib' }
+junit-platform-launcher = { module = 'org.junit.platform:junit-platform-launcher', version.ref = 'junit-jupiter-lib' }
+logback-core = { module = 'ch.qos.logback:logback-core', version.ref = 'logback-lib' }
+logback-classic = { module = 'ch.qos.logback:logback-classic', version.ref = 'logback-lib' }
+lombok = { module = 'org.projectlombok:lombok', version.ref = 'lombok-lib' }
+mockito = { module = 'org.mockito:mockito-core', version.ref = 'mockito-lib' }
+slf4j-api = { module = 'org.slf4j:slf4j-api', version.ref = 'slf4j-lib' }
+typesafe-config = { module = 'com.typesafe:config', version.ref = 'typesafe-config-lib' }
