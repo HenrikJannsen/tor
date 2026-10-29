@@ -4,7 +4,8 @@ The Tor build contains the Tor integration of Bisq:
 
 - `tor`: starts, controls and connects to Tor, and publishes onion services (`TorService`).
 - `tor-common`: the torrc generation and the copies of Bisq utilities which the Tor build uses.
-- `jsocks`, `jtorctl`: copies of the SOCKS library and of the Tor control protocol library. See their READMEs.
+- `jsocks`, `jtorctl`: copies of the SOCKS library and of the Tor control protocol library. They keep their own
+  licenses, the LGPL and a 3-clause BSD license. See their READMEs.
 - `tor-local-network`: a tool which starts a private Tor network for tests.
 - `tor-platform`: the dependency constraints of the Tor build.
 
@@ -17,12 +18,18 @@ The Tor build does not depend on other Bisq modules or on the `build-logic` buil
 dependency.
 
 - `build-logic` contains the Gradle plugins of the Tor build. `tor-binary` and `gradle-tasks` exist only here. The
-  other plugins are unchanged copies of plugins in the `build-logic` of Bisq and keep their plugin IDs.
+  other plugins are copies of plugins in the `build-logic` of Bisq 2 and keep their plugin IDs. `commons` only has
+  the two convention plugins which the Tor build applies, and `COMPOSITE_PROJECTS_TO_INCLUDE` of `maven-publisher`
+  names only `tor`. The copies were taken from Bisq 2 main 7767b8b319. This repository has changed
+  `bisq.java-conventions`, `LocalMavenPublishPlugin` and `BisqToolchainResolver` since, so these differ from their
+  originals: compare a change of a plugin in Bisq 2 with the copy here before copying it.
 - The classes in the packages `bisq.network.tor.common.*`, except `torrc`, are copies of classes of `bisq.common`.
   A copy keeps the sub-package and the class name: `bisq.common.util.StringUtils` becomes
-  `bisq.network.tor.common.util.StringUtils`. A copy only contains the members which the Tor build uses. A change of
-  an original does not change its copy. A copy never uses the package of the original, because two classes with the
-  same name on one class path break the Android build of bisq-mobile and make the JVM load whichever comes first.
+  `bisq.network.tor.common.util.StringUtils`. The exception is `FileUtils`, which combines the used methods of
+  `FileMutatorUtils` and `FileReaderUtils` of `bisq.common.file`. A copy only contains the members which the Tor build
+  uses. A change of an original does not change its copy. A copy never uses the package of the original, because two
+  classes with the same name on one class path break the Android build of bisq-mobile and make the JVM load whichever
+  comes first.
 - `PlatformServices` declares the operations which depend on the platform of the host application: the own process
   ID, the commands of the running processes, and whether the Tor build may set POSIX file permissions. The host passes
   an implementation to `TorService`. Bisq passes `BisqTorPlatformServices` of the network module, which uses
@@ -52,16 +59,57 @@ Run these commands in the repository root:
 - `./gradlew dependencySignatureReport` writes [docs/dependency-signature-report.md](docs/dependency-signature-report.md)
   after a change of the dependencies or of `gradle/verification-metadata.xml`.
 
+The build cache is on (`org.gradle.caching=true`), so a test task whose inputs did not change takes its result from the
+cache (`FROM-CACHE`) or is `UP-TO-DATE`, and a build can pass without running a test. `./gradlew test --rerun` and
+`./gradlew integrationTest --rerun` run the tests again; `--rerun-tasks` would also download the Tor bundle again.
+
 `gradle.properties` defines `version` (the version of the artifacts), `tor.version` (the version of the Tor expert
-bundle) and `tor.binaryVersion` (the version of the tor daemon in the bundle, which Bisq 2 shows).
+bundle) and `tor.binaryVersion` (the version of the tor daemon in the bundle, which Bisq 2 shows). Bisq 2 reads all
+three from `tor/gradle.properties`. `tor.binaryVersion` is set by hand, so `verifyTorBinaryVersion`, which every build
+of `tor.zip` runs, fails if the tor of the bundle reports another version. `tor.bundleSha256.<platform>` pins the bundle
+of `tor.version` for each platform; a change of `tor.version` needs new pins (see
+[build-logic/tor-binary/README.md](build-logic/tor-binary/README.md#pin-the-bundles-of-a-release)).
+
+`version` belongs to the Tor build. It follows neither Bisq 1 nor Bisq 2, which both use the Tor build, nor
+`tor.version`, because the code and the Tor expert bundle change independently. Raise it with every change of the
+artifacts, following semantic versioning:
+
+- major: a change which requires a change in Bisq 1 or Bisq 2, such as an incompatible change of the API;
+- minor: a new feature, or a new Tor expert bundle which needs a change of the code;
+- patch: a fix, or a new Tor expert bundle without a change of the code.
+
+`gradle/libs.versions.toml` and the constraints of `tor-platform` have the versions of Bisq 2: every catalog version is
+`strictly`, and the composite build of Bisq 2 accepts one version of a module. Nothing checks this automatically.
+Before Bisq 2 records a new commit of `tor/`, compare them with a checkout of Bisq 2; both commands print nothing if
+every version of this build equals the one of Bisq 2:
+
+```bash
+bisq2=/path/to/bisq2
+sed -n '/^\[versions\]/,/^\[libraries\]/{/=/p}' gradle/libs.versions.toml |
+    while IFS= read -r line; do grep -qxF "$line" "$bisq2/gradle/libs.versions.toml" || echo "differs: $line"; done
+constraints() {
+    tr -d '\n' < "$1" | grep -oE 'api\("[^"]+"\) *\{ *version *\{ *require\("[^"]+"\)' | sort
+}
+comm -23 <(constraints tor-platform/build.gradle.kts) <(constraints "$bisq2/platform/build.gradle.kts")
+```
 
 `tor.zip` and `TorBuildVersion` are generated by Gradle tasks. An IDE build which does not run Gradle tasks needs one
 Gradle build first.
 
-## Use in Bisq 2
+On macOS and Windows the build downloads and verifies the Tor expert bundle and packages it as `tor.zip`, which
+`TorService` installs into the Tor directory. On Linux, Bisq uses the tor of the system, and the build packages no
+bundle. The download needs archive.torproject.org; it fails if it gets no connection in 30 seconds or no data for 60
+seconds, and is then tried once more. With `--offline`, the build keeps a bundle which it downloaded before. There is
+no expert bundle for Windows ARM64, and the build never packages the programs of another architecture, so a build in
+an ARM64 JVM on Windows fails when it needs the bundle.
 
-Bisq 2 includes this repository as the Git submodule `tor/` and as an included Gradle build. Bisq 2 records one commit
-of this repository. In the composite build of Bisq 2, Gradle uses the dependency verification metadata of Bisq 2, so
-a new dependency of the Tor build must also be added there.
+## Use in Bisq 1 and Bisq 2
 
-To change the Tor code for Bisq 2, commit the change here, push it, and then commit the new commit of `tor/` in Bisq 2.
+Bisq 1 and Bisq 2 include this repository as the Git submodule `tor/` and as an included Gradle build. Each records one
+commit of this repository. In the composite build of an app, Gradle uses the dependency verification metadata of the
+app, so a new dependency of the Tor build must also be added to `gradle/verification-metadata.xml` of Bisq 1 and of
+Bisq 2.
+
+To change the Tor code for an app, commit the change here, push it, and then commit the new commit of `tor/` in the
+app. The apps describe the update of `tor/` in their own documentation: Bisq 1 in `docs/build.md` ("Tor submodule"),
+Bisq 2 in its `README.md` ("Tor Submodule").

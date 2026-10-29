@@ -32,7 +32,7 @@ class SignatureVerifier(
             ppgPublicKeyParser.parse()
 
             val isSignedByAnyKey = verifyDetachedSignature(
-                potentialSigningKeys = ppgPublicKeyParser.keyById,
+                publicKeyParser = ppgPublicKeyParser,
                 signatureList = signatureList,
                 data = fileToVerify.readBytes()
             )
@@ -53,15 +53,16 @@ class SignatureVerifier(
     }
 
     private fun verifyDetachedSignature(
-        potentialSigningKeys: Map<Long, PGPPublicKey>,
+        publicKeyParser: PpgPublicKeyParser,
         signatureList: PGPSignatureList,
         data: ByteArray
     ): Boolean {
         var pgpSignature: PGPSignature? = null
         var signingKey: PGPPublicKey? = null
 
+        // Only a key which was valid for signing when the signature was made counts
         for (s in signatureList) {
-            signingKey = potentialSigningKeys[s.keyID]
+            signingKey = publicKeyParser.signingKeysAt(s.creationTime)[s.keyID]
             if (signingKey != null) {
                 pgpSignature = s
                 break

@@ -102,6 +102,37 @@ The primary fingerprint check establishes which key is trusted here.
 For a key refresh, also repeat the bundle check with the previous release
 version to confirm its signing subkey remains available.
 
+## Pin the bundles of a release
+
+A valid signature alone would also accept the signed bundle of an older
+release. So `verifyTorBinary` first checks the SHA-256 of the bundle against
+the pin of its platform in `gradle.properties` (`tor.bundleSha256.<platform>`)
+and unpacks nothing on a mismatch. A change of `tor.version` needs new pins.
+Take them from the checksum file which the Tor Browser developers sign for
+the release, in the same Bash session:
+
+```bash
+tor_sums_url="https://archive.torproject.org/tor-package-archive/torbrowser/$tor_version/sha256sums-signed-build.txt"
+
+curl -fsSL "$tor_sums_url" -o "$tor_key_dir/sha256sums-signed-build.txt"
+curl -fsSL "$tor_sums_url.asc" -o "$tor_key_dir/sha256sums-signed-build.txt.asc"
+
+gpg --batch --no-options --homedir "$tor_key_dir" --no-auto-key-retrieve \
+    --status-fd 1 --verify "$tor_key_dir/sha256sums-signed-build.txt.asc" \
+    "$tor_key_dir/sha256sums-signed-build.txt"
+grep -E "tor-expert-bundle-(linux-x86_64|macos-x86_64|macos-aarch64|windows-x86_64)-$tor_version\.tar\.gz\$" \
+    "$tor_key_dir/sha256sums-signed-build.txt"
+```
+
+Require the same `Good signature` and `VALIDSIG` result as above. Set
+`tor.bundleSha256.linux_x86_64`, `tor.bundleSha256.macos_x86_64`,
+`tor.bundleSha256.macos_arm64` and `tor.bundleSha256.win_x86_64` to the
+hashes of the bundles `linux-x86_64`, `macos-x86_64`, `macos-aarch64` and
+`windows-x86_64`. Copy both files into
+`src/test/resources/torbrowser-<tor.version>/` of this plugin:
+`TorBundlePinsTest`, which `./gradlew build` runs, verifies the signature of
+the checksum file with the bundled key and compares the pins with it.
+
 ## Install the verified ASCII key and run the build check
 
 After the fingerprint and signature checks succeed, replace the resource
@@ -115,3 +146,27 @@ cp "$tor_key_dir/tor-key.asc" \
 
 The Gradle task must finish successfully. Keep the pinned primary fingerprint
 unchanged when refreshing its subkeys. Never bypass a failed signature check.
+
+## Offline builds and key refreshes
+
+The download tasks honour `--offline`: a downloaded bundle is kept, and a
+missing one fails the build with a message instead of opening a connection.
+Run the build once online after a change of `tor.version`.
+
+The task reads the content of the bundled key as an input, so a refreshed
+key file runs the verification again.
+
+## Which keys verify a bundle
+
+`verifyTorBinary` accepts a signature only by a key of the pinned primary
+key which was valid for signing when the signature was made: the binding
+signature of the subkey and the back-signature (0x19) of the subkey must
+verify, the signed key flags must allow signing, and neither the subkey nor
+the primary key may have expired at the creation time of the signature.
+Evaluated at that time, a bundle signed with a subkey which has expired
+since, such as `157432CF78A65729` on 2026-10-26, still verifies, so that an
+older release can be built again. The signer states that time, so whoever
+holds the private key of an expired subkey can still sign with an earlier
+time. A subkey with any revocation is never trusted, such as the 2015 subkey
+`2D000988589839A3`, which was revoked as compromised, and a revocation of the
+primary key fails the verification.

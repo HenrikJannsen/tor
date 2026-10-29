@@ -23,3 +23,8 @@ Keeping the module in source form reduces that supply-chain surface:
 
 This module should be treated as Bisq-owned infrastructure code. Keep changes
 small, documented, and covered by tests where behavior changes.
+
+## License
+
+jtorctl is distributed under the 3-clause BSD license in [LICENSE](LICENSE),
+which is the same file as in the copied commit.

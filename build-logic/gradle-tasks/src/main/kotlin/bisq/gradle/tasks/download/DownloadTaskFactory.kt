@@ -16,8 +16,11 @@ class DownloadTaskFactory(
             val fileName = it.split("/").last()
             project.layout.buildDirectory.file("$downloadDirectoryPath/$fileName")
         }
+        // Read at configuration time, which the configuration cache allows
+        val isOfflineBuild = project.gradle.startParameter.isOffline
         return project.tasks.register<DownloadTask>(taskName) {
             downloadUrl.set(url)
+            offline.set(isOfflineBuild)
             outputFile.set(outputFileProvider)
         }
     }

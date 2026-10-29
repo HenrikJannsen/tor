@@ -14,7 +14,11 @@ import org.gradle.api.tasks.bundling.Zip
 import org.gradle.kotlin.dsl.register
 import java.io.File
 
-class TorBinaryPackager(private val project: Project, private val torBinaryDownloader: SignedBinaryDownloader) {
+class TorBinaryPackager(
+    private val project: Project,
+    private val torBinaryDownloader: SignedBinaryDownloader,
+    private val torBinaryVersion: Provider<String>
+) {
 
     companion object {
         private const val ARCHIVE_EXTRACTION_DIR = "${BisqTorBinaryPlugin.DOWNLOADS_DIR}/extracted"
@@ -34,6 +38,16 @@ class TorBinaryPackager(private val project: Project, private val torBinaryDownl
 
             into(project.layout.buildDirectory.dir(ARCHIVE_EXTRACTION_DIR))
         }
+
+        val verifyTorBinaryVersion: TaskProvider<TorBinaryVersionCheckTask> =
+            project.tasks.register<TorBinaryVersionCheckTask>("verifyTorBinaryVersion") {
+                dependsOn(unpackTarTask)
+                val torExecutableName = if (getOS() == OS.WINDOWS) "tor.exe" else "tor"
+                val buildDirectory = project.layout.buildDirectory
+                torExecutable.set(buildDirectory.file("${ARCHIVE_EXTRACTION_DIR}/tor/$torExecutableName"))
+                expectedVersion.set(torBinaryVersion)
+                resultFile.set(buildDirectory.file("${BisqTorBinaryPlugin.DOWNLOADS_DIR}/tor-version.result"))
+            }
 
         val processUnpackedTorBinaryTar: TaskProvider<Sync> =
             project.tasks.register<Sync>("processUnpackedTorBinaryTar") {
@@ -72,6 +86,7 @@ class TorBinaryPackager(private val project: Project, private val torBinaryDownl
 
         val packageTorBinary: TaskProvider<Zip> =
             project.tasks.register<Zip>("packageTorBinary") {
+                dependsOn(verifyTorBinaryVersion)
                 dependsOn(processUnpackedTorBinaryTar)
                 if (getOS() == OS.MAC_OS) {
                     dependsOn(signMacOsTorBinary)
@@ -84,6 +99,11 @@ class TorBinaryPackager(private val project: Project, private val torBinaryDownl
                 // This archive ends up as a resource inside tor.jar, so it has to be reproducible too.
                 isPreserveFileTimestamps = false
                 isReproducibleFileOrder = true
+                // Pinned, so that the modes do not follow the Gradle version: the expert bundle stores 0600 and 0700,
+                // which Gradle 8.9 copies and Gradle 9.0 writes as 0644 and 0755. TorBinaryZipExtractor sets the
+                // executable bits of the programs by their names; it does not read these modes.
+                dirPermissions { unix("0755") }
+                filePermissions { unix("0644") }
             }
 
         if (getOS() == OS.LINUX) {
@@ -101,7 +121,6 @@ class TorBinaryPackager(private val project: Project, private val torBinaryDownl
         return file.name == "tor" ||
                 file.name.endsWith(".dylib") ||
                 file.name == "lyrebird" ||
-                file.name == "conjure-client" ||
-                file.name == "snowflake-client"
+                file.name == "conjure-client"
     }
 }

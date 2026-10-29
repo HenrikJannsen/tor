@@ -13,7 +13,7 @@ checksum-only dependency verification.
 
 Keeping the module in source form reduces that supply-chain surface:
 
-- The code is built directly as part of the Bisq 2 Gradle build.
+- The code is built as part of the Tor build, which Bisq 1 and Bisq 2 include.
 - Reviewers can inspect changes in normal Bisq pull requests.
 - Bisq does not need to trust a third-party build service for this internal
   dependency.
@@ -24,3 +24,11 @@ Keeping the module in source form reduces that supply-chain surface:
 
 This module should be treated as Bisq-owned infrastructure code. Keep changes
 small, documented, and covered by tests where behavior changes.
+
+## License
+
+JSocks is distributed under the GNU Lesser General Public License, see
+[LICENSE](LICENSE). Its project page https://jsocks.sourceforge.net/ names no
+version of the license, and SourceForge lists the project as LGPLv2. `LICENSE`
+contains version 2.1, the only version 2 license with that name. Its section 14
+lets the recipient choose any version if the library names none.

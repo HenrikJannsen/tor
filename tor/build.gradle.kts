@@ -17,9 +17,16 @@ val properties = readPropertiesFile("../gradle.properties")
 
 val torVersion: String = properties.getProperty("tor.version")
     ?: throw GradleException("Tor version is not defined in gradle.properties")
+val torBinaryVersion: String = properties.getProperty("tor.binaryVersion")
+    ?: throw GradleException("Tor binary version is not defined in gradle.properties")
+val torBundleSha256: Map<String, String> = properties.stringPropertyNames()
+    .filter { it.startsWith("tor.bundleSha256.") }
+    .associate { it.removePrefix("tor.bundleSha256.") to properties.getProperty(it) }
 
 tor {
     version.set(torVersion)
+    binaryVersion.set(torBinaryVersion)
+    bundleSha256.set(torBundleSha256)
 }
 
 /**
@@ -56,9 +63,10 @@ sourceSets {
 }
 
 dependencies {
-    api(platform(project(":tor-platform")))
+    "torPlatform"(platform(project(":tor-platform")))
 
-    implementation(project(":tor-common"))
+    // The API takes types of tor-common, such as the DirectoryAuthority entries of TorTransportConfig
+    api(project(":tor-common"))
 
     implementation(libs.typesafe.config)
 
