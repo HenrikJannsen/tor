@@ -21,7 +21,7 @@ class BisqTorBinaryPlugin : Plugin<Project> {
         val torBinaryDownloader = SignedBinaryDownloader(
             project = project,
             binaryName = "Tor",
-            version = extension.bundleVersion.getting(platformName).orElse(extension.version),
+            version = extension.version,
 
             platform = platform,
             // A valid signature alone would also accept the signed bundle of another release

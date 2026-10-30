@@ -9,7 +9,6 @@ class TorBinaryUrlProvider(private val version: String) : PerPlatformUrlProvider
     override val LINUX_X86_64_URL: String
         get() = "tor-expert-bundle-linux-x86_64-$version.tar.gz"
 
-    // Only alpha releases have it so far, see tor.bundleVersion in gradle.properties
     override val LINUX_ARM_64_URL: String
         get() = "tor-expert-bundle-linux-aarch64-$version.tar.gz"
 

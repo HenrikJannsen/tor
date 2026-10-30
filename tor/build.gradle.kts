@@ -22,29 +22,24 @@ val torVersion: String = properties.getProperty("tor.version")
     ?: throw GradleException("Tor version is not defined in gradle.properties")
 val torBinaryVersion: String = properties.getProperty("tor.binaryVersion")
     ?: throw GradleException("Tor binary version is not defined in gradle.properties")
-val torBundleVersion: Map<String, String> = properties.stringPropertyNames()
-    .filter { it.startsWith("tor.bundleVersion.") }
-    .associate { it.removePrefix("tor.bundleVersion.") to properties.getProperty(it) }
 val torBundleSha256: Map<String, String> = properties.stringPropertyNames()
     .filter { it.startsWith("tor.bundleSha256.") }
     .associate { it.removePrefix("tor.bundleSha256.") to properties.getProperty(it) }
 
 tor {
     version.set(torVersion)
-    bundleVersion.set(torBundleVersion)
     binaryVersion.set(torBinaryVersion)
     bundleSha256.set(torBundleSha256)
 }
 
 /**
- * Generates TorBuildVersion with the release of the Tor expert bundle which this build packages: tor.version of
- * gradle.properties, or the tor.bundleVersion of the platform of the build. TorInstaller uses it to detect whether the
- * installed Tor files are outdated.
+ * Generates TorBuildVersion with tor.version of gradle.properties. TorInstaller uses it to detect whether the installed
+ * Tor files are outdated.
  */
 val generateTorBuildVersionClass by tasks.registering {
     val outputDir = layout.buildDirectory.dir("generated/source/torBuildVersion")
     // A local copy, because the configuration cache cannot store a reference to the script object.
-    val versionForTask = torBundleVersion[getPlatform().platformName] ?: torVersion
+    val versionForTask = torVersion
     inputs.property("torVersion", versionForTask)
     outputs.dir(outputDir)
 

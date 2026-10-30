@@ -10,7 +10,7 @@ EF6E286DDA85EA2A4BA7DE684E2C6E8793298290
 
 Tor can introduce a signing subkey without changing that primary key. Updating
 `tor.version` can therefore require refreshing the bundled public key as well.
-For example, 15.0.25 and 16.0a14 use subkey
+For example, 15.0.25 and 16.0 use subkey
 `022DA248432D2A0E0F54E65E316C1FACD62D07D9`.
 
 ## Download and convert the official key
@@ -77,9 +77,8 @@ signing subkey must have a valid binding signature from the pinned primary key.
 ## Verify the expert bundle
 
 Read the release version from `gradle.properties`. Set `tor_platform` to
-the bundle to check: `macos-aarch64`, `macos-x86_64`, `linux-x86_64`, or
-`windows-x86_64`. For `linux-aarch64` set `tor_version` to the release of
-`tor.bundleVersion.linux_arm64` instead (see below).
+the bundle to check: `macos-aarch64`, `macos-x86_64`, `linux-aarch64`,
+`linux-x86_64`, or `windows-x86_64`.
 
 ```bash
 tor_version=$(sed -n 's/^tor\.version=//p' gradle.properties)
@@ -121,45 +120,18 @@ curl -fsSL "$tor_sums_url.asc" -o "$tor_key_dir/sha256sums-signed-build.txt.asc"
 gpg --batch --no-options --homedir "$tor_key_dir" --no-auto-key-retrieve \
     --status-fd 1 --verify "$tor_key_dir/sha256sums-signed-build.txt.asc" \
     "$tor_key_dir/sha256sums-signed-build.txt"
-grep -E "tor-expert-bundle-(linux-x86_64|macos-x86_64|macos-aarch64|windows-x86_64)-$tor_version\.tar\.gz\$" \
+grep -E "tor-expert-bundle-(linux-x86_64|linux-aarch64|macos-x86_64|macos-aarch64|windows-x86_64)-$tor_version\.tar\.gz\$" \
     "$tor_key_dir/sha256sums-signed-build.txt"
 ```
 
 Require the same `Good signature` and `VALIDSIG` result as above. Set
-`tor.bundleSha256.linux_x86_64`, `tor.bundleSha256.macos_x86_64`,
+`tor.bundleSha256.linux_x86_64`, `tor.bundleSha256.linux_arm64`, `tor.bundleSha256.macos_x86_64`,
 `tor.bundleSha256.macos_arm64` and `tor.bundleSha256.win_x86_64` to the
-hashes of the bundles `linux-x86_64`, `macos-x86_64`, `macos-aarch64` and
+hashes of the bundles `linux-x86_64`, `linux-aarch64`, `macos-x86_64`, `macos-aarch64` and
 `windows-x86_64`. Copy both files into
 `src/test/resources/torbrowser-<tor.version>/` of this plugin:
 `TorBundlePinsTest`, which `./gradlew build` runs, verifies the signature of
 the checksum file with the bundled key and compares the pins with it.
-
-## The bundle of Linux ARM64
-
-The stable releases have no expert bundle for Linux ARM64; the alpha
-releases have one since 16.0a14. Until a stable release has
-`linux-aarch64`, a build on Linux ARM64 takes the bundle of the alpha
-release in `tor.bundleVersion.linux_arm64`, pinned by
-`tor.bundleSha256.linux_arm64`. Its tor must be `tor.binaryVersion`: the
-build checks the tor of every bundle against that one version
-(`verifyTorBinaryVersion`) and fails on Linux ARM64 otherwise.
-
-At each change of `tor.version`, check the newest alpha release which has
-`tor-expert-bundle-linux-aarch64-<release>.tar.gz`. Verify its signature as
-above with `tor_platform=linux-aarch64` and `tor_version` set to that
-release, then read the version of its tor:
-
-```bash
-tar -xzOf "$tor_key_dir/$tor_bundle" tor/tor | grep -a -o -E '\(on Tor [0-9][0-9.a-z-]*' | sort -u
-```
-
-Take the alpha release whose tor equals `tor.binaryVersion`. Pin it from its
-checksum file as above (`tor_version` set to the alpha release), set
-`tor.bundleVersion.linux_arm64` and `tor.bundleSha256.linux_arm64`, and copy
-the checksum file and its signature into
-`src/test/resources/torbrowser-<release>/`. Once a stable release has
-`linux-aarch64`, remove `tor.bundleVersion.linux_arm64`, pin the bundle of
-`tor.version` instead and remove the test resources of the alpha release.
 
 ## Install the verified ASCII key and run the build check
 
