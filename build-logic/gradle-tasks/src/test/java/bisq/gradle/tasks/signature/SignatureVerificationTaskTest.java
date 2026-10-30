@@ -31,6 +31,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.Date;
+import java.util.Base64;
 import java.util.Map;
 
 import static bisq.gradle.tasks.signature.KeyFixture.CREATED;
@@ -45,9 +46,9 @@ class SignatureVerificationTaskTest {
     Path directory;
 
     @Test
-    void verifiesTheFileWithThePinnedHashAndAValidSignature() throws Exception {
+    void verifiesTheFileWithASignedChecksumAndAValidBundleSignature() throws Exception {
         KeyFixture fixture = KeyFixture.create(0, true, KeyFlags.SIGN_DATA);
-        SignatureVerificationTask task = task(fixture, BUNDLE, sha256(BUNDLE));
+        SignatureVerificationTask task = task(fixture, BUNDLE, sha256(BUNDLE) + "  bundle.tar.gz\n");
 
         task.verify();
 
@@ -56,17 +57,49 @@ class SignatureVerificationTaskTest {
 
     @Test
     void refusesAValidlySignedFileWithAnotherHashBeforeItsSignature() throws Exception {
-        // As an older release of the same signer would be
         KeyFixture fixture = KeyFixture.create(0, true, KeyFlags.SIGN_DATA);
-        SignatureVerificationTask task = task(fixture, BUNDLE, sha256("the pinned bundle".getBytes(StandardCharsets.US_ASCII)));
+        SignatureVerificationTask task = task(fixture, BUNDLE,
+                sha256("the pinned bundle".getBytes(StandardCharsets.US_ASCII)) + "  bundle.tar.gz\n");
         Files.writeString(task.getDetachedSignatureFile().get().getAsFile().toPath(), "not a signature\n");
 
         GradleException exception = assertThrows(GradleException.class, task::verify);
-        assertTrue(exception.getMessage().contains("the pinned SHA-256 is"), exception.getMessage());
+        assertTrue(exception.getMessage().contains("the signed SHA-256 is"), exception.getMessage());
         assertEquals("false", Files.readString(task.getResultFile().get().getAsFile().toPath()));
     }
 
-    private SignatureVerificationTask task(KeyFixture fixture, byte[] bundle, String expectedSha256) throws Exception {
+    @Test
+    void refusesAChecksumFileWithAnInvalidSignature() throws Exception {
+        KeyFixture fixture = KeyFixture.create(0, true, KeyFlags.SIGN_DATA);
+        SignatureVerificationTask task = task(fixture, BUNDLE, sha256(BUNDLE) + "  bundle.tar.gz\n");
+        task.getSignedChecksumsBase64().set(Base64.getEncoder().encodeToString(
+                (sha256("other".getBytes(StandardCharsets.US_ASCII)) + "  bundle.tar.gz\n")
+                        .getBytes(StandardCharsets.US_ASCII)));
+
+        GradleException exception = assertThrows(GradleException.class, task::verify);
+        assertTrue(exception.getMessage().contains("release checksum file"), exception.getMessage());
+        assertEquals("false", Files.readString(task.getResultFile().get().getAsFile().toPath()));
+    }
+
+    @Test
+    void refusesAChecksumFileWithoutAnExactBundleName() throws Exception {
+        KeyFixture fixture = KeyFixture.create(0, true, KeyFlags.SIGN_DATA);
+        SignatureVerificationTask task = task(fixture, BUNDLE, sha256(BUNDLE) + "  other-bundle.tar.gz\n");
+
+        GradleException exception = assertThrows(GradleException.class, task::verify);
+        assertTrue(exception.getMessage().contains("exactly one signed SHA-256 entry"), exception.getMessage());
+    }
+
+    @Test
+    void refusesDuplicateEntriesForTheBundle() throws Exception {
+        KeyFixture fixture = KeyFixture.create(0, true, KeyFlags.SIGN_DATA);
+        String entry = sha256(BUNDLE) + "  bundle.tar.gz\n";
+        SignatureVerificationTask task = task(fixture, BUNDLE, entry + entry);
+
+        GradleException exception = assertThrows(GradleException.class, task::verify);
+        assertTrue(exception.getMessage().contains("found 2"), exception.getMessage());
+    }
+
+    private SignatureVerificationTask task(KeyFixture fixture, byte[] bundle, String signedChecksums) throws Exception {
         Path bundlePath = directory.resolve("bundle.tar.gz");
         Files.write(bundlePath, bundle);
         Path signaturePath = directory.resolve("bundle.tar.gz.asc");
@@ -75,11 +108,15 @@ class SignatureVerificationTaskTest {
         Path keyPath = directory.resolve("key.pgp");
         Files.write(keyPath, fixture.ring().getEncoded());
         String fingerprint = Hex.toHexString(fixture.ring().getPublicKey().getFingerprint());
+        byte[] checksumBytes = signedChecksums.getBytes(StandardCharsets.US_ASCII);
+        byte[] checksumSignature = KeyFixture.armoredSignature(fixture.subkey(), PGPSignature.BINARY_DOCUMENT,
+                new Date(CREATED.getTime() + 30_000), checksumBytes);
 
         Project project = ProjectBuilder.builder().withProjectDir(directory.resolve("project").toFile()).build();
         SignatureVerificationTask task = project.getTasks().register("verifyBinary", SignatureVerificationTask.class).get();
         task.getFileToVerify().set(bundlePath.toFile());
-        task.getExpectedSha256().set(expectedSha256);
+        task.getSignedChecksumsBase64().set(Base64.getEncoder().encodeToString(checksumBytes));
+        task.getSignedChecksumsSignatureBase64().set(Base64.getEncoder().encodeToString(checksumSignature));
         task.getDetachedSignatureFile().set(signaturePath.toFile());
         task.getPgpFingerprintToKeyUrl().set(Map.of(fingerprint, keyPath.toUri().toString()));
         task.getPgpFingerprintToKeySha256().set(Map.of(fingerprint, sha256(fixture.ring().getEncoded())));

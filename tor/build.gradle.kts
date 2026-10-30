@@ -22,14 +22,9 @@ val torVersion: String = properties.getProperty("tor.version")
     ?: throw GradleException("Tor version is not defined in gradle.properties")
 val torBinaryVersion: String = properties.getProperty("tor.binaryVersion")
     ?: throw GradleException("Tor binary version is not defined in gradle.properties")
-val torBundleSha256: Map<String, String> = properties.stringPropertyNames()
-    .filter { it.startsWith("tor.bundleSha256.") }
-    .associate { it.removePrefix("tor.bundleSha256.") to properties.getProperty(it) }
-
 tor {
     version.set(torVersion)
     binaryVersion.set(torBinaryVersion)
-    bundleSha256.set(torBundleSha256)
 }
 
 /**

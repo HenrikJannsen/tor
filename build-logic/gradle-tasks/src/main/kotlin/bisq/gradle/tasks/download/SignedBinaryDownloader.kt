@@ -18,8 +18,8 @@ class SignedBinaryDownloader(
 
     // The platform of the binary to download
     private val platform: Platform,
-    // The SHA-256 of the binary of that platform and version
-    private val sha256: Provider<String>,
+    private val signedChecksumsBase64: Provider<String>,
+    private val signedChecksumsSignatureBase64: Provider<String>,
     private val perPlatformUrlProvider: (String) -> PerPlatformUrlProvider,
     private val downloadDirectory: String,
 
@@ -45,7 +45,8 @@ class SignedBinaryDownloader(
             dependsOn(binaryDownloadTask)
 
             fileToVerify.set(binaryDownloadTask.flatMap { it.outputFile })
-            expectedSha256.set(sha256)
+            signedChecksumsBase64.set(this@SignedBinaryDownloader.signedChecksumsBase64)
+            signedChecksumsSignatureBase64.set(this@SignedBinaryDownloader.signedChecksumsSignatureBase64)
             detachedSignatureFile.set(signatureDownloadTask.flatMap { it.outputFile })
             pgpFingerprintToKeyUrl.set(pgpFingerprintToKeyUrlMap)
             pgpFingerprintToKeySha256.set(pgpFingerprintToKeyUrlMap.mapValues { (_, keyUrl) -> sha256Of(keyUrl) })

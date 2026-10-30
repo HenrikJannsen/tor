@@ -322,8 +322,8 @@ Linux policy, which hosts without this restriction get. It fails if `SandboxEnfo
 `gradle.properties` defines `version` (the version of the artifacts), `tor.version` (the version of the Tor expert
 bundle) and `tor.binaryVersion` (the version of the tor daemon in the bundle, which Bisq 2 shows). Bisq 2 reads all
 three from `tor/gradle.properties`. `tor.binaryVersion` is set by hand, so `verifyTorBinaryVersion`, which every build
-of `tor.zip` runs, fails if the tor of the bundle reports another version. `tor.bundleSha256.<platform>` pins the bundle
-of `tor.version` for each platform; a change of `tor.version` needs new pins (see
+of `tor.zip` runs, fails if the tor of the bundle reports another version. The signed checksum file of `tor.version`
+pins each platform's bundle; a change of `tor.version` needs that release's signed checksum file (see
 [build-logic/tor-binary/README.md](build-logic/tor-binary/README.md#pin-the-bundles-of-a-release)).
 
 `version` belongs to the Tor build. It follows neither Bisq 1 nor Bisq 2, which both use the Tor build, nor
