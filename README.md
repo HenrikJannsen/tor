@@ -354,12 +354,11 @@ Gradle build first.
 
 `tor.zip` contains the files of the Tor expert bundle of the platform of the build, which `TorService` installs into the
 Tor directory: Tor, its libraries, the GeoIP files and the pluggable transports (`lyrebird` and `conjure-client` with
-their configuration `pt_config.json`). Linux x86_64, macOS and Windows x86_64 take the bundle of `tor.version`. The
-stable releases have no bundle for Linux ARM64, so a Linux ARM64 build takes the bundle of the alpha release
-`tor.bundleVersion.linux_arm64` until a stable release has one; its tor must be `tor.binaryVersion`
-(`build-logic/tor-binary/README.md`). Every build downloads and verifies the expert bundle of its platform. The download
-needs archive.torproject.org; it fails if it gets no connection in 30 seconds or no data for 60 seconds, and is then
-tried once more. With `--offline`, the build keeps a bundle which it downloaded before. There is no expert bundle for
+their configuration `pt_config.json`). Linux x86_64, Linux ARM64, macOS and Windows x86_64 take the bundle of
+`tor.version`; its tor must be `tor.binaryVersion` (`build-logic/tor-binary/README.md`). Every build downloads and
+verifies the expert bundle of its platform. The download needs archive.torproject.org; it fails if it gets no connection
+in 30 seconds or no data for 60 seconds, and is then tried once more. With `--offline`, the build keeps a bundle which
+it downloaded before. There is no expert bundle for
 Windows ARM64, and the build never packages the programs of another architecture, so a build in an ARM64 JVM on Windows
 fails when it needs the bundle.
 

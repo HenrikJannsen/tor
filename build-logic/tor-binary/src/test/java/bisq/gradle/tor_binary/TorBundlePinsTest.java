@@ -38,8 +38,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The SHA-256 pins of the expert bundles in gradle.properties are copies of sha256sums-signed-build.txt of the release
- * of each bundle, which the Tor Browser developers sign: tor.version, or the tor.bundleVersion of a platform. The test
- * resources keep that file of each release with its signature, so the pins are checked against their signed source.
+ * of each bundle, which the Tor Browser developers sign for tor.version. The test resources keep that file with its
+ * signature, so the pins are checked against their signed source.
  */
 class TorBundlePinsTest {
     // The test runs in the directory of this project, build-logic/tor-binary
@@ -56,15 +56,14 @@ class TorBundlePinsTest {
 
         for (Platform platform : Platform.values()) {
             String platformName = platform.getPlatformName();
-            String bundleVersion = gradleProperties.getProperty("tor.bundleVersion." + platformName, torVersion);
-            String url = new TorBinaryUrlProvider(bundleVersion).urlFor(platform);
+            String url = new TorBinaryUrlProvider(torVersion).urlFor(platform);
             if (url == null) {
                 continue;
             }
             String fileName = url.substring(url.lastIndexOf('/') + 1);
             String pinnedSha256 = gradleProperties.getProperty("tor.bundleSha256." + platformName);
             assertNotNull(pinnedSha256, "No pin for " + platformName);
-            assertEquals(signedSha256ByFileName(bundleVersion).get(fileName), pinnedSha256, fileName);
+            assertEquals(signedSha256ByFileName(torVersion).get(fileName), pinnedSha256, fileName);
         }
     }
 
