@@ -2,34 +2,35 @@ package bisq.gradle.tasks.signature
 
 import org.gradle.api.DefaultTask
 import org.gradle.api.GradleException
-import org.gradle.api.file.RegularFile
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.MapProperty
 import org.gradle.api.provider.Property
-import org.gradle.api.provider.Provider
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.TaskAction
 import java.io.File
-import java.net.URL
 import java.security.MessageDigest
+import java.util.Base64
 
 abstract class SignatureVerificationTask : DefaultTask() {
 
     @get:InputFile
     abstract val fileToVerify: RegularFileProperty
 
-    // A valid signature alone also accepts an older release of the same signer, so the file is pinned by its hash
+    // Exact bytes of the release's signed checksum file, encoded for Gradle task input tracking
     @get:Input
-    abstract val expectedSha256: Property<String>
+    abstract val signedChecksumsBase64: Property<String>
+
+    @get:Input
+    abstract val signedChecksumsSignatureBase64: Property<String>
 
     @get:InputFile
     abstract val detachedSignatureFile: RegularFileProperty
 
     // Not an input: the URL names the jar of the build logic, which differs per checkout, and the content of the key
-    // decides the result. The hashes below are the input.
+    // decides the result. Its hash below is the input.
     @get:Internal
     abstract val pgpFingerprintToKeyUrl: MapProperty<String, String >
 
@@ -44,14 +45,29 @@ abstract class SignatureVerificationTask : DefaultTask() {
     @TaskAction
     fun verify() {
         val file = fileToVerify.get().asFile
-        val sha256 = sha256Of(file)
-        if (sha256 != expectedSha256.get()) {
-            resultFile.get().asFile.writeText("false")
-            throw GradleException("${file.absolutePath} has the SHA-256 $sha256, but the pinned SHA-256 is " +
-                    "${expectedSha256.get()}.")
+        val signatureVerifier = SignatureVerifier(pgpFingerprintToKeyUrl.get())
+        val checksums = Base64.getDecoder().decode(signedChecksumsBase64.get())
+        val checksumsSignature = Base64.getDecoder().decode(signedChecksumsSignatureBase64.get())
+        if (!signatureVerifier.verifySignature(checksums, checksumsSignature)) {
+            fail("Signature verification failed for the Tor release checksum file.")
         }
 
-        val signatureVerifier = SignatureVerifier(pgpFingerprintToKeyUrl.get())
+        val checksumEntry = Regex("^([0-9a-f]{64})  (.+)$")
+        val expectedHashes = checksums.toString(Charsets.UTF_8).lineSequence()
+            .mapNotNull { checksumEntry.matchEntire(it) }
+            .filter { it.groupValues[2] == file.name }
+            .map { it.groupValues[1] }
+            .toList()
+        if (expectedHashes.size != 1) {
+            fail("Expected exactly one signed SHA-256 entry for ${file.name}, found ${expectedHashes.size}.")
+        }
+
+        val sha256 = sha256Of(file)
+        if (sha256 != expectedHashes.single()) {
+            fail("${file.absolutePath} has the SHA-256 $sha256, but the signed SHA-256 is " +
+                    "${expectedHashes.single()}.")
+        }
+
         val isSignatureValid = signatureVerifier.verifySignature(
             signatureFile = detachedSignatureFile.get().asFile,
             fileToVerify = fileToVerify.get().asFile
@@ -65,6 +81,11 @@ abstract class SignatureVerificationTask : DefaultTask() {
                         "pinned certificate which was valid for signing when the signature was made is accepted."
             )
         }
+    }
+
+    private fun fail(message: String): Nothing {
+        resultFile.get().asFile.writeText("false")
+        throw GradleException(message)
     }
 
     private fun sha256Of(file: File): String {

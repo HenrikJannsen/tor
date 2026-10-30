@@ -18,3 +18,6 @@ tor-common/src/test/resources/file_utils_test_resource.txt -text
 
 # Files of a Tor Browser release for the tests of the signature check. The signatures cover their bytes.
 build-logic/tor-binary/src/test/resources/torbrowser-*/** -text
+
+# Release checksums are verified against detached signatures, so checkout must preserve their bytes.
+build-logic/tor-binary/src/main/resources/torbrowser-*/** -text

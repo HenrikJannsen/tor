@@ -19,12 +19,15 @@ class SignatureVerifier(
     fun verifySignature(
         fileToVerify: File,
         signatureFile: File,
-    ): Boolean {
+    ): Boolean = verifySignature(fileToVerify.readBytes(), signatureFile.readBytes())
+
+    fun verifySignature(data: ByteArray, signature: ByteArray): Boolean {
         Security.addProvider(BouncyCastleProvider())
 
-        val signatureFileInBytes = readSignatureFromFile(signatureFile)
+        val signatureFileInBytes = readSignature(signature)
         val pgpObjectFactory = JcaPGPObjectFactory(signatureFileInBytes)
         val signatureList: PGPSignatureList = pgpObjectFactory.nextObject() as PGPSignatureList
+        if (signatureList.size() == 0) return false
 
         val signatureVerificationResult = mutableListOf<Boolean>()
         pgpFingerprintToKeyUrl.forEach { (fingerprint, keyUrl) ->
@@ -34,7 +37,7 @@ class SignatureVerifier(
             val isSignedByAnyKey = verifyDetachedSignature(
                 publicKeyParser = ppgPublicKeyParser,
                 signatureList = signatureList,
-                data = fileToVerify.readBytes()
+                data = data
             )
 
             signatureVerificationResult.add(isSignedByAnyKey)
@@ -45,9 +48,8 @@ class SignatureVerifier(
         return numberOfSuccessfulVerifications == signatureList.size()
     }
 
-    private fun readSignatureFromFile(signatureFile: File): ByteArray {
-        val signatureByteArray = signatureFile.readBytes()
-        val signatureInputStream = ByteArrayInputStream(signatureByteArray)
+    private fun readSignature(signature: ByteArray): ByteArray {
+        val signatureInputStream = ByteArrayInputStream(signature)
         val armoredSignatureInputStream = ArmoredInputStream(signatureInputStream)
         return armoredSignatureInputStream.readBytes()
     }

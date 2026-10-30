@@ -7,6 +7,7 @@ import org.gradle.api.GradleException
 import org.gradle.api.Plugin
 import org.gradle.api.Project
 import org.gradle.kotlin.dsl.create
+import java.util.Base64
 
 class BisqTorBinaryPlugin : Plugin<Project> {
     companion object {
@@ -16,7 +17,6 @@ class BisqTorBinaryPlugin : Plugin<Project> {
     override fun apply(project: Project) {
         val extension = project.extensions.create<BisqTorBinaryPluginExtension>("tor")
         val platform = getPlatform()
-        val platformName = platform.platformName
 
         val torBinaryDownloader = SignedBinaryDownloader(
             project = project,
@@ -24,10 +24,9 @@ class BisqTorBinaryPlugin : Plugin<Project> {
             version = extension.version,
 
             platform = platform,
-            // A valid signature alone would also accept the signed bundle of another release
-            sha256 = extension.bundleSha256.map { pins ->
-                pins[platformName] ?: throw GradleException("No SHA-256 of the Tor expert bundle for " +
-                        "$platformName is pinned: set tor.bundleSha256.$platformName in gradle.properties.")
+            signedChecksumsBase64 = extension.version.map { resourceBase64(it, "sha256sums-signed-build.txt") },
+            signedChecksumsSignatureBase64 = extension.version.map {
+                resourceBase64(it, "sha256sums-signed-build.txt.asc")
             },
             perPlatformUrlProvider = { version -> TorBinaryUrlProvider(version) },
             downloadDirectory = DOWNLOADS_DIR,
@@ -44,4 +43,11 @@ class BisqTorBinaryPlugin : Plugin<Project> {
         val torBinaryPackager = TorBinaryPackager(project, torBinaryDownloader, extension.binaryVersion)
         torBinaryPackager.registerTasks()
     }
+}
+
+private fun resourceBase64(version: String, fileName: String): String {
+    val path = "/torbrowser-$version/$fileName"
+    val stream = BisqTorBinaryPlugin::class.java.getResourceAsStream(path)
+        ?: throw GradleException("Missing signed Tor checksums resource $path for tor.version=$version")
+    return stream.use { Base64.getEncoder().encodeToString(it.readBytes()) }
 }
