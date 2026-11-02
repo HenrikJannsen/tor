@@ -18,17 +18,22 @@
 package bisq.network.tor.process;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -36,6 +41,99 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 class EmbeddedTorProcessTest {
     @TempDir
     Path tempDir;
+
+    @Test
+    @Timeout(30)
+    void aShutdownWaitsForTheChildOfTheLauncher() throws Exception {
+        assertShutdownStopsChild(false);
+    }
+
+    @Test
+    @Timeout(30)
+    void aShutdownStillWaitsForCapturedChildrenAfterTheLauncherExits() throws Exception {
+        assertShutdownStopsChild(true);
+    }
+
+    private void assertShutdownStopsChild(boolean exitLauncherBeforeShutdown) throws Exception {
+        Path stdout = tempDir.resolve("stdout.log");
+        Path stderr = tempDir.resolve("stderr.log");
+        var process = new EmbeddedTorProcess(ProcessTreeFixture.command(tempDir, "launcher"), tempDir,
+                environment -> {}, stdout, stderr);
+        ProcessHandle child = null;
+        try {
+            process.start();
+            awaitFile(tempDir.resolve("child.ready"));
+            String[] childInfo = Files.readString(tempDir.resolve("child.ready")).trim().split(" ");
+            child = ProcessHandle.of(Long.parseLong(childInfo[0])).orElseThrow();
+            int port = Integer.parseInt(childInfo[1]);
+            assertThat(child.isAlive()).isTrue();
+
+            if (exitLauncherBeforeShutdown) {
+                // Model controller closure ending the launcher before EmbeddedTorProcess.shutdown is called.
+                process.captureProcessTree();
+                Files.createFile(tempDir.resolve("exit-launcher"));
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+                while (process.isAlive() && System.nanoTime() < deadline) {
+                    Thread.sleep(10);
+                }
+                assertThat(process.isAlive()).isFalse();
+                assertThat(child.isAlive()).isTrue();
+            }
+
+            process.shutdown();
+
+            assertThat(child.isAlive()).as("The launcher must not leave a running child").isFalse();
+            try (var listener = new ServerSocket()) {
+                listener.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), port));
+            }
+            // The child inherited these handles. Windows must allow immediate cleanup after shutdown.
+            Files.delete(stdout);
+            Files.delete(stderr);
+        } finally {
+            if (child != null && child.isAlive()) {
+                child.destroyForcibly();
+                child.onExit().get(5, TimeUnit.SECONDS);
+            }
+            process.shutdown();
+        }
+    }
+
+    private static void awaitFile(Path path) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (!Files.exists(path) && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        assertThat(path).exists();
+    }
+
+    // A real process tree without Tor or a shell. The child keeps a listener and the inherited logs open.
+    public static class ProcessTreeFixture {
+        static List<String> command(Path directory, String role) throws Exception {
+            String java = Path.of(System.getProperty("java.home"), "bin",
+                    System.getProperty("os.name").startsWith("Windows") ? "java.exe" : "java").toString();
+            String classPath = Path.of(ProcessTreeFixture.class.getProtectionDomain().getCodeSource()
+                    .getLocation().toURI()).toString();
+            return List.of(java, "-cp", classPath, ProcessTreeFixture.class.getName(), directory.toString(), role);
+        }
+
+        public static void main(String[] args) throws Exception {
+            Path directory = Path.of(args[0]);
+            if (args[1].equals("launcher")) {
+                new ProcessBuilder(command(directory, "child")).inheritIO().start();
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
+                while (!Files.exists(directory.resolve("exit-launcher")) && System.nanoTime() < deadline) {
+                    Thread.sleep(10);
+                }
+            } else {
+                try (var listener = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+                    Path ready = directory.resolve("child.ready.tmp");
+                    Files.writeString(ready, ProcessHandle.current().pid() + " " + listener.getLocalPort());
+                    Files.move(ready, directory.resolve("child.ready"));
+                    Thread.sleep(60_000);
+                }
+            }
+        }
+    }
 
     @Test
     void theCommandLineWorksWithOlderSystemTors() {

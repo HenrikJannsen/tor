@@ -36,6 +36,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
@@ -59,7 +61,8 @@ public class EmbeddedTorProcess {
     private final Path stderrLogPath;
     // Written to the standard input of the process, which is then closed: the sandy policy of a sandboxed Tor
     private final Optional<byte[]> standardInput;
-    private Optional<Process> process = Optional.empty();
+    private volatile Optional<Process> process = Optional.empty();
+    private final Set<ProcessHandle> descendants = ConcurrentHashMap.newKeySet();
 
     /**
      * @param workingDirPath      the directory of the bundle, so that Tor finds the programs of the pluggable
@@ -188,57 +191,111 @@ public class EmbeddedTorProcess {
         }
     }
 
-    public void waitUntilExited() {
-        log.info("Wait until tor process has exited");
-        process.ifPresent(process -> {
-            try {
-                boolean isSuccess = process.waitFor(5, TimeUnit.SECONDS);
-                if (!isSuccess) {
-                    throw new CouldNotWaitForTorShutdownException("Tor process has not exited after 5 seconds.");
-                } else {
-                    log.info("Tor process has exited successfully");
-                }
-            } catch (InterruptedException e) {
-                log.warn("Thread got interrupted at waitUntilExited method", e);
-                Thread.currentThread().interrupt(); // Restore interrupted state
-                throw new CouldNotWaitForTorShutdownException(e);
+    /**
+     * Retains handles while the tree is still intact. In particular, call this before closing the controller:
+     * sandy can exit before its descendants, after which they can no longer be found through the launcher.
+     */
+    public void captureProcessTree() {
+        process.ifPresent(parent -> {
+            try (var children = parent.descendants()) {
+                children.forEach(descendants::add);
             }
         });
+        // A previously captured child can have children of its own even after the launcher has exited.
+        for (ProcessHandle descendant : List.copyOf(descendants)) {
+            try (var children = descendant.descendants()) {
+                children.forEach(descendants::add);
+            }
+        }
+    }
+
+    private List<ProcessHandle> managedProcesses() {
+        captureProcessTree();
+        List<ProcessHandle> processes = new ArrayList<>(descendants);
+        // Signal children first so that the launcher can still reap them.
+        process.ifPresent(parent -> processes.add(parent.toHandle()));
+        return processes;
+    }
+
+    public void waitUntilExited() {
+        log.info("Wait until tor process has exited");
+        try {
+            if (!waitForExit(managedProcesses(), System.nanoTime() + TimeUnit.SECONDS.toNanos(5))) {
+                throw new CouldNotWaitForTorShutdownException("Tor process tree has not exited after 5 seconds.");
+            }
+            log.info("Tor process tree has exited successfully");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new CouldNotWaitForTorShutdownException(e);
+        }
     }
 
     public void shutdown() {
-        process.ifPresent(process -> {
-            if (!process.isAlive()) {
-                return;
-            }
-
-            process.destroy();
-            try {
-                boolean exited = process.waitFor(3, TimeUnit.SECONDS);
-                if (!exited && process.isAlive()) {
-                    destroyForciblyAndWait(process);
-                }
-            } catch (InterruptedException e) {
-                log.warn("Thread got interrupted at shutdown method", e);
-                if (process.isAlive()) {
-                    destroyForciblyAndWait(process);
-                }
-                Thread.currentThread().interrupt();
-            }
-        });
+        shutdownProcesses(managedProcesses());
     }
 
-    private void destroyForciblyAndWait(Process process) {
-        process.destroyForcibly();
+    static void shutdownProcesses(List<ProcessHandle> processes) {
+        boolean interrupted = Thread.interrupted();
         try {
-            boolean exited = process.waitFor(3, TimeUnit.SECONDS);
-            if (!exited && process.isAlive()) {
-                log.warn("Tor process {} did not exit after being forcibly destroyed", process.pid());
+            destroyProcesses(processes, false);
+            if (!interrupted) {
+                try {
+                    if (waitForExit(processes, System.nanoTime() + TimeUnit.SECONDS.toNanos(3))) {
+                        return;
+                    }
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                }
             }
-        } catch (InterruptedException e) {
-            log.warn("Thread got interrupted while waiting for forcibly destroyed Tor process to exit", e);
-            Thread.currentThread().interrupt();
+            destroyProcesses(processes, true);
+            // An interruption must not leave descendants running. Keep the original bound across interruptions.
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(3);
+            while (true) {
+                try {
+                    if (!waitForExit(processes, deadline)) {
+                        List<Long> remaining = processes.stream().filter(ProcessHandle::isAlive)
+                                .map(ProcessHandle::pid).toList();
+                        throw new CouldNotWaitForTorShutdownException(
+                                "Tor processes did not exit after termination: " + remaining);
+                    }
+                    return;
+                } catch (InterruptedException e) {
+                    interrupted = true;
+                }
+            }
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
         }
+    }
+
+    private static void destroyProcesses(List<ProcessHandle> processes, boolean forcibly) {
+        for (ProcessHandle process : processes) {
+            if (process.isAlive()) {
+                try {
+                    if (forcibly) {
+                        process.destroyForcibly();
+                    } else {
+                        process.destroy();
+                    }
+                } catch (RuntimeException e) {
+                    // Still attempt every other process, then report any survivors after the bounded wait.
+                    log.warn("Could not terminate Tor process {}", process.pid(), e);
+                }
+            }
+        }
+    }
+
+    private static boolean waitForExit(List<ProcessHandle> processes, long deadline) throws InterruptedException {
+        while (processes.stream().anyMatch(ProcessHandle::isAlive)) {
+            long remaining = deadline - System.nanoTime();
+            if (remaining <= 0) {
+                return false;
+            }
+            TimeUnit.NANOSECONDS.sleep(Math.min(remaining, TimeUnit.MILLISECONDS.toNanos(10)));
+        }
+        return true;
     }
 
     public boolean isAlive() {
