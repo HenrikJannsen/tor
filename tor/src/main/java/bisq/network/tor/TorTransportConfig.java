@@ -59,22 +59,23 @@ public class TorTransportConfig {
 
     /**
      * Bisq 2 reads its configuration from its program arguments, its JVM options, the file bisq.conf in its data
-     * directory, which it also writes itself, and its resources. An override which it read from a file that is not one
-     * of its resources comes from bisq.conf or from a file which bisq.conf includes. Where keys of several sources are
+     * directory, which it also writes itself, and its resources. An override which it read from a file or a URL that is
+     * not one of its resources comes from bisq.conf or from a file or URL which bisq.conf includes. Where keys of several sources are
      * merged, the origin is the one of the value which Bisq 2 uses.
      */
     private static ConfigFileTorrcOverrides parseConfigFileTorrcOverrides(com.typesafe.config.Config torrcOverrides) {
         Set<String> keys = torrcOverrides.entrySet().stream()
-                .filter(entry -> isReadFromFile(entry.getValue().origin()))
+                .filter(entry -> isReadFromFileOrUrl(entry.getValue().origin()))
                 .map(Map.Entry::getKey)
                 .collect(Collectors.toSet());
         return new ConfigFileTorrcOverrides(keys, "Bisq accepts them only as program arguments or JVM options, for " +
                 "example -D" + BISQ2_TORRC_OVERRIDES_PATH + ".<name>=<value>: remove them from bisq.conf.");
     }
 
-    // A resource has a file name too if it is read from a directory instead of a jar, for example in a test.
-    private static boolean isReadFromFile(ConfigOrigin origin) {
-        return origin.filename() != null && origin.resource() == null;
+    // bisq.conf can include a file or a URL, for example include url("https://..."), whose values have a URL but no
+    // file name. A resource has a file name too if it is read from a directory instead of a jar, for example in a test.
+    private static boolean isReadFromFileOrUrl(ConfigOrigin origin) {
+        return (origin.filename() != null || origin.url() != null) && origin.resource() == null;
     }
 
     // The bridges are optional, so that a configuration without them stays valid.

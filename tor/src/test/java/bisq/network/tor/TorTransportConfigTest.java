@@ -17,6 +17,7 @@
 
 package bisq.network.tor;
 
+import com.sun.net.httpserver.HttpServer;
 import com.typesafe.config.Config;
 import com.typesafe.config.ConfigException;
 import com.typesafe.config.ConfigFactory;
@@ -24,6 +25,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
@@ -61,6 +65,34 @@ class TorTransportConfigTest {
         assertThat(transportConfig.getConfigFileTorrcOverrides().getHint())
                 .contains("-Dapplication.network.configByTransportType.tor.torrcOverrides.<name>=<value>")
                 .contains("bisq.conf");
+    }
+
+    // bisq.conf can include a URL. Its values have the URL as origin and no file name.
+    @Test
+    void theOverridesWhichBisqConfIncludesFromAUrlAreOverridesOfAConfigurationFile() throws IOException {
+        byte[] included = "ClientTransportPlugin = \"obfs4 exec /tmp/x\"\nAccelName = engine\n"
+                .getBytes(StandardCharsets.UTF_8);
+        HttpServer server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        server.createContext("/included.conf", exchange -> {
+            exchange.getResponseHeaders().add("Content-Type", "application/hocon");
+            exchange.sendResponseHeaders(200, included.length);
+            exchange.getResponseBody().write(included);
+            exchange.close();
+        });
+        server.start();
+        try {
+            Config config = bisqConf("torrcOverrides { include url(\"http://127.0.0.1:" +
+                    server.getAddress().getPort() + "/included.conf\") }")
+                    .withFallback(ConfigFactory.parseString(TRANSPORT_CONFIG));
+
+            TorTransportConfig transportConfig = TorTransportConfig.from(Path.of("tor"), config);
+
+            assertThat(transportConfig.getTorrcOverrides()).containsEntry("AccelName", "engine");
+            assertThat(transportConfig.getConfigFileTorrcOverrides().getKeys())
+                    .containsExactlyInAnyOrder("ClientTransportPlugin", "AccelName");
+        } finally {
+            server.stop(0);
+        }
     }
 
     // Program arguments and JVM options come from the command line, and the default configuration of Bisq 2 is a
