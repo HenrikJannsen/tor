@@ -21,7 +21,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -37,63 +36,57 @@ class EmbeddedTorProcessShutdownTest {
     @Test
     void aChildThatIgnoresGracefulTerminationIsForciblyStopped() {
         ProcessHandle child = mock(ProcessHandle.class);
-        CompletableFuture<ProcessHandle> exit = exitOf(child);
-        when(child.destroyForcibly()).thenAnswer(invocation -> exit.complete(child));
-
-        EmbeddedTorProcess.shutdownProcesses(List.of(child));
-
-        assertThat(exit).isDone();
-        verify(child).destroy();
-        verify(child).destroyForcibly();
-    }
-
-    // On Windows, a terminated process reports its exit code before it has released its ports and files.
-    @Test
-    void aShutdownWaitsForTheEndOfAProcessWhichNoLongerReportsAlive() {
-        ProcessHandle child = mock(ProcessHandle.class);
-        CompletableFuture<ProcessHandle> exit = new CompletableFuture<>();
-        when(child.onExit()).thenReturn(exit);
-        when(child.isAlive()).thenReturn(true);
-        when(child.destroy()).thenAnswer(invocation -> {
-            when(child.isAlive()).thenReturn(false);
-            CompletableFuture.delayedExecutor(200, TimeUnit.MILLISECONDS).execute(() -> exit.complete(child));
+        AtomicBoolean alive = new AtomicBoolean(true);
+        when(child.isAlive()).thenAnswer(invocation -> alive.get());
+        when(child.destroyForcibly()).thenAnswer(invocation -> {
+            alive.set(false);
             return true;
         });
 
         EmbeddedTorProcess.shutdownProcesses(List.of(child));
 
-        assertThat(exit).isDone();
+        assertThat(alive).isFalse();
+        verify(child).destroy();
+        verify(child).destroyForcibly();
     }
 
     @Test
     void aRemainingProcessFailsShutdownAndDoesNotPreventOtherProcessesFromBeingStopped() {
         ProcessHandle stubbornChild = mock(ProcessHandle.class);
         when(stubbornChild.pid()).thenReturn(123L);
-        exitOf(stubbornChild);
+        when(stubbornChild.isAlive()).thenReturn(true);
         when(stubbornChild.destroy()).thenThrow(new SecurityException("Cannot signal the child"));
         when(stubbornChild.destroyForcibly()).thenThrow(new SecurityException("Cannot force the child"));
         ProcessHandle otherChild = mock(ProcessHandle.class);
-        CompletableFuture<ProcessHandle> otherExit = exitOf(otherChild);
-        when(otherChild.destroy()).thenAnswer(invocation -> otherExit.complete(otherChild));
+        AtomicBoolean otherAlive = new AtomicBoolean(true);
+        when(otherChild.isAlive()).thenAnswer(invocation -> otherAlive.get());
+        when(otherChild.destroy()).thenAnswer(invocation -> {
+            otherAlive.set(false);
+            return true;
+        });
 
         assertThatThrownBy(() -> EmbeddedTorProcess.shutdownProcesses(List.of(stubbornChild, otherChild)))
                 .isInstanceOf(CouldNotWaitForTorShutdownException.class)
                 .hasMessageContaining("123");
 
-        assertThat(otherExit).isDone();
+        assertThat(otherAlive).isFalse();
         verify(stubbornChild).destroyForcibly();
     }
 
     @Test
     void anInterruptedShutdownStopsTheChildAndRestoresTheInterrupt() throws Exception {
         ProcessHandle child = mock(ProcessHandle.class);
-        CompletableFuture<ProcessHandle> exit = exitOf(child);
+        AtomicBoolean alive = new AtomicBoolean(true);
         CountDownLatch signalled = new CountDownLatch(1);
+        when(child.isAlive()).thenAnswer(invocation -> alive.get());
         when(child.destroy()).thenAnswer(invocation -> {
             signalled.countDown();
             return true;
         });
-        when(child.destroyForcibly()).thenAnswer(invocation -> exit.complete(child));
+        when(child.destroyForcibly()).thenAnswer(invocation -> {
+            alive.set(false);
+            return true;
+        });
         AtomicBoolean returnedWithInterrupt = new AtomicBoolean();
         Thread shutdown = new Thread(() -> {
             EmbeddedTorProcess.shutdownProcesses(List.of(child));
@@ -106,20 +99,12 @@ class EmbeddedTorProcessShutdownTest {
             shutdown.join(5_000);
 
             assertThat(shutdown.isAlive()).isFalse();
-            assertThat(exit).isDone();
+            assertThat(alive).isFalse();
             assertThat(returnedWithInterrupt).isTrue();
             verify(child).destroyForcibly();
         } finally {
             shutdown.interrupt();
             shutdown.join(5_000);
         }
-    }
-
-    // A process ends when its exit completes, as for a real ProcessHandle.
-    private static CompletableFuture<ProcessHandle> exitOf(ProcessHandle process) {
-        CompletableFuture<ProcessHandle> exit = new CompletableFuture<>();
-        when(process.onExit()).thenReturn(exit);
-        when(process.isAlive()).thenAnswer(invocation -> !exit.isDone());
-        return exit;
     }
 }
