@@ -109,6 +109,8 @@ public class TorTransportConfig {
     private final BridgeConfig bridgeConfig;
     // Only for the Tor which Bisq starts
     private final TorSandboxConfig sandboxConfig;
+    // The overrides of torrcOverrides which come from a configuration file of the application
+    private final ConfigFileTorrcOverrides configFileTorrcOverrides;
 
     public TorTransportConfig(Path dataDirPath,
                               int bootstrapTimeout,
@@ -155,6 +157,28 @@ public class TorTransportConfig {
                               boolean useExternalTor,
                               BridgeConfig bridgeConfig,
                               TorSandboxConfig sandboxConfig) {
+        this(dataDirPath,
+                bootstrapTimeout,
+                hsUploadTimeout,
+                isTestNetwork,
+                directoryAuthorities,
+                torrcOverrides,
+                useExternalTor,
+                bridgeConfig,
+                sandboxConfig,
+                ConfigFileTorrcOverrides.NONE);
+    }
+
+    public TorTransportConfig(Path dataDirPath,
+                              int bootstrapTimeout,
+                              int hsUploadTimeout,
+                              boolean isTestNetwork,
+                              Set<DirectoryAuthority> directoryAuthorities,
+                              Map<String, String> torrcOverrides,
+                              boolean useExternalTor,
+                              BridgeConfig bridgeConfig,
+                              TorSandboxConfig sandboxConfig,
+                              ConfigFileTorrcOverrides configFileTorrcOverrides) {
         this.dataDirPath = dataDirPath;
         this.bootstrapTimeout = bootstrapTimeout;
         this.hsUploadTimeout = hsUploadTimeout;
@@ -164,5 +188,6 @@ public class TorTransportConfig {
         this.useExternalTor = useExternalTor;
         this.bridgeConfig = bridgeConfig;
         this.sandboxConfig = sandboxConfig;
+        this.configFileTorrcOverrides = configFileTorrcOverrides;
     }
 }
