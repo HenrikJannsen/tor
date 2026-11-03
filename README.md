@@ -132,6 +132,11 @@ its value from a file which is not one of its resources: `bisq.conf` in its data
 includes. Its program arguments and JVM options count as the command line. Bisq 1 names the overrides of
 `--torrcOptions` and `--torrcFile` which come from `bisq.properties` or another config file.
 
+Tor reads every torrc value as text. In the configuration of Bisq 2, a value without quotes can be a number or a
+boolean, and Bisq 2 turns program arguments and JVM options into numbers and booleans where it can. Such a value reaches
+Tor as its text: `AvoidDiskWrites = 1` gives `AvoidDiskWrites 1`, and `true` stays `true`, which Tor refuses for its
+boolean options, as they take `0` or `1`. A list is no torrc value and fails with an error which names the path.
+
 ## Bridges and pluggable transports
 
 `TorTransportConfig` takes a `BridgeConfig`: no bridges, the built-in bridges of one type of the Tor Browser version of

@@ -18,9 +18,7 @@
 package bisq.network.tor;
 
 import bisq.network.tor.common.torrc.DirectoryAuthority;
-import com.typesafe.config.ConfigList;
 import com.typesafe.config.ConfigOrigin;
-import com.typesafe.config.ConfigValue;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.ToString;
@@ -50,7 +48,7 @@ public class TorTransportConfig {
                 (int) TimeUnit.SECONDS.toMillis(config.getInt("bootstrapTimeout")),
                 (int) TimeUnit.SECONDS.toMillis(config.getInt("hsUploadTimeout")),
                 config.getBoolean("testNetwork"),
-                parseDirectoryAuthorities(config.getList("directoryAuthorities")),
+                parseDirectoryAuthorities(config.getConfigList("directoryAuthorities")),
                 parseTorrcOverrideConfig(torrcOverrides),
                 config.getBoolean("useExternalTor"),
                 parseBridgeConfig(config),
@@ -92,15 +90,17 @@ public class TorTransportConfig {
         return bridges.isEmpty() ? BridgeConfig.NONE : BridgeConfig.custom(bridges);
     }
 
-    private static Set<DirectoryAuthority> parseDirectoryAuthorities(ConfigList directoryAuthoritiesConfig) {
+    // A port may be a number or a numeric string, as typesafe config converts it.
+    private static Set<DirectoryAuthority> parseDirectoryAuthorities(
+            List<? extends com.typesafe.config.Config> directoryAuthoritiesConfig) {
         Set<DirectoryAuthority> allDirectoryAuthorities = new HashSet<>();
         directoryAuthoritiesConfig.forEach(authConfig -> {
             DirectoryAuthority directoryAuthority = DirectoryAuthority.builder()
-                    .nickname(getStringFromConfigValue(authConfig, "nickname"))
-                    .orPort(Integer.parseInt(getStringFromConfigValue(authConfig, "orPort")))
-                    .v3Ident(getStringFromConfigValue(authConfig, "v3Ident"))
-                    .dirPort(Integer.parseInt(getStringFromConfigValue(authConfig, "dirPort")))
-                    .relayFingerprint(getStringFromConfigValue(authConfig, "relayFingerprint"))
+                    .nickname(authConfig.getString("nickname"))
+                    .orPort(authConfig.getInt("orPort"))
+                    .v3Ident(authConfig.getString("v3Ident"))
+                    .dirPort(authConfig.getInt("dirPort"))
+                    .relayFingerprint(authConfig.getString("relayFingerprint"))
                     .build();
 
             allDirectoryAuthorities.add(directoryAuthority);
@@ -108,21 +108,18 @@ public class TorTransportConfig {
         return allDirectoryAuthorities;
     }
 
+    /**
+     * Tor reads every value as text. A value of bisq.conf without quotes, such as {@code AvoidDiskWrites = 1}, is a
+     * number or a boolean in typesafe config, and Bisq 2 turns the values of program arguments and JVM options into
+     * numbers and booleans where it can. So a number or a boolean reaches Tor as its text: the text of the
+     * configuration file for a number, for example "0123", and "true" or "false" for a boolean. A list is no torrc
+     * value and fails with an error which names the path.
+     */
     private static Map<String, String> parseTorrcOverrideConfig(com.typesafe.config.Config torrcOverrides) {
         Map<String, String> torrcOverrideConfigMap = new HashMap<>();
-        torrcOverrides.entrySet()
-                .forEach(entry -> torrcOverrideConfigMap.put(
-                        entry.getKey(), (String) entry.getValue().unwrapped()
-                ));
+        torrcOverrides.entrySet().forEach(entry ->
+                torrcOverrideConfigMap.put(entry.getKey(), torrcOverrides.getString(entry.getKey())));
         return torrcOverrideConfigMap;
-    }
-
-    private static String getStringFromConfigValue(ConfigValue configValue, String key) {
-        return (String) configValue
-                .atKey(key)
-                .getObject(key)
-                .get(key)
-                .unwrapped();
     }
 
     private final Path dataDirPath;

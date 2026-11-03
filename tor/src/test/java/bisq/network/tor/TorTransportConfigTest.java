@@ -18,6 +18,7 @@
 package bisq.network.tor;
 
 import com.typesafe.config.Config;
+import com.typesafe.config.ConfigException;
 import com.typesafe.config.ConfigFactory;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -28,11 +29,12 @@ import java.nio.file.Path;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Bisq 2 merges its program arguments, its JVM options, bisq.conf in its data directory and its resources into one
  * configuration. The torrc overrides of bisq.conf, a file which Bisq 2 also writes itself, are the overrides of a
- * configuration file.
+ * configuration file. The values reach Tor as text.
  */
 class TorTransportConfigTest {
     private static final String TRANSPORT_CONFIG = """
@@ -99,6 +101,54 @@ class TorTransportConfigTest {
                 ConfigFactory.parseString(TRANSPORT_CONFIG));
 
         assertThat(transportConfig.getConfigFileTorrcOverrides().getKeys()).isEmpty();
+    }
+
+    // Bisq 2 turns the values of program arguments and JVM options into numbers and booleans where it can, and a value
+    // of bisq.conf without quotes is one as well. Tor gets the text.
+    @Test
+    void numbersAndBooleansReachTorAsText() throws IOException {
+        Config config = ConfigFactory.parseMap(Map.of("torrcOverrides.NumEntryGuards", 3,
+                        "torrcOverrides.ClientOnly", true))
+                .withFallback(bisqConf(
+                        "torrcOverrides { AvoidDiskWrites = 1, Nickname = 0123, MaxMemInQueues = 512 MB }"))
+                .withFallback(ConfigFactory.parseString(TRANSPORT_CONFIG));
+
+        TorTransportConfig transportConfig = TorTransportConfig.from(Path.of("tor"), config);
+
+        assertThat(transportConfig.getTorrcOverrides())
+                .containsEntry("NumEntryGuards", "3")
+                .containsEntry("ClientOnly", "true")
+                .containsEntry("AvoidDiskWrites", "1")
+                .containsEntry("Nickname", "0123")
+                .containsEntry("MaxMemInQueues", "512 MB");
+        assertThat(transportConfig.getConfigFileTorrcOverrides().getKeys())
+                .containsExactlyInAnyOrder("AvoidDiskWrites", "Nickname", "MaxMemInQueues");
+    }
+
+    // A list would be several entries of one key, which the overrides cannot express
+    @Test
+    void aListIsNoTorrcValue() {
+        Config config = ConfigFactory.parseString(TRANSPORT_CONFIG.replace("torrcOverrides {}",
+                "torrcOverrides { Bridge = [\"192.0.2.1:443\", \"192.0.2.2:443\"] }"));
+
+        assertThatThrownBy(() -> TorTransportConfig.from(Path.of("tor"), config))
+                .isInstanceOf(ConfigException.WrongType.class)
+                .hasMessageContaining("Bridge");
+    }
+
+    @Test
+    void theDirectoryAuthoritiesOfATestNetworkTakeTheirPortsAsNumbersOrText() {
+        Config config = ConfigFactory.parseString(TRANSPORT_CONFIG.replace("directoryAuthorities = []", """
+                directoryAuthorities = [{nickname = da, orPort = 9001, v3Ident = "ABC", dirPort = "9030",
+                    relayFingerprint = "DEF"}]"""));
+
+        TorTransportConfig transportConfig = TorTransportConfig.from(Path.of("tor"), config);
+
+        assertThat(transportConfig.getDirectoryAuthorities()).singleElement().satisfies(authority -> {
+            assertThat(authority.getNickname()).isEqualTo("da");
+            assertThat(authority.getOrPort()).isEqualTo(9001);
+            assertThat(authority.getDirPort()).isEqualTo(9030);
+        });
     }
 
     private Config bisqConf(String content) throws IOException {
