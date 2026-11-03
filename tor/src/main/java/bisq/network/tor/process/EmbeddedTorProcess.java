@@ -37,8 +37,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 
 /**
@@ -253,7 +256,7 @@ public class EmbeddedTorProcess {
             while (true) {
                 try {
                     if (!waitForExit(processes, deadline)) {
-                        List<Long> remaining = processes.stream().filter(ProcessHandle::isAlive)
+                        List<Long> remaining = processes.stream().filter(process -> !process.onExit().isDone())
                                 .map(ProcessHandle::pid).toList();
                         throw new CouldNotWaitForTorShutdownException(
                                 "Tor processes did not exit after termination: " + remaining);
@@ -295,7 +298,18 @@ public class EmbeddedTorProcess {
             }
             TimeUnit.NANOSECONDS.sleep(Math.min(remaining, TimeUnit.MILLISECONDS.toNanos(10)));
         }
-        return true;
+        // On Windows, isAlive reads only the exit code, which a terminated process reports before it has released its
+        // ports and files. onExit waits until the process has ended. Elsewhere it completes at once here, while for a
+        // process which still runs it would poll at intervals of about 300 ms.
+        CompletableFuture<?>[] exits = processes.stream().map(ProcessHandle::onExit).toArray(CompletableFuture[]::new);
+        try {
+            CompletableFuture.allOf(exits).get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
+            return true;
+        } catch (TimeoutException e) {
+            return false;
+        } catch (ExecutionException e) {
+            throw new IllegalStateException("Waiting for the exit of the Tor processes failed", e);
+        }
     }
 
     public boolean isAlive() {
