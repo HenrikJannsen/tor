@@ -71,6 +71,10 @@ public class TorrcClientConfigFactory {
     // Tor starts a process only for a pluggable transport (a managed proxy).
     private static final Set<String> KEYS_STARTING_PROCESSES = Set.of("clienttransportplugin", "servertransportplugin");
 
+    // Tor passes the values of AccelName and AccelDir to the engine loader of OpenSSL, which loads a library as the
+    // engine. AccelName alone is enough: OpenSSL loads the engine of that name from a path or from its engine directory.
+    private static final Set<String> KEYS_LOADING_LIBRARIES = Set.of("accelname", "acceldir");
+
     // The options of the proxy through which Tor connects out. In its sandbox Tor connects out only through the egress
     // broker of sandy, which Bisq sets as Socks5Proxy.
     private static final Set<String> PROXY_KEYS = Set.of("socks4proxy", "socks5proxy", "socks5proxyusername",
@@ -152,6 +156,18 @@ public class TorrcClientConfigFactory {
         return torrcKeys.stream()
                 .filter(key -> isPrefixOfAny(key, KEYS_STARTING_PROCESSES))
                 .filter(key -> !(usesBridges && isPrefixOfAny(key, BRIDGE_KEYS)))
+                .sorted()
+                .toList();
+    }
+
+    /**
+     * The keys of {@code torrcKeys} which make Tor run code at its start, also as an abbreviation, which Tor accepts:
+     * the start of a pluggable transport ({@code ClientTransportPlugin}, {@code ServerTransportPlugin}) and the load of
+     * an OpenSSL engine ({@code AccelName}, {@code AccelDir}).
+     */
+    public static List<String> codeRunningKeys(Collection<String> torrcKeys) {
+        return torrcKeys.stream()
+                .filter(key -> isPrefixOfAny(key, KEYS_STARTING_PROCESSES) || isPrefixOfAny(key, KEYS_LOADING_LIBRARIES))
                 .sorted()
                 .toList();
     }
