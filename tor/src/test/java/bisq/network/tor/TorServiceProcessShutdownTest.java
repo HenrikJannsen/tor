@@ -157,6 +157,33 @@ class TorServiceProcessShutdownTest {
         verify(process, times(1)).shutdown();
     }
 
+    @Test
+    void aStartFailsWhileTheProcessesOfAnEarlierStartStillRun() throws Exception {
+        EmbeddedTorProcess process = mock(EmbeddedTorProcess.class);
+        var stopFailure = new CouldNotWaitForTorShutdownException("Tor processes still run");
+        doThrow(stopFailure).when(process).shutdown();
+        TorService service = serviceWithManagedProcess(process, mock(TorController.class));
+
+        assertThatThrownBy(service::stopTheTorOfAnEarlierStart)
+                .isInstanceOf(TorStartupFailedException.class)
+                .hasCause(stopFailure);
+
+        // The start must not replace the processes, so that the shutdown still stops and reports them.
+        assertThatThrownBy(() -> service.shutdown().get(10, TimeUnit.SECONDS)).hasCause(stopFailure);
+        verify(process, times(3)).shutdown();
+    }
+
+    @Test
+    void aStartForgetsTheProcessesOfAnEarlierStartOnceTheyHaveExited() throws Exception {
+        EmbeddedTorProcess process = mock(EmbeddedTorProcess.class);
+        TorService service = serviceWithManagedProcess(process, mock(TorController.class));
+
+        service.stopTheTorOfAnEarlierStart();
+
+        assertThat(service.shutdown().get(10, TimeUnit.SECONDS)).isTrue();
+        verify(process, times(1)).shutdown();
+    }
+
     private TorService serviceWithManagedProcess(EmbeddedTorProcess process, TorController controller) throws Exception {
         var config = new TorTransportConfig(torDir, 10_000, 10_000, false, Set.of(), Map.of(), false);
         var service = new TorService(config, mock(PlatformServices.class), false);

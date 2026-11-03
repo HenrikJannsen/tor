@@ -342,6 +342,7 @@ public class TorService {
     }
 
     private void startEmbeddedTorOnce() {
+        stopTheTorOfAnEarlierStart();
         boolean isNewDataDirectory = prepareTorDirectories();
         installTorIfNotUpToDate();
 
@@ -736,7 +737,8 @@ public class TorService {
     /**
      * Stops the Tor of a failed start. A failure of the stop is added to the failure of the start and does not replace
      * it: Bisq 2 shows the root cause of a failed start to the user, and a refusal of sandy starts a second attempt.
-     * Processes which remain stay in {@code torProcess}, so that {@link #shutdown()} stops them again and reports them.
+     * Processes which remain stay in {@code torProcess}, so that {@link #shutdown()} or the next start stops them again
+     * and reports them.
      *
      * @return the failure of the start
      */
@@ -756,6 +758,25 @@ public class TorService {
             onionServiceTargets.close();
         }
         return startFailure;
+    }
+
+    /**
+     * A failed start or shutdown keeps the processes which it could not stop in {@code torProcess}. A start replaces
+     * them only once they have exited, so that no Tor runs on unnoticed, and no later shutdown reports success while
+     * one does.
+     */
+    @VisibleForTesting
+    void stopTheTorOfAnEarlierStart() {
+        Optional<EmbeddedTorProcess> earlierProcess = torProcess;
+        if (earlierProcess.isEmpty()) {
+            return;
+        }
+        try {
+            earlierProcess.get().shutdown();
+        } catch (RuntimeException e) {
+            throw new TorStartupFailedException("Tor processes of an earlier start still run", e);
+        }
+        torProcess = Optional.empty();
     }
 
     private static void runQuietly(Runnable runnable, String errorMessage) {
