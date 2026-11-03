@@ -418,15 +418,16 @@ public class TorService {
 
             torSocksProxyFactory = Optional.of(new TorSocksProxyFactory(listenerPorts.socks().outerPort()));
         } catch (InterruptedException e) {
-            stopEmbeddedTor(embeddedTorProcess);
+            // The flag is restored after the stop, so that Tor gets the time to exit gracefully.
+            RuntimeException failure = stopEmbeddedTorAfterFailedStart(embeddedTorProcess,
+                    new RuntimeException("Interrupted while waiting for the tor control port", e));
             Thread.currentThread().interrupt();
-            throw new RuntimeException("Interrupted while waiting for the tor control port", e);
+            throw failure;
         } catch (IOException e) {
-            stopEmbeddedTor(embeddedTorProcess);
-            throw new RuntimeException("Error while waiting for the tor control port", e);
+            throw stopEmbeddedTorAfterFailedStart(embeddedTorProcess,
+                    new RuntimeException("Error while waiting for the tor control port", e));
         } catch (RuntimeException e) {
-            stopEmbeddedTor(embeddedTorProcess);
-            throw e;
+            throw stopEmbeddedTorAfterFailedStart(embeddedTorProcess, e);
         }
     }
 
@@ -732,14 +733,29 @@ public class TorService {
                 EmbeddedTorProcess.torCommand(torBinaryPath, torrcPath, ownerPid);
     }
 
-    private void stopEmbeddedTor(EmbeddedTorProcess embeddedTorProcess) {
-        embeddedTorProcess.captureProcessTree();
-        if (torController != null) {
-            runQuietly(torController::shutdown, "Shutdown of the Tor controller failed");
+    /**
+     * Stops the Tor of a failed start. A failure of the stop is added to the failure of the start and does not replace
+     * it: Bisq 2 shows the root cause of a failed start to the user, and a refusal of sandy starts a second attempt.
+     * Processes which remain stay in {@code torProcess}, so that {@link #shutdown()} stops them again and reports them.
+     *
+     * @return the failure of the start
+     */
+    @VisibleForTesting
+    RuntimeException stopEmbeddedTorAfterFailedStart(EmbeddedTorProcess embeddedTorProcess,
+                                                     RuntimeException startFailure) {
+        try {
+            embeddedTorProcess.captureProcessTree();
+            if (torController != null) {
+                runQuietly(torController::shutdown, "Shutdown of the Tor controller failed");
+            }
+            embeddedTorProcess.shutdown();
+            torProcess = Optional.empty();
+        } catch (RuntimeException stopFailure) {
+            startFailure.addSuppressed(stopFailure);
+        } finally {
+            onionServiceTargets.close();
         }
-        embeddedTorProcess.shutdown();
-        torProcess = Optional.empty();
-        onionServiceTargets.close();
+        return startFailure;
     }
 
     private static void runQuietly(Runnable runnable, String errorMessage) {

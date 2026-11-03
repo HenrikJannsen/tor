@@ -20,6 +20,7 @@ package bisq.network.tor;
 import bisq.network.tor.controller.TorController;
 import bisq.network.tor.process.CouldNotWaitForTorShutdownException;
 import bisq.network.tor.process.EmbeddedTorProcess;
+import bisq.network.tor.process.TorStartupFailedException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
@@ -29,6 +30,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -82,6 +84,59 @@ class TorServiceProcessShutdownTest {
         assertThat(service.shutdown().get(10, TimeUnit.SECONDS)).isTrue();
 
         verify(process, times(2)).shutdown();
+    }
+
+    // Bisq 2 shows the root cause of a failed start, so a failed stop must not take its place.
+    @Test
+    void aFailedStopAfterAFailedStartKeepsTheFailureOfTheStart() throws Exception {
+        EmbeddedTorProcess process = mock(EmbeddedTorProcess.class);
+        TorController controller = mock(TorController.class);
+        var stopFailure = new CouldNotWaitForTorShutdownException("Tor processes still run");
+        doThrow(stopFailure).when(process).shutdown();
+        TorService service = serviceWithManagedProcess(process, controller);
+        var startFailure = new TorStartupFailedException("Tor exited during bootstrap");
+
+        assertThat(service.stopEmbeddedTorAfterFailedStart(process, startFailure)).isSameAs(startFailure);
+
+        assertThat(startFailure.getSuppressed()).containsExactly(stopFailure);
+        var order = inOrder(process, controller);
+        order.verify(process).captureProcessTree();
+        order.verify(controller).shutdown();
+        order.verify(process).shutdown();
+        // The remaining processes are stopped again and reported by the shutdown.
+        assertThatThrownBy(() -> service.shutdown().get(10, TimeUnit.SECONDS)).hasCause(stopFailure);
+        verify(process, times(3)).shutdown();
+    }
+
+    // A refusal of sandy starts a second attempt only if the failed stop does not replace it.
+    @Test
+    void aFailedStopAfterARefusalOfSandyStillStartsASecondAttempt() throws Exception {
+        EmbeddedTorProcess process = mock(EmbeddedTorProcess.class);
+        doThrow(new CouldNotWaitForTorShutdownException("Tor processes still run")).when(process).shutdown();
+        TorService service = serviceWithManagedProcess(process, mock(TorController.class));
+        var attempts = new AtomicInteger();
+
+        TorService.retryOnceAfterARefusalOfSandy(() -> {
+            if (attempts.incrementAndGet() == 1) {
+                throw service.stopEmbeddedTorAfterFailedStart(process,
+                        new TorService.SandyRefusalException("sandy: run failed", "hint"));
+            }
+        });
+
+        assertThat(attempts).hasValue(2);
+    }
+
+    @Test
+    void aSuccessfulStopAfterAFailedStartForgetsTheProcess() throws Exception {
+        EmbeddedTorProcess process = mock(EmbeddedTorProcess.class);
+        TorService service = serviceWithManagedProcess(process, mock(TorController.class));
+        var startFailure = new TorStartupFailedException("Tor exited during bootstrap");
+
+        assertThat(service.stopEmbeddedTorAfterFailedStart(process, startFailure)).isSameAs(startFailure);
+
+        assertThat(startFailure.getSuppressed()).isEmpty();
+        assertThat(service.shutdown().get(10, TimeUnit.SECONDS)).isTrue();
+        verify(process, times(1)).shutdown();
     }
 
     private TorService serviceWithManagedProcess(EmbeddedTorProcess process, TorController controller) throws Exception {
