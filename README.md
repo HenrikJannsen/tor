@@ -127,10 +127,16 @@ loader of OpenSSL, which loads a library as the engine; `AccelName` alone loads 
 from the engine directory of OpenSSL. In the bundled Tor, that directory is below `/var/tmp/dist`, where any local user
 can create files. `HardwareAccel` alone uses only the engines built into OpenSSL.
 
-In the configuration of Bisq 2 (`TorTransportConfig.from`), an override comes from a configuration file if Bisq 2 read
-its value from a file which is not one of its resources: `bisq.conf` in its data directory, or a file which `bisq.conf`
-includes. Its program arguments and JVM options count as the command line. Bisq 1 names the overrides of
-`--torrcOptions` and `--torrcFile` which come from `bisq.properties` or another config file.
+In the configuration of Bisq 2, an override comes from a configuration file if `bisq.conf` in its data directory
+assigns it and the program arguments and JVM options, which count as the command line, do not.
+`TorTransportConfig.from(Path, Config, Config, Config)` takes `bisq.conf` as Bisq 2 parsed it, before its substitutions
+are resolved, and the command line. `bisq.conf` assigns an override also if it takes the value from elsewhere: with a
+substitution such as `${x}`, whose resolved value has the origin of `x`, or with an include of a file, a URL or a
+resource. If it assigns the overrides or an object above them as a whole, it assigns all of them. In addition, and
+alone in `TorTransportConfig.from(Path, Config)`, an override comes from a configuration file if Bisq 2 read its value
+from a file or a URL which is not one of its resources. With the bridges of the configuration, overrides of
+`ClientTransportPlugin` are ignored, so they are not refused. Bisq 1 names the overrides of `--torrcOptions` and
+`--torrcFile` which come from `bisq.properties` or another config file.
 
 Tor reads every torrc value as text. In the configuration of Bisq 2, a value without quotes can be a number or a
 boolean, and Bisq 2 turns program arguments and JVM options into numbers and booleans where it can. Such a value reaches
