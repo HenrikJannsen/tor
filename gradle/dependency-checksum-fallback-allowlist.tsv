@@ -2,5 +2,10 @@
 # Format: <group:name:version>	<artifact-file-name>	<review-rationale>
 # Keep entries sorted by module and artifact. Remove stale entries when signatures become verifiable.
 
+bisq-network:sandy:1.0.0	sandy-1.0.0-aarch64-apple-darwin.tar.gz	sandy release archive has no detached signature; pinned by SHA-256, and verifySandyArchive checks it against the release SHA256SUMS signed by the pinned key.
+bisq-network:sandy:1.0.0	sandy-1.0.0-aarch64-unknown-linux-musl.tar.gz	sandy release archive has no detached signature; pinned by SHA-256, and verifySandyArchive checks it against the release SHA256SUMS signed by the pinned key.
+bisq-network:sandy:1.0.0	sandy-1.0.0-x86_64-apple-darwin.tar.gz	sandy release archive has no detached signature; pinned by SHA-256, and verifySandyArchive checks it against the release SHA256SUMS signed by the pinned key.
+bisq-network:sandy:1.0.0	sandy-1.0.0-x86_64-pc-windows-msvc.zip	sandy release archive has no detached signature; pinned by SHA-256, and verifySandyArchive checks it against the release SHA256SUMS signed by the pinned key.
+bisq-network:sandy:1.0.0	sandy-1.0.0-x86_64-unknown-linux-musl.tar.gz	sandy release archive has no detached signature; pinned by SHA-256, and verifySandyArchive checks it against the release SHA256SUMS signed by the pinned key.
 org.gradle.kotlin.kotlin-dsl:org.gradle.kotlin.kotlin-dsl.gradle.plugin:6.2.0	org.gradle.kotlin.kotlin-dsl.gradle.plugin-6.2.0.pom	Gradle plugin marker POM has no detached signature; marker is pinned by SHA-256.
 org.sonatype.oss:oss-parent:7	oss-parent-7.pom	Parent POM has no detached signature on Maven Central; POM is pinned by SHA-256.

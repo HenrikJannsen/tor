@@ -12,56 +12,59 @@ Windows `sandy.exe`), and writes its SHA-256 hash into `sandy/SHA256SUMS`. The p
 sandboxed start of Tor, Bisq installs the binary into the directory `sandy` of the Tor directory, which Tor cannot
 write, and checks its hash against `SHA256SUMS`.
 
-The library needs sandy 2.4.1 or newer: it passes the policy on standard input, uses its fallback levels,
-`check --json` and the status record of `run --status-file` (new in 2.4.1), and the macOS template for pluggable
-transports uses `macos.mach_services`. The build packages sandy 2.4.1, whose binary of each platform
-`tor/build.gradle.kts` pins by its SHA-256 hash. The release archives of sandy cannot be downloaded publicly yet, so the
-binaries are committed in `tor/sandy/2.4.1/<platform name>/`, and the build fails if the binary of its platform does not
-have the pinned hash. `-Psandy.package=false` builds without sandy; a sandboxed start of Tor then fails with
-`SandboxUnavailableException`, as it does on `win_arm64`, for which no binary is packaged.
+The library needs sandy 1.0.0 or newer: it passes the policy on standard input, uses its fallback levels,
+`check --json` and the status record of `run --status-file`, and the macOS template for pluggable transports uses
+`macos.mach_services`. Gradle resolves the release archive of sandy 1.0.0 for the platform of the build as a dependency,
+`bisq-network:sandy:1.0.0` with the target as classifier, from an Ivy repository of the releases at
+<https://github.com/bisq-network/sandy/releases/tag/v1.0.0> which only sandy comes from. The archives are checked
+twice before the build reads them:
 
-The committed binaries were taken from the release archives of sandy 2.4.1:
+1. Gradle dependency verification checks each archive against its SHA-256 in `gradle/verification-metadata.xml`. The
+   archives have no signature of their own, so they are checksum-only entries of
+   `gradle/dependency-checksum-fallback-allowlist.tsv`. Each platform has a configuration of its own
+   (`sandyArchive_<platform name>`), so `resolveAndVerifyDependencies` verifies the archives of all platforms on any
+   host, while a build resolves only the archive of its platform.
+2. `verifySandyArchive` checks that `tor/sandy/1.0.0/SHA256SUMS`, the checksum file of the release committed in this
+   project, carries a valid signature (`SHA256SUMS.asc` next to it) by the key which signs the sandy releases, and that
+   the archive has the hash which that file lists for it. The key is Alejandro García's
+   `B493 3191 06CC 3D1F 252E  19CB F806 F422 E222 AA02`, committed in `tor/sandy/sandy-release-signing-key.asc` (from
+   keys.openpgp.org; <https://github.com/alejandrogarcia83.gpg> has the same key) and pinned by its fingerprint in
+   `tor/build.gradle.kts`. A signature counts only if the key could sign when the signature was made, so a release
+   stays buildable after the key expires.
+
+The build fails if either check fails. The archives of the platforms:
 
 | Platform | Archive |
 |---|---|
-| `linux_x86_64` | `sandy-2.4.1-x86_64-unknown-linux-musl.tar.gz` |
-| `linux_arm64` | `sandy-2.4.1-aarch64-unknown-linux-musl.tar.gz` |
-| `macos_x86_64` | `sandy-2.4.1-x86_64-apple-darwin.tar.gz` |
-| `macos_arm64` | `sandy-2.4.1-aarch64-apple-darwin.tar.gz` |
-| `win_x86_64` | `sandy-2.4.1-x86_64-pc-windows-msvc.zip` |
+| `linux_x86_64` | `sandy-1.0.0-x86_64-unknown-linux-musl.tar.gz` |
+| `linux_arm64` | `sandy-1.0.0-aarch64-unknown-linux-musl.tar.gz` |
+| `macos_x86_64` | `sandy-1.0.0-x86_64-apple-darwin.tar.gz` |
+| `macos_arm64` | `sandy-1.0.0-aarch64-apple-darwin.tar.gz` |
+| `win_x86_64` | `sandy-1.0.0-x86_64-pc-windows-msvc.zip` |
 
-Check the archives against the signed `SHA256SUMS` of the release (OpenPGP key
-`E850 152C 47E1 3655 DDF3  A62B 4CE3 8D03 67B5 3CC5`, which also signs the release tags of sandy):
-
-```sh
-gpg --verify SHA256SUMS.asc SHA256SUMS
-sha256sum --check --ignore-missing SHA256SUMS
-```
-
-The key is published at <https://github.com/wodoro.gpg>, by the account which owns the repository of sandy;
-keys.openpgp.org and keyserver.ubuntu.com do not have it. Once the releases can be downloaded publicly, the build
-should download the archive of its platform and check the signature of `SHA256SUMS` and the pinned hash, as it does for
-the Tor expert bundle, and `tor/sandy/` should be removed.
+`-Psandy.package=false` builds without sandy and downloads nothing; a sandboxed start of Tor then fails with
+`SandboxUnavailableException`, as it does on `win_arm64`, for which no binary is packaged. Like every other dependency,
+the archive is downloaded once into the Gradle user home, and `--offline` builds use that copy.
 
 ## Updating sandy
 
 sandy confines every sandboxed Tor of Bisq 1 and Bisq 2, so a new release is not taken on its signed checksums alone.
-Before `sandyVersion` and `pinnedSha256` in `tor/build.gradle.kts` move to a new release:
+Before `sandyVersion` in `tor/build.gradle.kts` moves to a new release:
 
-1. Verify the signed tag of the release with the key above: `git tag -v vX.Y.Z` in a checkout of sandy.
-2. Check the release archives against their signed `SHA256SUMS` as above, and the binary of each platform against the
-   hash which the release notes list.
-3. Build the release again from its signed tag on at least one platform and compare the binary with the one in the
-   archive: `scripts/release-build.sh TARGET` in a checkout of the tag, as the README of sandy describes in "Building
-   a release binary again". A Linux binary depends on the host of the toolchain: those of 2.2.1 to 2.4.1 rebuild bit
-   for bit only on an x86_64 Linux host, for both Linux targets, while a build on an arm64 host has the same functions
-   in another order. Both Linux binaries of 2.4.1 match their pins when rebuilt with an x86_64 host. The macOS and
-   Windows binaries can be rebuilt only on those systems, with the linker versions which the release notes name. If a
-   rebuild differs from the binary of the release, find out why before the pin moves.
-4. Review the source diff since the pinned release (`git diff vOLD vNEW`) for what it changes in the sandbox of Tor:
+1. Check the signature of `SHA256SUMS` of the release and the archives against it:
+   `gpg --verify SHA256SUMS.asc SHA256SUMS` with the key above, then `sha256sum --check SHA256SUMS`. If the release
+   is signed by another key, find out why before the key in this project changes.
+2. Build the release again from its tag and compare the archives with those of the release:
+   `XWIN_ACCEPT_LICENSE=true scripts/reproduce.sh vX.Y.Z DIRECTORY` in a checkout of sandy builds all of them in a
+   pinned container, as the README of sandy describes. If an archive differs, find out why before the pins move.
+3. Review the source diff since the pinned release (`git diff vOLD vNEW`) for what it changes in the sandbox of Tor:
    the policy and its fallback levels, the platform backends, the relays and the egress broker, and `check` and `run`
    with the options which the library passes, the status record included. Write the review down, and adapt the
    templates in `policy/` and the README of the library to what changed.
-5. Commit the binaries in `tor/sandy/<version>/<platform name>/`, remove the directory of the old version, set
-   `sandyVersion` and the hashes, update the table above, and run the unit tests and the integration tests of the
-   sandbox on Linux, and a sandboxed start on macOS and Windows where these systems are available.
+4. Commit `SHA256SUMS` and `SHA256SUMS.asc` of the release in `tor/sandy/<version>/`, remove the directory of the old
+   version, set `sandyVersion` and update the table above. Write the dependency verification entries of the new
+   archives as `gradle/README.md`, "Adding or updating a dependency", describes, check that their hashes are those of
+   the signed `SHA256SUMS`, remove the entries of the old version from `gradle/verification-metadata.xml`, update the
+   checksum-only entries of `gradle/dependency-checksum-fallback-allowlist.tsv`, and write the report again. Then run
+   the unit tests and the integration tests of the sandbox on Linux, and a sandboxed start on macOS and Windows where
+   these systems are available.

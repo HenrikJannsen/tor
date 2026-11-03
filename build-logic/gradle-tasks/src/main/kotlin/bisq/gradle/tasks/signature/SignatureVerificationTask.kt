@@ -8,6 +8,7 @@ import org.gradle.api.provider.Property
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFile
 import org.gradle.api.tasks.Internal
+import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.TaskAction
 import java.io.File
@@ -26,7 +27,10 @@ abstract class SignatureVerificationTask : DefaultTask() {
     @get:Input
     abstract val signedChecksumsSignatureBase64: Property<String>
 
+    // The signature of the file itself, which the Tor bundles have and the sandy archives do not. Without it the
+    // signed checksum file alone vouches for the file.
     @get:InputFile
+    @get:Optional
     abstract val detachedSignatureFile: RegularFileProperty
 
     // Not an input: the URL names the jar of the build logic, which differs per checkout, and the content of the key
@@ -49,7 +53,7 @@ abstract class SignatureVerificationTask : DefaultTask() {
         val checksums = Base64.getDecoder().decode(signedChecksumsBase64.get())
         val checksumsSignature = Base64.getDecoder().decode(signedChecksumsSignatureBase64.get())
         if (!signatureVerifier.verifySignature(checksums, checksumsSignature)) {
-            fail("Signature verification failed for the Tor release checksum file.")
+            fail("Signature verification failed for the release checksum file of ${file.name}.")
         }
 
         val checksumEntry = Regex("^([0-9a-f]{64})  (.+)$")
@@ -68,9 +72,10 @@ abstract class SignatureVerificationTask : DefaultTask() {
                     "${expectedHashes.single()}.")
         }
 
-        val isSignatureValid = signatureVerifier.verifySignature(
-            signatureFile = detachedSignatureFile.get().asFile,
-            fileToVerify = fileToVerify.get().asFile
+        val signatureFile = detachedSignatureFile.orNull?.asFile
+        val isSignatureValid = signatureFile == null || signatureVerifier.verifySignature(
+            signatureFile = signatureFile,
+            fileToVerify = file
         )
 
         resultFile.get().asFile.writeText("$isSignatureValid")

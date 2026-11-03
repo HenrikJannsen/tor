@@ -56,6 +56,29 @@ class SignatureVerificationTaskTest {
     }
 
     @Test
+    void verifiesAFileWithoutDetachedSignatureByTheSignedChecksumAlone() throws Exception {
+        KeyFixture fixture = KeyFixture.create(0, true, KeyFlags.SIGN_DATA);
+        SignatureVerificationTask task = task(fixture, BUNDLE, sha256(BUNDLE) + "  bundle.tar.gz\n");
+        task.getDetachedSignatureFile().unset();
+
+        task.verify();
+
+        assertEquals("true", Files.readString(task.getResultFile().get().getAsFile().toPath()));
+    }
+
+    @Test
+    void refusesAFileWithoutDetachedSignatureWhoseHashIsNotSigned() throws Exception {
+        KeyFixture fixture = KeyFixture.create(0, true, KeyFlags.SIGN_DATA);
+        SignatureVerificationTask task = task(fixture, BUNDLE,
+                sha256("the pinned bundle".getBytes(StandardCharsets.US_ASCII)) + "  bundle.tar.gz\n");
+        task.getDetachedSignatureFile().unset();
+
+        GradleException exception = assertThrows(GradleException.class, task::verify);
+        assertTrue(exception.getMessage().contains("the signed SHA-256 is"), exception.getMessage());
+        assertEquals("false", Files.readString(task.getResultFile().get().getAsFile().toPath()));
+    }
+
+    @Test
     void refusesAValidlySignedFileWithAnotherHashBeforeItsSignature() throws Exception {
         KeyFixture fixture = KeyFixture.create(0, true, KeyFlags.SIGN_DATA);
         SignatureVerificationTask task = task(fixture, BUNDLE,

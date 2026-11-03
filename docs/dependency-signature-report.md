@@ -1,6 +1,6 @@
 # Dependency Signature Report
 
-Generated from `gradle/verification-metadata.xml` after resolving 188 configurations.
+Generated from `gradle/verification-metadata.xml` after resolving 193 configurations.
 
 Signer metadata is loaded from `gradle/verification-keyring.keys`; names and emails come from the first OpenPGP user ID, and creation dates come from the public key packet.
 
@@ -19,14 +19,14 @@ Refresh the metadata before regenerating this report:
 
 | Metric | Count |
 | --- | ---: |
-| Resolved external modules | 74 |
+| Resolved external modules | 75 |
 | Modules with PGP-signed artifacts only | 73 |
-| Modules using checksum-only artifacts only | 1 |
+| Modules using checksum-only artifacts only | 2 |
 | Modules with mixed signed/checksum-only artifacts | 0 |
 | Modules missing verification metadata | 0 |
-| Verified artifacts | 74 |
+| Verified artifacts | 79 |
 | PGP-signed artifacts | 73 |
-| Checksum-only artifacts | 1 |
+| Checksum-only artifacts | 6 |
 | Resolved executable artifacts missing explicit metadata | 0 |
 | Stale executable metadata entries for unresolved versions | 0 |
 | Signer keys found in exported keyring | 20 / 20 |
@@ -41,6 +41,7 @@ Treat transitive dependencies the same as direct dependencies. Gradle verifies t
 
 | Dependency | Scope | Checksum-only artifacts and review rationale |
 | --- | --- | --- |
+| `bisq-network:sandy:1.0.0` | direct | `sandy-1.0.0-aarch64-apple-darwin.tar.gz`<br>sandy release archive has no detached signature; pinned by SHA-256, and verifySandyArchive checks it against the release SHA256SUMS signed by the pinned key.<br><br>`sandy-1.0.0-aarch64-unknown-linux-musl.tar.gz`<br>sandy release archive has no detached signature; pinned by SHA-256, and verifySandyArchive checks it against the release SHA256SUMS signed by the pinned key.<br><br>`sandy-1.0.0-x86_64-apple-darwin.tar.gz`<br>sandy release archive has no detached signature; pinned by SHA-256, and verifySandyArchive checks it against the release SHA256SUMS signed by the pinned key.<br><br>`sandy-1.0.0-x86_64-pc-windows-msvc.zip`<br>sandy release archive has no detached signature; pinned by SHA-256, and verifySandyArchive checks it against the release SHA256SUMS signed by the pinned key.<br><br>`sandy-1.0.0-x86_64-unknown-linux-musl.tar.gz`<br>sandy release archive has no detached signature; pinned by SHA-256, and verifySandyArchive checks it against the release SHA256SUMS signed by the pinned key. |
 | `org.gradle.kotlin.kotlin-dsl:org.gradle.kotlin.kotlin-dsl.gradle.plugin:6.2.0` | direct | `org.gradle.kotlin.kotlin-dsl.gradle.plugin-6.2.0.pom`<br>Gradle plugin marker POM has no detached signature; marker is pinned by SHA-256. |
 
 ## Checksum-Only Metadata Outside the Resolved Graph
@@ -55,6 +56,7 @@ Gradle also verifies parent POMs, imported BOMs and artifacts of other platforms
 
 | Dependency | Scope | Status | Artifacts | Signer key and metadata |
 | --- | --- | --- | ---: | --- |
+| `bisq-network:sandy:1.0.0` | direct | checksum fallback | 0 signed / 5 checksum | - |
 | `ch.qos.logback:logback-classic:1.5.32` | direct | PGP signed | 1 signed / 0 checksum | `60200AC4AE761F1614D6C46766D68DAA073BE985`<br>Ceki Gulcu<br>`ceki@qos.ch`<br>created 2022-08-08 |
 | `ch.qos.logback:logback-core:1.5.32` | direct | PGP signed | 1 signed / 0 checksum | `60200AC4AE761F1614D6C46766D68DAA073BE985`<br>Ceki Gulcu<br>`ceki@qos.ch`<br>created 2022-08-08 |
 | `com.google.code.findbugs:jsr305:3.0.2` | direct | PGP signed | 1 signed / 0 checksum | `7616EB882DAF57A11477AAF559A252FB1199D873`<br>Tagir Valeev<br>`lany@ngs.ru`<br>created 2015-03-12 |

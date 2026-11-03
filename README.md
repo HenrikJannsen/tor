@@ -167,7 +167,7 @@ In the configuration of Bisq 2 (`TorTransportConfig.from`), `builtInBridges` nam
 
 ## Sandbox
 
-The library can run the Tor which it starts in the sandbox of the operating system with sandy 2.4.1 (Landlock and
+The library can run the Tor which it starts in the sandbox of the operating system with sandy 1.0.0 (Landlock and
 seccomp on Linux, Seatbelt on macOS, an AppContainer on Windows). The policy is a TOML file per platform in
 `tor/src/main/resources/sandy/policy/`; it decides how strongly Tor is isolated, and the library only fills in the
 values of a start (the paths of the Tor directory, the ports, the forwarded onion service targets, the environment
@@ -208,10 +208,11 @@ which are all on loopback, private or link-local addresses; with some of them Bi
 
 In the configuration of Bisq 2 the sandbox is on unless `sandbox.enabled = false` turns it off, and it allows no
 pluggable transports unless `sandbox.allowPluggableTransports = true`. The `TorTransportConfig` constructor without a
-`TorSandboxConfig` leaves the sandbox off. The build packages the sandy 2.4.1 binary of its platform from
-`tor/sandy/2.4.1/`, which it pins by its hash, and `-Psandy.package=false` builds without sandy (see
-`tor/src/main/resources/sandy/README.md`, which also says how a new release of sandy is checked before the pins move:
-its signed tag, a rebuild from the tag, and a review of the source diff).
+`TorSandboxConfig` leaves the sandbox off. Gradle resolves the release archive of sandy 1.0.0 for the platform of the
+build as a verified dependency, the build checks it against the signed checksums of the release and packages its
+binary, and `-Psandy.package=false` builds without sandy (see `tor/src/main/resources/sandy/README.md`, which also says
+how a new release of sandy is checked before the build moves to it: its signed checksums, a rebuild from the tag, and a
+review of the source diff).
 
 Tor runs without the sandbox, and `TorService.getSandboxStatus()` says why, if:
 
