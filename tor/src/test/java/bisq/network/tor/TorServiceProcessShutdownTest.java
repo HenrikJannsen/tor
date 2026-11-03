@@ -34,6 +34,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
@@ -72,6 +73,23 @@ class TorServiceProcessShutdownTest {
         assertThatThrownBy(() -> service.shutdown().get(10, TimeUnit.SECONDS)).hasCause(failure);
 
         verify(process, times(2)).shutdown();
+    }
+
+    @Test
+    void aShutdownAfterAFailedShutdownStopsTheRemainingProcessesAgain() throws Exception {
+        EmbeddedTorProcess process = mock(EmbeddedTorProcess.class);
+        var failure = new CouldNotWaitForTorShutdownException("Tor processes still run");
+        doThrow(failure).when(process).shutdown();
+        TorService service = serviceWithManagedProcess(process, mock(TorController.class));
+        assertThatThrownBy(() -> service.shutdown().get(10, TimeUnit.SECONDS)).hasCause(failure);
+
+        assertThatThrownBy(() -> service.shutdown().get(10, TimeUnit.SECONDS)).hasCause(failure);
+        verify(process, times(4)).shutdown();
+
+        doNothing().when(process).shutdown();
+        assertThat(service.shutdown().get(10, TimeUnit.SECONDS)).isTrue();
+        assertThat(service.shutdown().get(10, TimeUnit.SECONDS)).isTrue();
+        verify(process, times(6)).shutdown();
     }
 
     @Test

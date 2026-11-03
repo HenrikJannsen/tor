@@ -885,7 +885,8 @@ public class TorService {
     /**
      * Stops Tor, and ends a running initialization, which then fails. A successful future waits for that start to end
      * and for the embedded process and its captured descendants to exit. If processes remain after bounded termination
-     * attempts, the future fails. A call during a shutdown gets that shutdown. The service can be started again.
+     * attempts, the future fails, and a later shutdown tries again. A call during a shutdown gets that shutdown. The
+     * service can be started again.
      */
     public CompletableFuture<Boolean> shutdown() {
         log.info("shutdown");
@@ -920,11 +921,12 @@ public class TorService {
         // Until the start has ended, the fields belong to it, and it may still create a controller or a process.
         endedInitialization.ifPresent(start -> start.handle((result, throwable) -> result).join());
         try {
-            // The final attempt must fail the shutdown future if any tracked process still runs.
+            // The final attempt must fail the shutdown future if any tracked process still runs. Such processes stay
+            // in torProcess, so that a later shutdown or start stops them again.
             stopControllerAndProcess();
+            torProcess = Optional.empty();
         } finally {
             torController = null;
-            torProcess = Optional.empty();
             onionServiceTargets.close();
             torSocksProxyFactory = Optional.empty();
             torVersion = Optional.empty();
