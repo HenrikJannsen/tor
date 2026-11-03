@@ -83,12 +83,14 @@ class EmbeddedTorProcessTest {
             process.shutdown();
 
             assertThat(child.isAlive()).as("The launcher must not leave a running child").isFalse();
-            try (var listener = new ServerSocket()) {
-                listener.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), port));
-            }
-            // The child inherited these handles. Windows must allow immediate cleanup after shutdown.
-            Files.delete(stdout);
-            Files.delete(stderr);
+            // The child inherited the log handles. Its port and the logs must be free for the next start.
+            retryUntilReleased(() -> {
+                try (var listener = new ServerSocket()) {
+                    listener.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), port));
+                }
+            });
+            retryUntilReleased(() -> Files.delete(stdout));
+            retryUntilReleased(() -> Files.delete(stderr));
         } finally {
             if (child != null && child.isAlive()) {
                 child.destroyForcibly();
@@ -96,6 +98,30 @@ class EmbeddedTorProcessTest {
             }
             process.shutdown();
         }
+    }
+
+    /**
+     * On Windows, a terminated process reports its exit code before it has closed its handles. Java cannot wait for
+     * that for a descendant: in JDK 21, ProcessHandle.isAlive and onExit read the exit code first, and only
+     * Process.waitFor of a direct child waits on its handle.
+     */
+    private static void retryUntilReleased(ReleaseCheck check) throws Exception {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        while (true) {
+            try {
+                check.run();
+                return;
+            } catch (IOException e) {
+                if (System.nanoTime() > deadline) {
+                    throw e;
+                }
+                Thread.sleep(50);
+            }
+        }
+    }
+
+    private interface ReleaseCheck {
+        void run() throws IOException;
     }
 
     private static void awaitFile(Path path) throws InterruptedException {
