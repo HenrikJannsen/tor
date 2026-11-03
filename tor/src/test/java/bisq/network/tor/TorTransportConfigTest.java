@@ -41,6 +41,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * configuration file. The values reach Tor as text.
  */
 class TorTransportConfigTest {
+    private static final String TOR = "application.network.configByTransportType.tor";
+    private static final String OVERRIDES = TorTransportConfig.BISQ2_TORRC_OVERRIDES_PATH;
     private static final String TRANSPORT_CONFIG = """
             bootstrapTimeout = 240
             hsUploadTimeout = 120
@@ -127,6 +129,80 @@ class TorTransportConfigTest {
         assertThat(transportConfig.getConfigFileTorrcOverrides().getKeys()).containsExactly("AccelDir");
     }
 
+    // Bisq 2 resolves the configuration after it merged its sources, and a substitution has the origin of the value
+    // which it names. bisq.conf assigns the override nevertheless.
+    @Test
+    void anOverrideWhichBisqConfTakesFromTheCommandLineOrAResourceIsAnOverrideOfAConfigurationFile()
+            throws IOException {
+        Config commandLine = ConfigFactory.parseMap(Map.of("application.enginePath", "/trusted/engine"));
+        Config resources = ConfigFactory.parseString("application.libraryDir = \"/trusted\"");
+        Config bisqConf = bisqConf(OVERRIDES + " { AccelName = ${application.enginePath}, " +
+                "AccelDir = ${application.libraryDir}\"/engines\", Log = \"notice stdout\" }");
+
+        TorTransportConfig transportConfig = fromBisq2(commandLine, bisqConf, resources);
+
+        assertThat(transportConfig.getTorrcOverrides())
+                .containsEntry("AccelName", "/trusted/engine")
+                .containsEntry("AccelDir", "/trusted/engines");
+        assertThat(transportConfig.getConfigFileTorrcOverrides().getKeys())
+                .containsExactlyInAnyOrder("AccelName", "AccelDir", "Log");
+    }
+
+    // A program argument or JVM option still wins over bisq.conf, also over its substitutions.
+    @Test
+    void anOverrideOfTheCommandLineWhichReplacesASubstitutionOfBisqConfIsNot() throws IOException {
+        Config commandLine = ConfigFactory.parseMap(Map.of("application.enginePath", "/trusted/engine",
+                OVERRIDES + ".AccelName", "trusted"));
+        Config bisqConf = bisqConf(OVERRIDES + " { AccelName = ${application.enginePath}, AccelDir = \"/tmp\" }");
+
+        TorTransportConfig transportConfig = fromBisq2(commandLine, bisqConf, ConfigFactory.empty());
+
+        assertThat(transportConfig.getTorrcOverrides()).containsEntry("AccelName", "trusted");
+        assertThat(transportConfig.getConfigFileTorrcOverrides().getKeys()).containsExactly("AccelDir");
+    }
+
+    // bisq.conf assigns every override if it assigns the overrides as a whole, except those of the command line.
+    @Test
+    void bisqConfWhichAssignsAllOverridesWithASubstitutionAssignsEachOfThem() throws IOException {
+        Config commandLine = ConfigFactory.parseMap(Map.of(OVERRIDES + ".ClientTransportPlugin",
+                "obfs4 exec /usr/bin/lyrebird"));
+        Config resources = ConfigFactory.parseString("application.someOverrides { AccelName = engine, Log = x }");
+        Config bisqConf = bisqConf(OVERRIDES + " = ${application.someOverrides}");
+
+        TorTransportConfig transportConfig = fromBisq2(commandLine, bisqConf, resources);
+
+        assertThat(transportConfig.getTorrcOverrides())
+                .containsOnlyKeys("ClientTransportPlugin", "AccelName", "Log");
+        assertThat(transportConfig.getConfigFileTorrcOverrides().getKeys())
+                .containsExactlyInAnyOrder("AccelName", "Log");
+    }
+
+    // A resource which bisq.conf includes is an override of bisq.conf, although its values have a resource as origin.
+    @Test
+    void anOverrideOfAResourceWhichBisqConfIncludesIsAnOverrideOfAConfigurationFile() throws IOException {
+        Config bisqConf = bisqConf(TOR + " { include classpath(\"torrc-overrides-of-a-resource.conf\") }");
+
+        TorTransportConfig transportConfig = fromBisq2(ConfigFactory.empty(), bisqConf, ConfigFactory.empty());
+
+        assertThat(transportConfig.getTorrcOverrides()).containsEntry("AccelName", "engine");
+        assertThat(transportConfig.getConfigFileTorrcOverrides().getKeys()).containsExactly("AccelName");
+    }
+
+    // The same overrides from the command line and the resources reach Tor.
+    @Test
+    void anOverrideWhichBisqConfDoesNotAssignIsNot() throws IOException {
+        Config commandLine = ConfigFactory.parseMap(Map.of(OVERRIDES + ".ClientTransportPlugin",
+                "obfs4 exec /usr/bin/lyrebird"));
+        Config resources = ConfigFactory.parseString(OVERRIDES + ".AccelName = engine");
+        Config bisqConf = bisqConf(OVERRIDES + ".Log = \"notice stdout\"\napplication.other = ${application.x}\n" +
+                "application.x = 1");
+
+        TorTransportConfig transportConfig = fromBisq2(commandLine, bisqConf, resources);
+
+        assertThat(transportConfig.getTorrcOverrides()).containsOnlyKeys("ClientTransportPlugin", "AccelName", "Log");
+        assertThat(transportConfig.getConfigFileTorrcOverrides().getKeys()).containsExactly("Log");
+    }
+
     @Test
     void aConfigurationWithoutOverridesHasNoOverridesOfAConfigurationFile() {
         TorTransportConfig transportConfig = TorTransportConfig.from(Path.of("tor"),
@@ -181,6 +257,16 @@ class TorTransportConfigTest {
             assertThat(authority.getOrPort()).isEqualTo(9001);
             assertThat(authority.getDirPort()).isEqualTo(9030);
         });
+    }
+
+    // As ApplicationService of Bisq 2 merges its sources: program arguments and JVM options, bisq.conf, resources
+    private static TorTransportConfig fromBisq2(Config commandLine, Config bisqConf, Config resources) {
+        Config root = commandLine
+                .withFallback(bisqConf)
+                .withFallback(resources)
+                .withFallback(ConfigFactory.parseString(TRANSPORT_CONFIG).atPath(TOR))
+                .resolve();
+        return TorTransportConfig.from(Path.of("tor"), root.getConfig(TOR), bisqConf, commandLine);
     }
 
     private Config bisqConf(String content) throws IOException {

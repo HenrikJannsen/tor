@@ -18,7 +18,12 @@
 package bisq.network.tor;
 
 import bisq.network.tor.common.torrc.DirectoryAuthority;
+import com.typesafe.config.ConfigException;
+import com.typesafe.config.ConfigFactory;
+import com.typesafe.config.ConfigObject;
 import com.typesafe.config.ConfigOrigin;
+import com.typesafe.config.ConfigUtil;
+import com.typesafe.config.ConfigValue;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.ToString;
@@ -31,6 +36,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -41,7 +47,23 @@ public class TorTransportConfig {
     // The path of the torrc overrides in the configuration of Bisq 2
     public static final String BISQ2_TORRC_OVERRIDES_PATH = "application.network.configByTransportType.tor.torrcOverrides";
 
+    /**
+     * Without the sources of the configuration, an override comes from a configuration file only if its value does
+     * (see {@link #from(Path, com.typesafe.config.Config, com.typesafe.config.Config, com.typesafe.config.Config)}).
+     */
     public static TorTransportConfig from(Path dataDirPath, com.typesafe.config.Config config) {
+        return from(dataDirPath, config, ConfigFactory.empty(), ConfigFactory.empty());
+    }
+
+    /**
+     * @param config      the Tor configuration of Bisq 2, resolved
+     * @param configFile  bisq.conf as Bisq 2 parsed it: with what it includes, before its substitutions are resolved
+     * @param commandLine the program arguments and JVM options of Bisq 2, which win over bisq.conf
+     */
+    public static TorTransportConfig from(Path dataDirPath,
+                                          com.typesafe.config.Config config,
+                                          com.typesafe.config.Config configFile,
+                                          com.typesafe.config.Config commandLine) {
         com.typesafe.config.Config torrcOverrides = config.getConfig("torrcOverrides");
         return new TorTransportConfig(
                 dataDirPath,
@@ -53,23 +75,58 @@ public class TorTransportConfig {
                 config.getBoolean("useExternalTor"),
                 parseBridgeConfig(config),
                 TorSandboxConfig.from(config),
-                parseConfigFileTorrcOverrides(torrcOverrides)
+                parseConfigFileTorrcOverrides(torrcOverrides, configFile, commandLine)
         );
     }
 
     /**
      * Bisq 2 reads its configuration from its program arguments, its JVM options, the file bisq.conf in its data
-     * directory, which it also writes itself, and its resources. An override which it read from a file or a URL that is
-     * not one of its resources comes from bisq.conf or from a file or URL which bisq.conf includes. Where keys of several sources are
-     * merged, the origin is the one of the value which Bisq 2 uses.
+     * directory, which it also writes itself, and its resources. An override comes from bisq.conf if bisq.conf assigns
+     * it and the command line does not, also if bisq.conf takes the value from elsewhere: with a substitution such as
+     * {@code ${x}}, whose resolved value has the origin of x, or with an include. Without bisq.conf, and as a second
+     * check, an override comes from a configuration file if Bisq 2 read its value from a file or a URL which is not one
+     * of its resources: bisq.conf or what bisq.conf includes.
      */
-    private static ConfigFileTorrcOverrides parseConfigFileTorrcOverrides(com.typesafe.config.Config torrcOverrides) {
+    private static ConfigFileTorrcOverrides parseConfigFileTorrcOverrides(com.typesafe.config.Config torrcOverrides,
+                                                                          com.typesafe.config.Config configFile,
+                                                                          com.typesafe.config.Config commandLine) {
+        Predicate<String> isAssignedByConfigFile = overridesAssignedBy(configFile.root(),
+                ConfigUtil.splitPath(BISQ2_TORRC_OVERRIDES_PATH));
         Set<String> keys = torrcOverrides.entrySet().stream()
-                .filter(entry -> isReadFromFileOrUrl(entry.getValue().origin()))
+                .filter(entry -> isReadFromFileOrUrl(entry.getValue().origin()) ||
+                        (isAssignedByConfigFile.test(entry.getKey()) &&
+                                !commandLine.hasPath(BISQ2_TORRC_OVERRIDES_PATH + "." + entry.getKey())))
                 .map(Map.Entry::getKey)
                 .collect(Collectors.toSet());
         return new ConfigFileTorrcOverrides(keys, "Bisq accepts them only as program arguments or JVM options, for " +
                 "example -D" + BISQ2_TORRC_OVERRIDES_PATH + ".<name>=<value>: remove them from bisq.conf.");
+    }
+
+    /**
+     * Whether the unresolved file assigns the override of a key, which is a path below the overrides. If the file
+     * assigns the overrides or an object above them as a whole, for example with a substitution, it assigns them all.
+     */
+    private static Predicate<String> overridesAssignedBy(ConfigObject root, List<String> path) {
+        ConfigValue value = root;
+        try {
+            for (String name : path) {
+                if (!(value instanceof ConfigObject object)) {
+                    return key -> true;
+                }
+                value = object.get(name);
+                if (value == null) {
+                    return key -> false;
+                }
+            }
+            if (!(value instanceof ConfigObject overrides)) {
+                return key -> true;
+            }
+            Set<String> names = new HashSet<>(overrides.keySet());
+            return key -> names.contains(ConfigUtil.splitPath(key).get(0));
+        } catch (ConfigException.NotResolved e) {
+            // An object which a substitution extends, for example tor = ${x} { ... }
+            return key -> true;
+        }
     }
 
     // bisq.conf can include a file or a URL, for example include url("https://..."), whose values have a URL but no
