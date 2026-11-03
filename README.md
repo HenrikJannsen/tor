@@ -41,26 +41,26 @@ dependency.
   types of Bisq: it passes the `TorKeyPair` of Bisq as `OnionServiceKey`, and its `Config` implements
   `TransportConfig` of Bisq and wraps `TorTransportConfig`.
 - The supported API is `TorService` with the types which it takes, returns and throws: `PlatformServices`,
-  `TorTransportConfig` with `TorSandboxConfig` and `BridgeConfig`, `OnionServiceKey`, `CreateOnionServiceResponse`,
-  `TorSocksProxyFactory`, `TorSandboxStatus` and the exceptions of its methods. Bisq 1 also uses `TorDirectories` for
-  the paths in the Tor directory, `ExternalTorConfig` and `PluggableTransportConfig`, which are supported too. All other
-  classes are internal and may change in any version without notice: `EmbeddedTorProcess` and the other classes which
-  start and run the process of Tor, the sandbox, the installer of the bundle, the control connection and the torrc
-  generators. An app starts and stops Tor only through `TorService`.
+  `TorTransportConfig` with `TorSandboxConfig`, `BridgeConfig` and `ConfigFileTorrcOverrides`, `OnionServiceKey`,
+  `CreateOnionServiceResponse`, `TorSocksProxyFactory`, `TorSandboxStatus` and the exceptions of its methods. Bisq 1
+  also uses `TorDirectories` for the paths in the Tor directory, `ExternalTorConfig` and `PluggableTransportConfig`,
+  which are supported too. All other classes are internal and may change in any version without notice:
+  `EmbeddedTorProcess` and the other classes which start and run the process of Tor, the sandbox, the installer of the
+  bundle, the control connection and the torrc generators. An app starts and stops Tor only through `TorService`.
 
 ## Android
 
 The node app of bisq-mobile runs `TorService` with an external Tor on Android, from API level 33. Code which runs in
-this mode must only use Java APIs which Android 13 provides. This is all code which an external Tor needs:
-`TorService` without the start of the embedded Tor, `ExternalTorConfig`, `TorTransportConfig`, `BridgeConfig`,
-`TorDirectories`, `TorSocksProxyFactory` with `jsocks`, the packages `controller` (with the events and their parsers)
-and `onionservice`, and `OS`, `LinuxDistribution`, `StringUtils` and `FileUtils` of `tor-common`. Only the embedded Tor
-runs on desktop systems alone: `EmbeddedTorProcess`, `BundledTorLibraries`, the packages `installer` and `bridges`,
-`TorrcClientConfigFactory`, the torrc generators and `tor-local-network`. If the connection fails, `TorService` fails
-with `ExternalTorUnavailableException`; it never starts its own Tor instead of a configured external Tor. For example,
-`java.util.HexFormat` and `Stream.toList()` need API level 34, and `ProcessHandle` does not exist on Android. The Tor
-build uses Guava instead of `HexFormat` and `collect(Collectors.toList())` instead of `toList()`. Records and switch
-expressions can be used, because D8 desugars them for Android.
+this mode must only use Java APIs which Android 13 provides. This is all code which an external Tor needs: `TorService`
+without the start of the embedded Tor, `ExternalTorConfig`, `TorTransportConfig`, `BridgeConfig`,
+`ConfigFileTorrcOverrides`, `TorDirectories`, `TorSocksProxyFactory` with `jsocks`, the packages `controller` (with the
+events and their parsers) and `onionservice`, and `OS`, `LinuxDistribution`, `StringUtils` and `FileUtils` of
+`tor-common`. Only the embedded Tor runs on desktop systems alone: `EmbeddedTorProcess`, `BundledTorLibraries`, the
+packages `installer` and `bridges`, `TorrcClientConfigFactory`, the torrc generators and `tor-local-network`. If the
+connection fails, `TorService` fails with `ExternalTorUnavailableException`; it never starts its own Tor instead of a
+configured external Tor. For example, `java.util.HexFormat` and `Stream.toList()` need API level 34, and `ProcessHandle`
+does not exist on Android. The Tor build uses Guava instead of `HexFormat` and `collect(Collectors.toList())` instead of
+`toList()`. Records and switch expressions can be used, because D8 desugars them for Android.
 
 `FileUtils` of `tor-common` reads and writes UTF-8 strictly on Android as well. The originals in `bisq.common` replace
 malformed input when the modern file API is turned off, as bisq-mobile does. With the copy, a damaged
@@ -108,6 +108,40 @@ sends with every upload of a v3 descriptor; there such an `UPLOAD` completes the
 markers by which `TorService` detects Whonix (`/usr/share/whonix/marker` and `/usr/share/anon-dist/marker`). On the
 Whonix-Gateway, which has `/usr/share/anon-gw-base-files/gateway` as well, `TorService` does not start and tells the
 user to run Bisq on a Whonix-Workstation.
+
+## Torrc overrides
+
+`TorTransportConfig` takes torrc overrides, entries which the application adds to the torrc of the Tor which it starts.
+An external Tor gets none of them.
+
+An override which makes Tor start a program or load a library stops the start of the embedded Tor with
+`TorrcOverrideNotAllowedException` if it comes from a configuration file which the application also writes itself.
+These are `ClientTransportPlugin`, `ServerTransportPlugin`, `AccelName` and `AccelDir`, in any case of the name and as
+an abbreviation which Tor accepts. The application names such overrides in `ConfigFileTorrcOverrides`, together with a
+hint for the message: how the user gives them instead, for example on the command line. Whoever can change such a file
+could otherwise make the next start of Tor run code with the rights of the user, also with the sandbox off, which such a
+file can turn off as well. The same overrides from the command line or the code of the application reach Tor.
+
+Tor starts the program of a transport plugin entry. It passes the values of `AccelName` and `AccelDir` to the engine
+loader of OpenSSL, which loads a library as the engine; `AccelName` alone loads the engine of that name from a path or
+from the engine directory of OpenSSL. In the bundled Tor, that directory is below `/var/tmp/dist`, where any local user
+can create files. `HardwareAccel` alone uses only the engines built into OpenSSL.
+
+In the configuration of Bisq 2, an override comes from a configuration file if `bisq.conf` in its data directory
+assigns it and the program arguments and JVM options, which count as the command line, do not.
+`TorTransportConfig.from(Path, Config, Config, Config)` takes `bisq.conf` as Bisq 2 parsed it, before its substitutions
+are resolved, and the command line. `bisq.conf` assigns an override also if it takes the value from elsewhere: with a
+substitution such as `${x}`, whose resolved value has the origin of `x`, or with an include of a file, a URL or a
+resource. If it assigns the overrides or an object above them as a whole, it assigns all of them. In addition, and
+alone in `TorTransportConfig.from(Path, Config)`, an override comes from a configuration file if Bisq 2 read its value
+from a file or a URL which is not one of its resources. With the bridges of the configuration, overrides of
+`ClientTransportPlugin` are ignored, so they are not refused. Bisq 1 names the overrides of `--torrcOptions` and
+`--torrcFile` which come from `bisq.properties` or another config file.
+
+Tor reads every torrc value as text. In the configuration of Bisq 2, a value without quotes can be a number or a
+boolean, and Bisq 2 turns program arguments and JVM options into numbers and booleans where it can. Such a value reaches
+Tor as its text: `AvoidDiskWrites = 1` gives `AvoidDiskWrites 1`, and `true` stays `true`, which Tor refuses for its
+boolean options, as they take `0` or `1`. A list is no torrc value and fails with an error which names the path.
 
 ## Bridges and pluggable transports
 

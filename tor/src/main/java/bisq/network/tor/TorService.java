@@ -305,6 +305,27 @@ public class TorService {
     }
 
     /**
+     * Whoever can change a configuration file which the application writes itself could otherwise make Tor run code
+     * with the rights of the user at its start, also with the sandbox off, which such a file can turn off as well. Only
+     * the embedded Tor gets the torrc overrides, so an external Tor needs no check, and the check stays out of the code
+     * which runs on Android.
+     */
+    @VisibleForTesting
+    static void refuseCodeRunningOverridesOfConfigFiles(TorTransportConfig transportConfig) {
+        ConfigFileTorrcOverrides configFileOverrides = transportConfig.getConfigFileTorrcOverrides();
+        List<String> codeRunningKeys = TorrcClientConfigFactory.codeRunningKeys(
+                transportConfig.getTorrcOverrides().keySet().stream()
+                        .filter(configFileOverrides.getKeys()::contains)
+                        .toList(),
+                transportConfig.getBridgeConfig().isUsed());
+        if (!codeRunningKeys.isEmpty()) {
+            throw new TorrcOverrideNotAllowedException("These torrc overrides of a configuration file make Tor start " +
+                    "a program or load a library: " + String.join(", ", codeRunningKeys) + ". " +
+                    configFileOverrides.getHint());
+        }
+    }
+
+    /**
      * Bisq chooses the ports of the sandbox policy and releases them before sandy binds them, so another process can
      * take one in between. sandy then refuses the start with status 125 before Tor runs: sandy check, which tries the
      * ports, because it cannot tell now, and sandy run because it cannot listen on the port. Such a refusal can pass,
@@ -312,6 +333,7 @@ public class TorService {
      * sandbox off.
      */
     private void startEmbeddedTor() {
+        refuseCodeRunningOverridesOfConfigFiles(transportConfig);
         retryOnceAfterARefusalOfSandy(this::startEmbeddedTorOnce);
     }
 

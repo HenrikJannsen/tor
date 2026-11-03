@@ -204,4 +204,35 @@ class TorrcClientConfigFactoryTest {
                 .containsEntry("SocksPort", "127.0.0.1:41002")
                 .doesNotContainKey("ControlPortWriteToFile");
     }
+
+    // Tor starts the program of a transport plugin entry. It loads an OpenSSL engine for AccelName, also without
+    // AccelDir, and for AccelDir.
+    @Test
+    void findsTheOverridesWhichMakeTorRunCode() {
+        assertThat(TorrcClientConfigFactory.codeRunningKeys(List.of("ClientTransportPlugin", "servertransportplugin",
+                "AccelName", "ACCELDIR", "UseBridges", "HardwareAccel", "Log"), false))
+                .containsExactly("ACCELDIR", "AccelName", "ClientTransportPlugin", "servertransportplugin");
+    }
+
+    // Tor ignores the case of option names and reads the start of a name as the first option, in the order of the
+    // names, which starts with it: "Accel" is AccelDir, "AccelN" is AccelName.
+    @Test
+    void findsTheOverridesWhichMakeTorRunCodeAsAbbreviations() {
+        assertThat(TorrcClientConfigFactory.codeRunningKeys(List.of("Accel", "AccelN", "accelD",
+                "ClientTransportPlug", "ServerTransportPl"), false))
+                .containsExactly("Accel", "AccelN", "ClientTransportPlug", "ServerTransportPl", "accelD");
+        // A longer name is another option, which Tor does not know
+        assertThat(TorrcClientConfigFactory.codeRunningKeys(List.of("AccelNameX", "AccelDirs", "ClientTransportPluginX"), false))
+                .isEmpty();
+        assertThat(TorrcClientConfigFactory.codeRunningKeys(List.of(""), false)).isEmpty();
+    }
+
+    // With the bridges of the Bisq configuration, Bisq ignores the overrides of ClientTransportPlugin, so they run
+    // nothing.
+    @Test
+    void withBridgesTheOverridesOfClientTransportPluginRunNoCode() {
+        assertThat(TorrcClientConfigFactory.codeRunningKeys(List.of("ClientTransportPlugin", "clienttransportplug",
+                "ServerTransportPlugin", "AccelName", "AccelDir"), true))
+                .containsExactly("AccelDir", "AccelName", "ServerTransportPlugin");
+    }
 }
