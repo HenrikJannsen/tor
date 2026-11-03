@@ -19,6 +19,7 @@ package bisq.network.tor;
 
 import bisq.network.tor.common.torrc.DirectoryAuthority;
 import com.typesafe.config.ConfigList;
+import com.typesafe.config.ConfigOrigin;
 import com.typesafe.config.ConfigValue;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
@@ -32,24 +33,50 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Getter
 @ToString
 @EqualsAndHashCode
 public class TorTransportConfig {
+    // The path of the torrc overrides in the configuration of Bisq 2
+    public static final String BISQ2_TORRC_OVERRIDES_PATH = "application.network.configByTransportType.tor.torrcOverrides";
+
     public static TorTransportConfig from(Path dataDirPath, com.typesafe.config.Config config) {
+        com.typesafe.config.Config torrcOverrides = config.getConfig("torrcOverrides");
         return new TorTransportConfig(
                 dataDirPath,
                 (int) TimeUnit.SECONDS.toMillis(config.getInt("bootstrapTimeout")),
                 (int) TimeUnit.SECONDS.toMillis(config.getInt("hsUploadTimeout")),
                 config.getBoolean("testNetwork"),
                 parseDirectoryAuthorities(config.getList("directoryAuthorities")),
-                parseTorrcOverrideConfig(config.getConfig("torrcOverrides")),
+                parseTorrcOverrideConfig(torrcOverrides),
                 config.getBoolean("useExternalTor"),
                 parseBridgeConfig(config),
-                TorSandboxConfig.from(config)
+                TorSandboxConfig.from(config),
+                parseConfigFileTorrcOverrides(torrcOverrides)
         );
+    }
+
+    /**
+     * Bisq 2 reads its configuration from its program arguments, its JVM options, the file bisq.conf in its data
+     * directory, which it also writes itself, and its resources. An override which it read from a file that is not one
+     * of its resources comes from bisq.conf or from a file which bisq.conf includes. Where keys of several sources are
+     * merged, the origin is the one of the value which Bisq 2 uses.
+     */
+    private static ConfigFileTorrcOverrides parseConfigFileTorrcOverrides(com.typesafe.config.Config torrcOverrides) {
+        Set<String> keys = torrcOverrides.entrySet().stream()
+                .filter(entry -> isReadFromFile(entry.getValue().origin()))
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toSet());
+        return new ConfigFileTorrcOverrides(keys, "Bisq accepts them only as program arguments or JVM options, for " +
+                "example -D" + BISQ2_TORRC_OVERRIDES_PATH + ".<name>=<value>: remove them from bisq.conf.");
+    }
+
+    // A resource has a file name too if it is read from a directory instead of a jar, for example in a test.
+    private static boolean isReadFromFile(ConfigOrigin origin) {
+        return origin.filename() != null && origin.resource() == null;
     }
 
     // The bridges are optional, so that a configuration without them stays valid.
