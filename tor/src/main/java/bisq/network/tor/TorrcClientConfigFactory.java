@@ -161,13 +161,16 @@ public class TorrcClientConfigFactory {
     }
 
     /**
-     * The keys of {@code torrcKeys} which make Tor run code at its start, also as an abbreviation, which Tor accepts:
-     * the start of a pluggable transport ({@code ClientTransportPlugin}, {@code ServerTransportPlugin}) and the load of
-     * an OpenSSL engine ({@code AccelName}, {@code AccelDir}).
+     * The keys of {@code torrcKeys} which stay in the torrc and make Tor run code at its start, also as an
+     * abbreviation, which Tor accepts: the start of a pluggable transport ({@code ClientTransportPlugin},
+     * {@code ServerTransportPlugin}) and the load of an OpenSSL engine ({@code AccelName}, {@code AccelDir}). With the
+     * bridges of the Bisq configuration, the overrides of the bridge keys are ignored, which leaves
+     * {@code ClientTransportPlugin} out.
      */
-    public static List<String> codeRunningKeys(Collection<String> torrcKeys) {
+    public static List<String> codeRunningKeys(Collection<String> torrcKeys, boolean usesBridges) {
         return torrcKeys.stream()
                 .filter(key -> isPrefixOfAny(key, KEYS_STARTING_PROCESSES) || isPrefixOfAny(key, KEYS_LOADING_LIBRARIES))
+                .filter(key -> !(usesBridges && isPrefixOfAny(key, BRIDGE_KEYS)))
                 .sorted()
                 .toList();
     }

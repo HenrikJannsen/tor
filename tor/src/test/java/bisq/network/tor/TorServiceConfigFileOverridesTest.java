@@ -117,6 +117,23 @@ class TorServiceConfigFileOverridesTest {
                 1000, false, Set.of(), overrides, false))).doesNotThrowAnyException();
     }
 
+    // Bisq ignores the overrides of the bridge keys if its configuration has bridges, so they never reach Tor.
+    @Test
+    void withBridgesAnOverrideOfClientTransportPluginOfAConfigFileIsIgnoredInsteadOfRefused() {
+        BridgeConfig bridges = BridgeConfig.builtIn("obfs4");
+        for (String key : Set.of("ClientTransportPlugin", "clienttransportplug")) {
+            assertThatCode(() -> TorService.refuseCodeRunningOverridesOfConfigFiles(
+                    transportConfig(Map.of(key, "obfs4 exec /tmp/x"), Set.of(key), bridges)))
+                    .doesNotThrowAnyException();
+        }
+        for (String key : Set.of("ServerTransportPlugin", "AccelName", "AccelDir")) {
+            assertThatThrownBy(() -> TorService.refuseCodeRunningOverridesOfConfigFiles(
+                    transportConfig(Map.of(key, "x"), Set.of(key), bridges)))
+                    .isInstanceOf(TorrcOverrideNotAllowedException.class)
+                    .hasMessageContaining(key);
+        }
+    }
+
     @Test
     void otherOverridesOfAConfigFileAreAccepted() {
         Map<String, String> overrides = Map.of("HardwareAccel", "1", "Log", "notice stdout", "UseBridges", "1");
@@ -126,7 +143,12 @@ class TorServiceConfigFileOverridesTest {
     }
 
     private TorTransportConfig transportConfig(Map<String, String> torrcOverrides, Set<String> configFileKeys) {
-        return new TorTransportConfig(torDir, 1000, 1000, false, Set.of(), torrcOverrides, false, BridgeConfig.NONE,
+        return transportConfig(torrcOverrides, configFileKeys, BridgeConfig.NONE);
+    }
+
+    private TorTransportConfig transportConfig(Map<String, String> torrcOverrides, Set<String> configFileKeys,
+                                               BridgeConfig bridgeConfig) {
+        return new TorTransportConfig(torDir, 1000, 1000, false, Set.of(), torrcOverrides, false, bridgeConfig,
                 TorSandboxConfig.DISABLED, new ConfigFileTorrcOverrides(configFileKeys, HINT));
     }
 }

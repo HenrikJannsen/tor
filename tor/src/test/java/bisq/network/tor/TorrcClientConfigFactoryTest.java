@@ -210,7 +210,7 @@ class TorrcClientConfigFactoryTest {
     @Test
     void findsTheOverridesWhichMakeTorRunCode() {
         assertThat(TorrcClientConfigFactory.codeRunningKeys(List.of("ClientTransportPlugin", "servertransportplugin",
-                "AccelName", "ACCELDIR", "UseBridges", "HardwareAccel", "Log")))
+                "AccelName", "ACCELDIR", "UseBridges", "HardwareAccel", "Log"), false))
                 .containsExactly("ACCELDIR", "AccelName", "ClientTransportPlugin", "servertransportplugin");
     }
 
@@ -219,11 +219,20 @@ class TorrcClientConfigFactoryTest {
     @Test
     void findsTheOverridesWhichMakeTorRunCodeAsAbbreviations() {
         assertThat(TorrcClientConfigFactory.codeRunningKeys(List.of("Accel", "AccelN", "accelD",
-                "ClientTransportPlug", "ServerTransportPl")))
+                "ClientTransportPlug", "ServerTransportPl"), false))
                 .containsExactly("Accel", "AccelN", "ClientTransportPlug", "ServerTransportPl", "accelD");
         // A longer name is another option, which Tor does not know
-        assertThat(TorrcClientConfigFactory.codeRunningKeys(List.of("AccelNameX", "AccelDirs", "ClientTransportPluginX")))
+        assertThat(TorrcClientConfigFactory.codeRunningKeys(List.of("AccelNameX", "AccelDirs", "ClientTransportPluginX"), false))
                 .isEmpty();
-        assertThat(TorrcClientConfigFactory.codeRunningKeys(List.of(""))).isEmpty();
+        assertThat(TorrcClientConfigFactory.codeRunningKeys(List.of(""), false)).isEmpty();
+    }
+
+    // With the bridges of the Bisq configuration, Bisq ignores the overrides of ClientTransportPlugin, so they run
+    // nothing.
+    @Test
+    void withBridgesTheOverridesOfClientTransportPluginRunNoCode() {
+        assertThat(TorrcClientConfigFactory.codeRunningKeys(List.of("ClientTransportPlugin", "clienttransportplug",
+                "ServerTransportPlugin", "AccelName", "AccelDir"), true))
+                .containsExactly("AccelDir", "AccelName", "ServerTransportPlugin");
     }
 }

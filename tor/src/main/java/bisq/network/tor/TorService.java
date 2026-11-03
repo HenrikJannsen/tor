@@ -316,7 +316,8 @@ public class TorService {
         List<String> codeRunningKeys = TorrcClientConfigFactory.codeRunningKeys(
                 transportConfig.getTorrcOverrides().keySet().stream()
                         .filter(configFileOverrides.getKeys()::contains)
-                        .toList());
+                        .toList(),
+                transportConfig.getBridgeConfig().isUsed());
         if (!codeRunningKeys.isEmpty()) {
             throw new TorrcOverrideNotAllowedException("These torrc overrides of a configuration file make Tor start " +
                     "a program or load a library: " + String.join(", ", codeRunningKeys) + ". " +
