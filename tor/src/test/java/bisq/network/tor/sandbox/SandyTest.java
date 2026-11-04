@@ -135,7 +135,7 @@ class SandyTest {
 
     /**
      * A program can exit with the status of sandy, but only sandy writes the status record. The records are those
-     * which sandy 2.4.1 wrote on Linux, where it replaces itself with the program in the level base of the probe and
+     * which sandy wrote on Linux, where it replaces itself with the program in the level base of the probe and
      * stays its parent in the level contained.
      */
     @Test

@@ -1,4 +1,4 @@
-# The sandbox of the embedded Tor under sandy 2.4.1 on Windows. See linux.toml for what
+# The sandbox of the embedded Tor under sandy 1.0.0 on Windows. See linux.toml for what
 # TorSandboxPolicy fills in, here also the AppContainer names: every level needs one of its own.
 # Windows cannot hide the paths outside the policy, so there is no view. tor.exe must start in a
 # session whose window station admits AppContainers, such as a desktop session: in another one,

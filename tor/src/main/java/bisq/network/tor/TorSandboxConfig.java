@@ -73,7 +73,7 @@ public final class TorSandboxConfig {
     // for transports that resolve names or use UDP, gives it the network of the host. Off by default.
     private final boolean allowPluggableTransports;
     // The number of onion services which can receive connections through forwarded ports. Each costs a forwarded
-    // port for the whole run of Tor. Since sandy 2.3 one relay process serves all of them on every platform; with the
+    // port for the whole run of Tor. One relay process of sandy serves all of them on every platform; with the
     // maximum of 256 forwarded ports sandy took about 5 MiB and no CPU while idle on Windows 11 (measured).
     private final int onionServicePortPoolSize;
     // A short name of the application, for example bisq1 or bisq2. The AppContainer of Windows is named after it.

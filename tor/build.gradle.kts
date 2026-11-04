@@ -1,4 +1,6 @@
 import bisq.gradle.common.getPlatform
+import bisq.gradle.tasks.PgpFingerprint
+import bisq.gradle.tasks.signature.SignatureVerificationTask
 import org.gradle.language.jvm.tasks.ProcessResources
 import java.security.MessageDigest
 import java.util.*
@@ -51,66 +53,112 @@ val generateTorBuildVersionClass by tasks.registering {
     }
 }
 
-/**
- * Packages the sandy binary of the platform of the build, which the sandbox of the embedded Tor needs, with its SHA-256
- * hash. The releases of sandy cannot be downloaded publicly yet, so the binaries of the pinned release are committed in
- * sandy/<version>/ of this project, and the build fails if the binary of its platform does not have the pinned hash.
- * The Gradle property sandy.package=false builds without sandy. See src/main/resources/sandy/README.md.
+/*
+ * The sandy binary of the platform of the build, which the sandbox of the embedded Tor needs. Gradle resolves the
+ * release archive of each platform as a dependency from the sandy releases on GitHub, and dependency verification
+ * checks it against its SHA-256 in gradle/verification-metadata.xml. Before the archive of the build's platform is
+ * read, verifySandyArchive also checks the signature of the committed SHA256SUMS of the release by the pinned key and
+ * the hash of the archive against it. A platform without a target gets no binary, and a sandboxed start of Tor fails
+ * there. The Gradle property sandy.package=false builds without sandy. See src/main/resources/sandy/README.md.
  */
-val packageSandyBinary by tasks.registering {
-    val sandyVersion = "2.4.1"
-    // The SHA-256 of the binary in each release archive of sandy 2.4.1, as its release notes list them. The binaries
-    // can be built again from the signed tag v2.4.1 and compared.
-    val pinnedSha256 = mapOf(
-        "linux_x86_64" to "e80d6bebae3893126f10ee8b6f76240dc343991b3b017b108af9c2a1a8553645",
-        "linux_arm64" to "cea318cdd1d43dc719817864370488165494b796510d92c6a893396f9b8f1865",
-        "macos_x86_64" to "56289aa444172985d09c281adff12ba7d2969b4a9080b71a4e9cc6f4aef4793f",
-        "macos_arm64" to "a1153b499055b52342abe3ebc7c71d3dafe8a6478957ff230d307e7da8bd19fc",
-        "win_x86_64" to "851c27f9b48ef22d316bc5c64a2b5df29e484851d044b7c3b5c135a13b0e574a",
-    )
-    val projectDirectory = layout.projectDirectory
-    val platformName = getPlatform().platformName
-    val fileName = if (platformName.startsWith("win")) "sandy.exe" else "sandy"
-    val packageSandy = providers.gradleProperty("sandy.package")
-        .map {
-            when (it) {
-                "true" -> true
-                "false" -> false
-                else -> throw GradleException("The Gradle property sandy.package must be true or false, not $it")
+val sandyVersion = "1.0.0"
+// The release target of each platform with a sandy binary
+val sandyTargets = mapOf(
+    "linux_x86_64" to "x86_64-unknown-linux-musl",
+    "linux_arm64" to "aarch64-unknown-linux-musl",
+    "macos_x86_64" to "x86_64-apple-darwin",
+    "macos_arm64" to "aarch64-apple-darwin",
+    "win_x86_64" to "x86_64-pc-windows-msvc",
+)
+// The key which signs SHA256SUMS of the sandy releases (Alejandro García)
+val sandySigningKeyFingerprint = "B493 3191 06CC 3D1F 252E  19CB F806 F422 E222 AA02"
+val packageSandy = providers.gradleProperty("sandy.package")
+    .map {
+        when (it) {
+            "true" -> true
+            "false" -> false
+            else -> throw GradleException("The Gradle property sandy.package must be true or false, not $it")
+        }
+    }
+    .getOrElse(true)
+val sandyPlatformName = getPlatform().platformName
+val sandyTarget = sandyTargets[sandyPlatformName]?.takeIf { packageSandy }
+
+repositories {
+    // The release archives of sandy on GitHub, which have no Ivy or Maven metadata. Only sandy comes from there, and
+    // sandy comes from nowhere else.
+    exclusiveContent {
+        forRepository {
+            ivy {
+                name = "sandyReleases"
+                url = uri("https://github.com/bisq-network/sandy/releases/download")
+                patternLayout { artifact("v[revision]/[module]-[revision]-[classifier].[ext]") }
+                metadataSources { artifact() }
             }
         }
-        .orElse(true)
-    // A platform without a pinned binary gets none, and a sandboxed start of Tor fails there. The content of the
-    // binary is the input, not its path: a changed binary at the same path is packaged again.
-    val sandyBinaryFiles = objects.fileCollection().from(packageSandy.map {
-        if (it && platformName in pinnedSha256) {
-            listOf(projectDirectory.file("sandy/$sandyVersion/$platformName/$fileName"))
-        } else {
-            listOf()
-        }
-    })
+        filter { includeModule("bisq-network", "sandy") }
+    }
+}
+
+// One configuration per platform, so that resolveAndVerifyDependencies verifies the archives of all platforms on any
+// host, while a build resolves only the archive of its own platform.
+val sandyArchives = sandyTargets.mapValues { (platformName, target) ->
+    configurations.create("sandyArchive_$platformName") {
+        isCanBeConsumed = false
+        isTransitive = false
+    }.also {
+        val extension = if (platformName.startsWith("win")) "zip" else "tar.gz"
+        dependencies.add(it.name, "bisq-network:sandy:$sandyVersion:$target@$extension")
+    }
+}
+
+val verifySandyArchive = sandyTarget?.let {
+    val archive = sandyArchives.getValue(sandyPlatformName)
+    fun base64Of(path: String) = Base64.getEncoder().encodeToString(file(path).readBytes())
+    val keyFile = file("sandy/sandy-release-signing-key.asc")
+    val keySha256 = MessageDigest.getInstance("SHA-256").digest(keyFile.readBytes())
+        .joinToString("") { "%02x".format(it) }
+    val fingerprint = PgpFingerprint.normalize(sandySigningKeyFingerprint)
+    tasks.register<SignatureVerificationTask>("verifySandyArchive") {
+        fileToVerify.fileProvider(archive.incoming.artifacts.resolvedArtifacts.map { it.single().file })
+        signedChecksumsBase64.set(base64Of("sandy/$sandyVersion/SHA256SUMS"))
+        signedChecksumsSignatureBase64.set(base64Of("sandy/$sandyVersion/SHA256SUMS.asc"))
+        pgpFingerprintToKeyUrl.set(mapOf(fingerprint to keyFile.toURI().toString()))
+        pgpFingerprintToKeySha256.set(mapOf(fingerprint to keySha256))
+        resultFile.set(layout.buildDirectory.file("sandy/sha256.result"))
+    }
+}
+
+/**
+ * Packages the sandy binary of the platform of the build from its verified release archive, with its SHA-256 hash.
+ */
+val packageSandyBinary by tasks.registering(Sync::class) {
+    // Local copies, because the configuration cache cannot store a reference to the script object.
+    val version = sandyVersion
+    val platformName = sandyPlatformName
+    val fileName = if (platformName.startsWith("win")) "sandy.exe" else "sandy"
     val outputDir = layout.buildDirectory.dir("generated/sandy")
-    inputs.files(sandyBinaryFiles).withPathSensitivity(PathSensitivity.NONE)
-    inputs.property("platformName", platformName)
-    inputs.property("pinnedSha256", pinnedSha256)
-    outputs.dir(outputDir)
+    into(outputDir)
+    val verifyTask = verifySandyArchive ?: return@registering
+    val archiveDir = "sandy-$version-$sandyTarget"
+    val archiveFile = verifyTask.flatMap { it.fileToVerify }
+    dependsOn(verifyTask)
+
+    // tarTree and zipTree read the archive only when the task copies, after verifySandyArchive checked it.
+    from(if (platformName.startsWith("win")) zipTree(archiveFile) else tarTree(archiveFile)) {
+        include("$archiveDir/$fileName")
+        eachFile { path = "sandy/$platformName/$fileName" }
+        includeEmptyDirs = false
+    }
 
     doLast {
         val sandyDir = outputDir.get().asFile.resolve("sandy")
-        sandyDir.deleteRecursively()
-        val sandyBinaryFile = sandyBinaryFiles.singleOrNull() ?: return@doLast
-        val expectedSha256 = pinnedSha256.getValue(platformName)
-        val target = sandyDir.resolve("$platformName/$fileName")
-        target.parentFile.mkdirs()
-        sandyBinaryFile.copyTo(target)
-        // The hash of the copy, so that the packaged file is the file which was checked
-        val sha256 = MessageDigest.getInstance("SHA-256").digest(target.readBytes())
-            .joinToString("") { "%02x".format(it) }
-        if (sha256 != expectedSha256) {
-            sandyDir.deleteRecursively()
-            throw GradleException("$sandyBinaryFile is not the binary of sandy $sandyVersion for $platformName: " +
-                    "its SHA-256 is $sha256, expected $expectedSha256. See src/main/resources/sandy/README.md.")
+        val binary = sandyDir.resolve("$platformName/$fileName")
+        if (!binary.isFile) {
+            throw GradleException("The sandy archive of $platformName has no $archiveDir/$fileName")
         }
+        val sha256 = MessageDigest.getInstance("SHA-256").digest(binary.readBytes())
+            .joinToString("") { "%02x".format(it) }
         sandyDir.resolve("SHA256SUMS").writeText("$sha256  $platformName/$fileName\n")
     }
 }

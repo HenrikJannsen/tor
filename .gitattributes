@@ -7,8 +7,8 @@ gradle/wrapper/gradle-wrapper.properties text eol=lf
 gradle/wrapper/*.sha256 text eol=lf
 gradle/wrapper/gradle-wrapper.jar binary
 
-# The build checks the sandy binaries against their pinned SHA-256 hashes.
-tor/sandy/** binary
+# The signed sandy release checksums: the signature covers their bytes, so checkout must preserve them.
+tor/sandy/** -text
 
 # Policy templates contain LF-delimited TOML checked by tests on every platform.
 tor/src/main/resources/sandy/policy/*.toml text eol=lf
