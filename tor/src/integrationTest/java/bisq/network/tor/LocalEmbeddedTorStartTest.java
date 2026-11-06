@@ -237,6 +237,37 @@ class LocalEmbeddedTorStartTest {
     }
 
     /**
+     * Runs only if the build packaged Tor and sandy, on any platform. A Tor directory named through a symbolic link, as
+     * with a link to the data directory of the current version, reaches the bootstrap in the sandbox: the sandbox
+     * grants real paths, and sandy 1.0.0 on macOS does not find a path spelled through a link, so Tor must be given
+     * the real one. Without that, Tor in the sandbox of macOS exits with "Unable to open configuration file".
+     */
+    @Test
+    void aSandboxedStartWithTheTorDirectoryBehindALinkReachesTheBootstrap() throws Exception {
+        assumeTrue(getClass().getClassLoader().getResource("tor.zip") != null, "The build packaged no Tor bundle");
+        assumeTrue(getClass().getClassLoader().getResource("sandy/SHA256SUMS") != null,
+                "The build packaged no sandy binary");
+        assumeTrue(!OS.isWindows(), "A symbolic link needs a privilege on Windows");
+        Path link = Files.createSymbolicLink(torDir.resolveSibling(torDir.getFileName() + "-link"), torDir);
+        try {
+            var sandboxConfig = new TorSandboxConfig(true, true, false, 32, "bisq2", "");
+            var transportConfig = new TorTransportConfig(link, 3000, 1000, false, Set.of(), Map.of(), false,
+                    BridgeConfig.custom(List.of("192.0.2.1:1 0123456789ABCDEF0123456789ABCDEF01234567")),
+                    sandboxConfig);
+            var torService = new TorService(transportConfig, new LocalPlatformServices());
+
+            assertThatThrownBy(() -> torService.initialize()).satisfies(e ->
+                    assertThat(Throwables.getRootCause(e)).isInstanceOf(TorBootstrapFailedException.class));
+            assertThat(torService.getSandboxStatus().isSandboxed()).isTrue();
+            assertThat(Files.readString(torDir.resolve("torrc"))).doesNotContain(link.toString());
+            // Tor got the real path, which on macOS differs from that of the temporary directory (/private/var).
+            assertThatNoTorOfThisTestRuns(torDir.toRealPath());
+        } finally {
+            Files.delete(link);
+        }
+    }
+
+    /**
      * Runs only if the build packaged a sandy binary. A compromised Tor in the sandbox can leave files in its data
      * directory which exploit the next Tor that parses them. A start without the sandbox after one in the sandbox runs
      * Tor on a cleared data directory; a start in the sandbox after one without keeps it.

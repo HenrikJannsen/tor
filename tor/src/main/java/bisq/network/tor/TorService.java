@@ -172,10 +172,30 @@ public class TorService {
                        Supplier<TorController> torControllerFactory) {
         this.transportConfig = transportConfig;
         this.platformServices = platformServices;
-        this.torDirectories = new TorDirectories(transportConfig.getDataDirPath());
+        this.torDirectories = new TorDirectories(resolvedTorDirectory(transportConfig.getDataDirPath()));
         this.isWhonix = isWhonix;
         this.isWhonixGateway = isWhonixGateway;
         this.torControllerFactory = () -> createControllerOfTheStart(torControllerFactory);
+    }
+
+    /**
+     * The Tor directory with the links on the way to it resolved (see {@link TorDirectories#withLinksResolved}), so that
+     * the torrc, the environment and the sandbox policy name only real paths. A directory which cannot be resolved stays
+     * as given: Tor then starts as before, and a sandboxed Tor may not find its files on macOS.
+     */
+    @VisibleForTesting
+    static Path resolvedTorDirectory(Path torDirPath) {
+        try {
+            Path resolved = TorDirectories.withLinksResolved(torDirPath);
+            if (!resolved.equals(torDirPath.toAbsolutePath())) {
+                log.info("The Tor directory {} lies at {}; Tor uses that path", torDirPath, resolved);
+            }
+            return resolved;
+        } catch (IOException e) {
+            log.warn("Could not resolve the links on the way to the Tor directory {}; Tor uses it as given", torDirPath,
+                    e);
+            return torDirPath;
+        }
     }
 
     /**
