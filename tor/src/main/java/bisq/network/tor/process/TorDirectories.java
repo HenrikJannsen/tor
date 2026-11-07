@@ -23,7 +23,12 @@ import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.ToString;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.List;
 
 /**
@@ -67,6 +72,35 @@ public final class TorDirectories {
         stderrLogPath = baseDirPath.resolve("tor-stderr.log");
         sandyDirPath = baseDirPath.resolve(SANDY_DIR_NAME);
         externalTorConfigPath = baseDirPath.resolve(EXTERNAL_TOR_CONFIG_FILE_NAME);
+    }
+
+    /**
+     * @return {@code baseDirPath} with the symbolic links on the way to it resolved, also those on Windows which
+     * {@link Path#toRealPath} resolves (junctions among them). The sandbox grants the real path of every policy path, and
+     * on macOS a path spelled through a symbolic link is not found inside the sandbox of sandy 1.0.0, so Tor and the
+     * policy must name the real paths. The Tor directory need not exist yet: its nearest existing ancestor is resolved,
+     * and the names below it are kept. Links inside the Tor directory are not resolved here; Bisq creates its entries
+     * and treats a link among them as foreign.
+     * @throws IOException if the nearest existing ancestor cannot be resolved, for example a link that leads nowhere
+     */
+    public static Path withLinksResolved(Path baseDirPath) throws IOException {
+        Path existing = baseDirPath.toAbsolutePath();
+        Deque<Path> missingNames = new ArrayDeque<>();
+        // A link counts as existing, also one that leads nowhere, so that toRealPath reports it instead of a directory
+        // being created where it lies.
+        while (!Files.exists(existing, LinkOption.NOFOLLOW_LINKS)) {
+            Path parent = existing.getParent();
+            if (parent == null) {
+                return baseDirPath.toAbsolutePath();
+            }
+            missingNames.push(existing.getFileName());
+            existing = parent;
+        }
+        Path resolved = existing.toRealPath();
+        for (Path name : missingNames) {
+            resolved = resolved.resolve(name);
+        }
+        return resolved;
     }
 
     /**

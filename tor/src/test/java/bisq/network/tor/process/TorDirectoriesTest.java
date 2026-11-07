@@ -19,13 +19,19 @@ package bisq.network.tor.process;
 
 import bisq.network.tor.common.platform.OS;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.DisabledOnOs;
+import org.junit.jupiter.api.condition.EnabledOnOs;
+import org.junit.jupiter.api.io.TempDir;
 
+import java.io.IOException;
 import java.lang.reflect.Method;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class TorDirectoriesTest {
     private static final Path BASE = Paths.get("/opt/app/tor").toAbsolutePath();
@@ -94,5 +100,64 @@ class TorDirectoriesTest {
         assertThat(directories.getBundledTorBinaryPath(false)).isEqualTo(bin.resolve("tor"));
         assertThat(directories.getBundledTorBinaryPath())
                 .isEqualTo(directories.getBundledTorBinaryPath(OS.isWindows()));
+    }
+
+    // The sandbox grants real paths, so Tor and the policy must name them: a symbolic link at the Tor directory itself
+    @Test
+    @DisabledOnOs(org.junit.jupiter.api.condition.OS.WINDOWS)
+    void aLinkAtTheTorDirectoryIsResolved(@TempDir Path tempDir) throws IOException {
+        Path real = Files.createDirectories(tempDir.resolve("Bisq-1.10.11").resolve("tor"));
+        Path link = Files.createSymbolicLink(tempDir.resolve("Bisq"), tempDir.resolve("Bisq-1.10.11"));
+
+        assertThat(TorDirectories.withLinksResolved(link.resolve("tor"))).isEqualTo(real.toRealPath());
+    }
+
+    // The Tor directory need not exist yet: its nearest existing ancestor is resolved, the names below it are kept.
+    @Test
+    @DisabledOnOs(org.junit.jupiter.api.condition.OS.WINDOWS)
+    void aLinkAboveATorDirectoryWhichDoesNotExistYetIsResolved(@TempDir Path tempDir) throws IOException {
+        Path real = Files.createDirectories(tempDir.resolve("versions").resolve("1.10.11"));
+        Path link = Files.createSymbolicLink(tempDir.resolve("current"), real);
+        Path chain = Files.createSymbolicLink(tempDir.resolve("Bisq"), link);
+
+        assertThat(TorDirectories.withLinksResolved(chain.resolve("btc_mainnet").resolve("tor")))
+                .isEqualTo(real.toRealPath().resolve("btc_mainnet").resolve("tor"));
+        assertThat(chain.resolve("btc_mainnet")).doesNotExist();
+    }
+
+    @Test
+    void aPathWithoutLinksStaysItsRealPath(@TempDir Path tempDir) throws IOException {
+        Path tor = Files.createDirectories(tempDir.resolve("tor"));
+
+        assertThat(TorDirectories.withLinksResolved(tor)).isEqualTo(tor.toRealPath());
+        assertThat(TorDirectories.withLinksResolved(tor.resolve("missing")))
+                .isEqualTo(tor.toRealPath().resolve("missing"));
+    }
+
+    // A link which leads nowhere is reported instead of a directory being created where it lies.
+    @Test
+    @DisabledOnOs(org.junit.jupiter.api.condition.OS.WINDOWS)
+    void aLinkWhichLeadsNowhereIsReported(@TempDir Path tempDir) throws IOException {
+        Path link = Files.createSymbolicLink(tempDir.resolve("Bisq"), tempDir.resolve("gone"));
+
+        assertThatThrownBy(() -> TorDirectories.withLinksResolved(link.resolve("tor"))).isInstanceOf(IOException.class);
+    }
+
+    // Windows resolves junctions in toRealPath as well, which a user makes without any privilege.
+    @Test
+    @EnabledOnOs(org.junit.jupiter.api.condition.OS.WINDOWS)
+    void aJunctionAboveTheTorDirectoryIsResolved(@TempDir Path tempDir) throws Exception {
+        Path real = Files.createDirectories(tempDir.resolve("Bisq-1.10.11").resolve("tor"));
+        Path junction = tempDir.resolve("Bisq");
+        Process mklink = new ProcessBuilder("cmd", "/c", "mklink", "/J", junction.toString(),
+                tempDir.resolve("Bisq-1.10.11").toString()).redirectErrorStream(true).start();
+        mklink.getInputStream().readAllBytes();
+        assertThat(mklink.waitFor()).isZero();
+        try {
+            assertThat(TorDirectories.withLinksResolved(junction.resolve("tor"))).isEqualTo(real.toRealPath());
+        } finally {
+            // The junction itself, not the directory it leads to
+            Files.delete(junction);
+        }
     }
 }

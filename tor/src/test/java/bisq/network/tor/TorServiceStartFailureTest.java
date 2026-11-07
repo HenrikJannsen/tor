@@ -198,9 +198,10 @@ class TorServiceStartFailureTest {
     void aFailureToCreateTheTorDirectoryIsTheRootCause() throws IOException {
         Path torDir = Files.writeString(tempDir.resolve("tor"), "a file instead of the Tor directory");
 
+        // TorService names the real path, which on macOS differs from that of the temporary directory (/private/var).
         assertThatThrownBy(() -> createTorService(torDir).initialize())
                 .isInstanceOf(TorStartupFailedException.class)
-                .hasMessageContaining("Couldn't create the Tor directory " + torDir)
+                .hasMessageContaining("Couldn't create the Tor directory " + torDir.toRealPath())
                 .hasNoCause();
     }
 
@@ -211,7 +212,7 @@ class TorServiceStartFailureTest {
 
         assertThatThrownBy(() -> createTorService(torDir).initialize())
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Could not read " + torDir.resolve("external_tor.config"))
+                .hasMessageContaining("Could not read " + torDir.toRealPath().resolve("external_tor.config"))
                 .hasNoCause();
     }
 

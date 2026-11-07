@@ -153,13 +153,35 @@ class TorServiceEmbeddedStartTest {
         fakeTor.answerControlPort();
 
         assertThat(start.get(10, TimeUnit.SECONDS)).isTrue();
-        String torrcPath = torDir.resolve("torrc").toAbsolutePath().toString();
+        // Tor gets the real path, which on macOS differs from that of the temporary directory (/private/var).
+        String torrcPath = torDir.toRealPath().resolve("torrc").toString();
         assertThat(fakeTor.arguments()).containsExactly("-f", torrcPath, "--defaults-torrc", torrcPath,
                 "__OwningControllerProcess", myPid());
         assertThat(Files.readString(torDir.resolve("torrc")))
                 .contains("Socks5Proxy 127.0.0.1:1\n")
                 .doesNotContain("MaxMemInQueues");
         assertThat(torService.getSandboxStatus()).isEqualTo(TorSandboxStatus.DISABLED);
+    }
+
+    // The sandbox grants real paths, and on macOS a path spelled through a symbolic link is not found inside the sandbox
+    // of sandy 1.0.0. A Tor directory named through a link therefore reaches Tor by its real path, in the arguments and
+    // in the torrc.
+    @Test
+    void aTorDirectoryNamedThroughALinkReachesTorByItsRealPath() throws Exception {
+        Path link = Files.createSymbolicLink(tempDir.resolve("tor-link"), torDir);
+        Path real = torDir.toRealPath();
+        torService = new TorService(transportConfig(TorSandboxConfig.DISABLED, link), platformServices(Stream::empty),
+                false);
+
+        FutureTask<Boolean> start = startInTheBackground();
+        fakeTor.awaitStart();
+        fakeTor.answerControlPort();
+
+        assertThat(start.get(10, TimeUnit.SECONDS)).isTrue();
+        String torrcPath = real.resolve("torrc").toString();
+        assertThat(fakeTor.arguments()).containsSubsequence("-f", torrcPath, "--defaults-torrc", torrcPath);
+        String torrc = Files.readString(real.resolve("torrc"));
+        assertThat(torrc).contains("DataDirectory " + real.resolve("data")).doesNotContain(link.toString());
     }
 
     @Test
@@ -229,7 +251,11 @@ class TorServiceEmbeddedStartTest {
 
     // Every connection of a Tor goes to a closed port, in case a test starts a real one.
     private TorTransportConfig transportConfig(TorSandboxConfig sandboxConfig) {
-        return new TorTransportConfig(torDir, 10_000, 10_000, false, Set.of(), Map.of("Socks5Proxy", "127.0.0.1:1"),
+        return transportConfig(sandboxConfig, torDir);
+    }
+
+    private static TorTransportConfig transportConfig(TorSandboxConfig sandboxConfig, Path torDirPath) {
+        return new TorTransportConfig(torDirPath, 10_000, 10_000, false, Set.of(), Map.of("Socks5Proxy", "127.0.0.1:1"),
                 false, BridgeConfig.NONE, sandboxConfig);
     }
 
