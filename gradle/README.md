@@ -14,12 +14,13 @@ the latest. The two differ in their runtime (21.54.109 removes the emSign roots 
 not ship, but not in what it compiles with: their javac and the classes it compiles against differ only in version
 strings.
 
-`releaseBuild.javaRuntimeVersion` is the one build which the CI workflows install. setup-java looks it up for the
-platform of each runner, so no build is listed per platform. `verifyGithubActionsSecurity` requires every `java-version`
-of a workflow to be this build, and this build to be one of `releaseBuild.javaVersion`.
+The CI workflows request the feature version of `releaseBuild.javaVersion` (`java-version: '21'`) with
+`check-latest: true`, so setup-java installs the newest Azul build which exists for the platform of each runner. Azul
+does not publish a build for every platform at the same time and removes superseded builds from its index, so a pinned
+build broke CI again and again. `verifyGithubActionsSecurity` requires every `java-version` of a workflow to be that
+feature version, and every `actions/setup-java` step to set `check-latest: true`.
 
-Update the workflows, the pinned properties, and the toolchain URLs in `build-logic/toolchain-resolver` together when
-changing the Java update.
+The toolchain URLs in `build-logic/toolchain-resolver` must point to a build at or above `releaseBuild.javaVersion`.
 
 ## Gradle Wrapper Verification
 
