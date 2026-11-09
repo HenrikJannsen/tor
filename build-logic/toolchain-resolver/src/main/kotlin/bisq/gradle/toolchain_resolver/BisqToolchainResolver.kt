@@ -13,8 +13,9 @@ import java.util.*
  * architecture does not run, so the resolver returns nothing for a platform without a known build. Gradle then
  * reports that no toolchain can be provisioned, instead of installing a JDK which cannot start.
  *
- * The build requests only the Java version of releaseBuild.javaVersion, so only that version is listed. The toolchain
- * API of Gradle takes a URI and no checksum, so a downloaded JDK is checked by nothing but HTTPS.
+ * The build requests only the Java feature version of releaseBuild.javaVersion, so only that version is listed. The
+ * listed build must be at or above releaseBuild.javaVersion, so update the URLs when the minimum is raised. The
+ * toolchain API of Gradle takes a URI and no checksum, so a downloaded JDK is checked by nothing but HTTPS.
  */
 @Suppress("UnstableApiUsage")
 abstract class BisqToolchainResolver : JavaToolchainResolver {
@@ -39,11 +40,11 @@ abstract class BisqToolchainResolver : JavaToolchainResolver {
     private fun getToolchainUrlForLinux(javaVersion: Int, architecture: Architecture): String? =
             when (architecture) {
                 Architecture.X86_64 -> when (javaVersion) {
-                    21 -> "https://cdn.azul.com/zulu/bin/zulu21.54.107-ca-jdk21.0.13-linux_x64.zip"
+                    21 -> "https://cdn.azul.com/zulu/bin/zulu21.54.109-ca-jdk21.0.13.0.3-linux_x64.zip"
                     else -> null
                 }
                 Architecture.AARCH64 -> when (javaVersion) {
-                    21 -> "https://cdn.azul.com/zulu/bin/zulu21.54.107-ca-jdk21.0.13-linux_aarch64.tar.gz"
+                    21 -> "https://cdn.azul.com/zulu/bin/zulu21.54.109-ca-jdk21.0.13.0.3-linux_aarch64.tar.gz"
                     else -> null
                 }
                 else -> null
@@ -52,7 +53,7 @@ abstract class BisqToolchainResolver : JavaToolchainResolver {
     private fun getToolchainUrlForMacOs(javaVersion: Int, architecture: Architecture): String? {
         val macOsArchName = getMacOsArchitectureClassifier(architecture) ?: return null
         return when (javaVersion) {
-            21 -> "https://cdn.azul.com/zulu/bin/zulu21.54.107-ca-jdk21.0.13-macosx_" + macOsArchName + ".tar.gz"
+            21 -> "https://cdn.azul.com/zulu/bin/zulu21.54.109-ca-jdk21.0.13.0.3-macosx_" + macOsArchName + ".tar.gz"
             else -> null
         }
     }
@@ -60,7 +61,7 @@ abstract class BisqToolchainResolver : JavaToolchainResolver {
     private fun getToolchainUrlForWindows(javaVersion: Int, architecture: Architecture): String? =
             when (architecture) {
                 Architecture.X86_64 -> when (javaVersion) {
-                    21 -> "https://cdn.azul.com/zulu/bin/zulu21.54.107-ca-jdk21.0.13-win_x64.zip"
+                    21 -> "https://cdn.azul.com/zulu/bin/zulu21.54.109-ca-jdk21.0.13.0.3-win_x64.zip"
                     else -> null
                 }
                 else -> null

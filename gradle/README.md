@@ -2,24 +2,25 @@
 
 ## Build JDK
 
-`gradle.properties` pins the Java update (`releaseBuild.javaVersion`) and the vendor (`releaseBuild.javaVendor`) of the
-JDK which runs Gradle, the same for every operating system. `verifyBuildEnvironment` (part of `check`) accepts every
-build of that update: the version numbers of the JDK must start with those of the pin, so `21.0.13.0.3+1` passes for
-`21.0.13`, and `21.0.13` fails for `21.0.1`. The pin holds version numbers only; `21` alone would accept every update
-of Java 21. The task logs the runtime version and the Zulu build of the JDK.
+`gradle.properties` sets the minimum Java version (`releaseBuild.javaVersion`) and the vendor
+(`releaseBuild.javaVendor`) of the JDK which runs Gradle, the same for every operating system. `verifyBuildEnvironment`
+(part of `check`) accepts every build of the same feature version at or above the minimum: for `21.0.13.0.3`,
+`21.0.13.0.3+1` and `21.0.14` pass, `21.0.13+9` and `25` fail. The minimum holds version numbers only; the build number
+is not compared. The task logs the runtime version and the Zulu build of the JDK.
 
-Azul builds an update more than once, and an installer may offer only the latest build: Zulu `21.54.107`
-(`21.0.13+9`) and `21.54.109` (`21.0.13.0.3+1`) are both builds of 21.0.13, and the Homebrew cask `zulu@21` has only
-the latest. The two differ in their runtime (21.54.109 removes the emSign roots from `cacerts`), which this build does
-not ship, but not in what it compiles with: their javac and the classes it compiles against differ only in version
-strings.
+Azul builds an update more than once, not for every platform at the same time, and an installer may offer only the
+latest build: Zulu `21.54.107` (`21.0.13+9`) and `21.54.109` (`21.0.13.0.3+1`) are both builds of 21.0.13, and the
+Homebrew cask `zulu@21` has only the latest. Pinning one exact build therefore broke builds on some platforms again and
+again. Raise the minimum when a build must not run on a JDK without a fix, as for `21.0.13.0.3`, which removes the
+compromised emSign roots from `cacerts`.
 
-`releaseBuild.javaRuntimeVersion` is the one build which the CI workflows install. setup-java looks it up for the
-platform of each runner, so no build is listed per platform. `verifyGithubActionsSecurity` requires every `java-version`
-of a workflow to be this build, and this build to be one of `releaseBuild.javaVersion`.
+The CI workflows request the feature version of `releaseBuild.javaVersion` (`java-version: '21'`) with
+`check-latest: true`, so setup-java installs the newest Azul build which exists for the platform of each runner. Azul
+does not publish a build for every platform at the same time and removes superseded builds from its index, so a pinned
+build broke CI again and again. `verifyGithubActionsSecurity` requires every `java-version` of a workflow to be that
+feature version, and every `actions/setup-java` step to set `check-latest: true`.
 
-Update the workflows, the pinned properties, and the toolchain URLs in `build-logic/toolchain-resolver` together when
-changing the Java update.
+The toolchain URLs in `build-logic/toolchain-resolver` must point to a build at or above `releaseBuild.javaVersion`.
 
 ## Gradle Wrapper Verification
 

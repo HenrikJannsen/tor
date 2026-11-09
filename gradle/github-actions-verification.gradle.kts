@@ -2,12 +2,11 @@ import org.gradle.api.GradleException
 import java.nio.charset.StandardCharsets
 
 val expectedReleaseJavaVersion = providers.gradleProperty("releaseBuild.javaVersion")
-val expectedReleaseJavaRuntimeVersion = providers.gradleProperty("releaseBuild.javaRuntimeVersion")
 
 tasks.register("verifyGithubActionsSecurity") {
     group = "verification"
-    description = "Verifies GitHub Actions workflows use pinned actions, non-floating build environments, " +
-        "explicit permissions, no privileged triggers and no event data in scripts."
+    description = "Verifies GitHub Actions workflows use pinned actions, fixed runner labels, the newest JDK of the " +
+        "Java feature version, explicit permissions, no privileged triggers and no event data in scripts."
 
     val workflowFiles = fileTree(".github/workflows") {
         include("*.yml")
@@ -16,17 +15,13 @@ tasks.register("verifyGithubActionsSecurity") {
 
     inputs.files(workflowFiles)
     inputs.property("expectedReleaseJavaVersion", expectedReleaseJavaVersion.orElse(""))
-    inputs.property("expectedReleaseJavaRuntimeVersion", expectedReleaseJavaRuntimeVersion.orElse(""))
     outputs.upToDateWhen { false }
     // Copies of the values of the script and the project, which the configuration cache cannot store
     val releaseJavaVersion = expectedReleaseJavaVersion
-    val releaseJavaRuntimeVersion = expectedReleaseJavaRuntimeVersion
     val rootDirectory = rootDir
 
     doLast {
         val expectedJavaVersion = releaseJavaVersion.orNull?.trim()
-        val expectedJavaRuntimeVersion = releaseJavaRuntimeVersion.orNull?.trim()
-        val expectedJavaBuildVersion = expectedJavaRuntimeVersion?.removeSuffix("-LTS")
         val violations = mutableListOf<String>()
         val usesRegex = Regex("""^\s*-?\s*uses:\s*([^#\s]+)(?:\s+#\s*(.+))?\s*$""")
         val floatingRunnerRegex = Regex("""\b(ubuntu|macos|windows)-latest\b""", RegexOption.IGNORE_CASE)
@@ -36,9 +31,7 @@ tasks.register("verifyGithubActionsSecurity") {
         val variableComparisonRegex = Regex("""\bvars\.[A-Za-z0-9_]+\s*==\s*'[^']*'""")
         val javaVersionRegex = Regex("""^\s*java-version:\s*([^#]+?)(?:\s+#.*)?$""")
         val javaMatrixRegex = Regex("""^\s*java:\s*\[([^]]+)]\s*(?:#.*)?$""")
-        val exactJavaVersionRegex = Regex("""\d+(?:\.\d+){2,}\+\d+""")
         val checkLatestTrueRegex = Regex("""^\s*check-latest:\s*['"]?true['"]?\s*$""", RegexOption.IGNORE_CASE)
-        val checkLatestFalseRegex = Regex("""^\s*check-latest:\s*['"]?false['"]?\s*$""", RegexOption.IGNORE_CASE)
         val persistCredentialsFalseRegex = Regex("""^\s*persist-credentials:\s*['"]?false['"]?\s*$""", RegexOption.IGNORE_CASE)
         val validateWrappersTrueRegex = Regex("""^\s*validate-wrappers:\s*['"]?true['"]?\s*$""", RegexOption.IGNORE_CASE)
         val stepStartRegex = Regex("""^(\s*)-\s+[A-Za-z_][A-Za-z0-9_-]*\s*:.*$""")
@@ -49,20 +42,15 @@ tasks.register("verifyGithubActionsSecurity") {
         // Event data such as the title of a pull request comes from whoever opens it; inside a script it is shell code
         val eventExpressionRegex = Regex("""\$\{\{[^}]*\bgithub\.event\b""")
 
-        // As in verifyBuildEnvironment: 21.0.13+9-LTS and 21.0.13.0.3+1-LTS are both builds of 21.0.13
-        fun isBuildOf(runtimeVersion: String, javaVersion: String): Boolean = runCatching {
-            val updateNumbers = Runtime.Version.parse(javaVersion).version()
-            Runtime.Version.parse(runtimeVersion).version().take(updateNumbers.size) == updateNumbers
-        }.getOrDefault(false)
-
+        // The workflows request the feature version of the minimum Java version, and check-latest makes setup-java take
+        // the newest Azul build of it which exists for the runner. verifyBuildEnvironment checks the minimum.
+        val expectedJavaFeatureVersion = expectedJavaVersion
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { runCatching { Runtime.Version.parse(it).feature().toString() }.getOrNull() }
         if (expectedJavaVersion.isNullOrEmpty()) {
             violations += "Missing releaseBuild.javaVersion in gradle.properties"
-        }
-        if (expectedJavaRuntimeVersion.isNullOrEmpty()) {
-            violations += "Missing releaseBuild.javaRuntimeVersion in gradle.properties"
-        } else if (!expectedJavaVersion.isNullOrEmpty() && !isBuildOf(expectedJavaRuntimeVersion, expectedJavaVersion)) {
-            violations += "releaseBuild.javaRuntimeVersion $expectedJavaRuntimeVersion is no build of " +
-                "releaseBuild.javaVersion $expectedJavaVersion"
+        } else if (expectedJavaFeatureVersion == null) {
+            violations += "releaseBuild.javaVersion $expectedJavaVersion is no Java version"
         }
 
         fun cleanYamlScalar(value: String): String {
@@ -148,8 +136,8 @@ tasks.register("verifyGithubActionsSecurity") {
 
                     if (actionRef.startsWith("actions/setup-java@")) {
                         val setupJavaStepLines = stepLinesAfter(lines, index)
-                        if (setupJavaStepLines.none { checkLatestFalseRegex.matches(it) }) {
-                            violations += "$workflowPath:$lineNumber uses actions/setup-java without check-latest: false"
+                        if (setupJavaStepLines.none { checkLatestTrueRegex.matches(it) }) {
+                            violations += "$workflowPath:$lineNumber uses actions/setup-java without check-latest: true"
                         }
                     }
 
@@ -181,12 +169,11 @@ tasks.register("verifyGithubActionsSecurity") {
                 val javaVersionMatch = javaVersionRegex.find(line)
                 if (javaVersionMatch != null) {
                     val javaVersion = cleanYamlScalar(javaVersionMatch.groupValues[1])
-                    if (!javaVersion.startsWith("\${{") && !exactJavaVersionRegex.matches(javaVersion)) {
-                        violations += "$workflowPath:$lineNumber uses a floating Java version: ${line.trim()}"
-                    } else if (!javaVersion.startsWith("\${{") &&
-                        !expectedJavaBuildVersion.isNullOrEmpty() &&
-                        javaVersion != expectedJavaBuildVersion) {
-                        violations += "$workflowPath:$lineNumber uses Java version $javaVersion but releaseBuild.javaRuntimeVersion is $expectedJavaRuntimeVersion"
+                    if (!javaVersion.startsWith("\${{") &&
+                        expectedJavaFeatureVersion != null &&
+                        javaVersion != expectedJavaFeatureVersion) {
+                        violations += "$workflowPath:$lineNumber uses Java version $javaVersion but must use " +
+                            "$expectedJavaFeatureVersion, the feature version of releaseBuild.javaVersion"
                     }
                 }
 
@@ -197,16 +184,11 @@ tasks.register("verifyGithubActionsSecurity") {
                         .map { cleanYamlScalar(it) }
                         .filter { it.isNotEmpty() && !it.startsWith("\${{") }
                         .forEach {
-                            if (!exactJavaVersionRegex.matches(it)) {
-                                violations += "$workflowPath:$lineNumber uses a floating Java matrix version: $it"
-                            } else if (!expectedJavaBuildVersion.isNullOrEmpty() && it != expectedJavaBuildVersion) {
-                                violations += "$workflowPath:$lineNumber uses Java matrix version $it but releaseBuild.javaRuntimeVersion is $expectedJavaRuntimeVersion"
+                            if (expectedJavaFeatureVersion != null && it != expectedJavaFeatureVersion) {
+                                violations += "$workflowPath:$lineNumber uses Java matrix version $it but must use " +
+                                    "$expectedJavaFeatureVersion, the feature version of releaseBuild.javaVersion"
                             }
                         }
-                }
-
-                if (checkLatestTrueRegex.matches(line)) {
-                    violations += "$workflowPath:$lineNumber sets check-latest: true"
                 }
             }
         }
