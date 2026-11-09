@@ -43,6 +43,7 @@ public class TorController {
     private volatile Optional<BootstrapService> bootstrapService = Optional.empty();
     private volatile boolean isShutdownInProgress;
 
+
     /**
      * A publication or an online check of one onion address, with the shutdown of its service and its result.
      */
