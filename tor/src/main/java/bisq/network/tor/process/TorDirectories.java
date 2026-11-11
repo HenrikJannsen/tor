@@ -76,9 +76,10 @@ public final class TorDirectories {
 
     /**
      * @return {@code baseDirPath} with the symbolic links on the way to it resolved, also those on Windows which
-     * {@link Path#toRealPath} resolves (junctions among them). The sandbox grants the real path of every policy path, and
-     * on macOS a path spelled through a symbolic link is not found inside the sandbox of sandy 1.0.0, so Tor and the
-     * policy must name the real paths. The Tor directory need not exist yet: its nearest existing ancestor is resolved,
+     * {@link Path#toRealPath} resolves (junctions among them). The sandbox grants the real path of every policy path, so
+     * Tor and the policy name the real paths: sandy before 1.1.0 did not find a path spelled through a symbolic link
+     * inside the sandbox of macOS, and on Windows sandy would otherwise add a read entry for the sandbox to each
+     * junction of the user on the way to the Tor directory. The Tor directory need not exist yet: its nearest existing ancestor is resolved,
      * and the names below it are kept. Links inside the Tor directory are not resolved here; Bisq creates its entries
      * and treats a link among them as foreign.
      * @throws IOException if the nearest existing ancestor cannot be resolved, for example a link that leads nowhere

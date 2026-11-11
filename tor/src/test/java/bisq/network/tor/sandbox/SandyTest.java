@@ -28,6 +28,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,18 +42,19 @@ class SandyTest {
     private static final Path SANDY = Paths.get("/opt/app/tor/sandy/sandy");
     private static final Path STATUS_RECORD = Paths.get("/opt/app/tor/sandy/run-status");
     private static final Path DATA = Paths.get("/opt/app/tor/data");
-    // As sandy 2.2.0 prints it for a host that falls back to the second level, shortened
+    // As sandy 1.2.0 prints it for a host that falls back to the second level, shortened
     private static final String FALLBACK_JSON = """
             {"backend":"linux","selected":"contained","setup_would_help":false,"levels":[\
             {"name":"base","enforceable":false,"needs_setup":false,\
             "enforced":[{"requirement":"filesystem-confined","mechanism":"Landlock ABI 4"}],\
             "missing":[{"requirement":"signals-isolated","status":"unavailable","reason":"this kernel has ABI 4"}],\
-            "warnings":[]},\
+            "warnings":[],"warning_ids":[]},\
             {"name":"contained","enforceable":true,"needs_setup":false,\
             "enforced":[{"requirement":"ip-network-private","mechanism":"m"},\
             {"requirement":"egress-brokered","mechanism":"m"},{"requirement":"signals-isolated","mechanism":"m"}],\
-            "missing":[],"warnings":["egress: \\"refusals\\" tell this host's addresses"]}],\
-            "warnings":[]}""";
+            "missing":[],"warnings":["egress: \\"refusals\\" tell this host's addresses",\
+            "/opt/app/tor/data lies on eCryptfs"],"warning_ids":["egress-probing","ecryptfs-unlisted"]}],\
+            "warnings":["the writable path /home holds the home directory"],"warning_ids":["writable-home"]}""";
 
     @Test
     void readsTheSelectedLevelAndWhatItEnforces() {
@@ -67,8 +69,47 @@ class SandyTest {
                 .isEqualTo(Set.of("ip-network-private", "egress-brokered", "signals-isolated"));
         assertThat(result.report())
                 .contains("level base: signals-isolated (unavailable): this kernel has ABI 4")
-                .contains("level contained: enforceable")
-                .contains("warning: egress: \"refusals\" tell this host's addresses");
+                .contains("level contained: enforceable");
+    }
+
+    // sandy check --json lists every warning, also those that --no-warnings hides on standard error.
+    @Test
+    void reportsOnlyTheWarningsThatBisqShows() {
+        Sandy.CheckResult result = Sandy.parseCheck(0, FALLBACK_JSON, "");
+
+        assertThat(result.report())
+                .contains("  warning: [ecryptfs-unlisted] /opt/app/tor/data lies on eCryptfs")
+                .contains("\nwarning: [writable-home] the writable path /home holds the home directory")
+                .doesNotContain("egress-probing")
+                .doesNotContain("refusals");
+    }
+
+    @Test
+    void refusesAnAnswerWhoseWarningsHaveNoIds() {
+        String withoutIds = FALLBACK_JSON.replace("\"warning_ids\":[\"egress-probing\",\"ecryptfs-unlisted\"]",
+                "\"warning_ids\":[\"egress-probing\"]");
+
+        Sandy.CheckResult result = Sandy.parseCheck(0, withoutIds, "");
+
+        assertThat(result.selectedLevel()).isEmpty();
+        assertThat(result.report()).startsWith("Bisq cannot read the answer of sandy check");
+    }
+
+    @Test
+    void hidesEveryWarningButTheShownOnesOnStandardError() {
+        Sandy sandy = new Sandy(SANDY, "4711");
+        SandyPolicy policy = new SandyPolicy("version = 1\n", DATA);
+        Sandy.Level level = new Sandy.Level("base", Set.of());
+
+        List<String> command = sandy.runCommand(policy, level, STATUS_RECORD, List.of("/usr/bin/tor"));
+
+        int noWarnings = command.indexOf("--no-warnings");
+        assertThat(noWarnings).isPositive().isLessThan(command.indexOf("--"));
+        List<String> shown = new ArrayList<>();
+        for (int i = noWarnings + 1; i + 1 < command.size() && command.get(i).equals("--show-warning"); i += 2) {
+            shown.add(command.get(i + 1));
+        }
+        assertThat(shown).isEqualTo(Sandy.SHOWN_WARNING_IDS).contains("fallback-level");
     }
 
     /**
@@ -102,7 +143,8 @@ class SandyTest {
 
         assertThat(command).startsWith(SANDY.toAbsolutePath().toString(), "run", "--policy", "-",
                 "--level", "contained", "--status-file", STATUS_RECORD.toAbsolutePath().toString(),
-                "--cwd", DATA.toAbsolutePath().toString(), "--parent-pid", "4711");
+                "--cwd", DATA.toAbsolutePath().toString());
+        assertThat(command).containsSequence("--parent-pid", "4711", "--");
         assertThat(command).endsWith("--", "/usr/bin/tor", "-f", "torrc");
         assertThat(Sandy.policyInput(policy)).isEqualTo("version = 1\n".getBytes());
     }
@@ -116,9 +158,8 @@ class SandyTest {
 
         List<String> command = sandy.runCommand(policy, level, STATUS_RECORD, List.of("/usr/bin/tor", "-f", "torrc"));
 
-        assertThat(command).containsExactly(SANDY.toAbsolutePath().toString(), "run", "--policy", "-",
-                "--level", "host-network-signals", "--status-file", STATUS_RECORD.toAbsolutePath().toString(),
-                "--cwd", DATA.toAbsolutePath().toString(), "--", "/usr/bin/tor", "-f", "torrc");
+        assertThat(command).doesNotContain("--parent-pid", "--parent-start");
+        assertThat(command).endsWith("--", "/usr/bin/tor", "-f", "torrc");
     }
 
     @Test

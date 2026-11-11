@@ -238,9 +238,9 @@ class LocalEmbeddedTorStartTest {
 
     /**
      * Runs only if the build packaged Tor and sandy, on any platform. A Tor directory named through a symbolic link, as
-     * with a link to the data directory of the current version, reaches the bootstrap in the sandbox: the sandbox
-     * grants real paths, and sandy 1.0.0 on macOS does not find a path spelled through a link, so Tor must be given
-     * the real one. Without that, Tor in the sandbox of macOS exits with "Unable to open configuration file".
+     * with a link to the data directory of the current version, reaches the bootstrap in the sandbox, where Tor is
+     * given the real path ({@link TorDirectories#withLinksResolved}). With sandy before 1.1.0, Tor in the sandbox of
+     * macOS exited with "Unable to open configuration file" for the path through the link.
      */
     @Test
     void aSandboxedStartWithTheTorDirectoryBehindALinkReachesTheBootstrap() throws Exception {

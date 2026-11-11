@@ -61,7 +61,7 @@ val generateTorBuildVersionClass by tasks.registering {
  * the hash of the archive against it. A platform without a target gets no binary, and a sandboxed start of Tor fails
  * there. The Gradle property sandy.package=false builds without sandy. See src/main/resources/sandy/README.md.
  */
-val sandyVersion = "1.0.0"
+val sandyVersion = "1.2.0"
 // The release target of each platform with a sandy binary
 val sandyTargets = mapOf(
     "linux_x86_64" to "x86_64-unknown-linux-musl",
