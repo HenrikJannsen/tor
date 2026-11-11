@@ -167,7 +167,7 @@ In the configuration of Bisq 2 (`TorTransportConfig.from`), `builtInBridges` nam
 
 ## Sandbox
 
-The library can run the Tor which it starts in the sandbox of the operating system with sandy 1.0.0 (Landlock and
+The library can run the Tor which it starts in the sandbox of the operating system with sandy 1.2.0 (Landlock and
 seccomp on Linux, Seatbelt on macOS, an AppContainer on Windows). The policy is a TOML file per platform in
 `tor/src/main/resources/sandy/policy/`; it decides how strongly Tor is isolated, and the library only fills in the
 values of a start (the paths of the Tor directory, the ports, the forwarded onion service targets, the environment
@@ -200,15 +200,18 @@ if the host changed. Bisq names itself as the parent of Tor (`--parent-pid`) onl
 sandy refuses the option in `host-network-signals`. In such a level Tor gets no `__OwningControllerProcess`, because
 sandy ends it with Bisq; in the PID namespace of `contained` Tor cannot see Bisq's process and would exit at its first
 owner check. Bisq never runs `sandy setup`. Once Tor answers on its control port, `TorService.getSandboxStatus()`
-names the level and says what it gives up. A torrc override of a proxy option refuses the sandboxed start, because the
-egress broker is Tor's only way out, and so does an override of `GeoIPFile` or `GeoIPv6File`: in its sandbox Tor reads
-only the GeoIP files of its installation. The broker reaches public addresses only, so in a level with the broker a
-test network, whose directory authorities listen on 127.0.0.1, refuses the start before Tor runs, and so do bridges
-which are all on loopback, private or link-local addresses; with some of them Bisq logs a warning.
+names the level and says what it gives up. Of sandy's warnings Bisq shows only those which name the fallback level
+that Tor runs or something on this host that can make Tor fail or weaken its sandbox, such as a Windows session
+without a desktop; the others describe limits of a platform that the policy accepts (`Sandy.SHOWN_WARNING_IDS`). A
+torrc override of a proxy option refuses the sandboxed start, because the egress broker is Tor's only way out, and so
+does an override of `GeoIPFile` or `GeoIPv6File`: in its sandbox Tor reads only the GeoIP files of its installation.
+The broker reaches public addresses only, so in a level with the broker a test network, whose directory authorities
+listen on 127.0.0.1, refuses the start before Tor runs, and so do bridges which are all on loopback, private or
+link-local addresses; with some of them Bisq logs a warning.
 
 In the configuration of Bisq 2 the sandbox is on unless `sandbox.enabled = false` turns it off, and it allows no
 pluggable transports unless `sandbox.allowPluggableTransports = true`. The `TorTransportConfig` constructor without a
-`TorSandboxConfig` leaves the sandbox off. Gradle resolves the release archive of sandy 1.0.0 for the platform of the
+`TorSandboxConfig` leaves the sandbox off. Gradle resolves the release archive of sandy 1.2.0 for the platform of the
 build as a verified dependency, the build checks it against the signed checksums of the release and packages its
 binary, and `-Psandy.package=false` builds without sandy (see `tor/src/main/resources/sandy/README.md`, which also says
 how a new release of sandy is checked before the build moves to it: its signed checksums, a rebuild from the tag, and a

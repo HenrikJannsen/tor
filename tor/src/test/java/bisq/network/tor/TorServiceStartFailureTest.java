@@ -46,7 +46,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * sandy, for example because another process took a port of the policy between the check and the start. Then the user
  * needs the reason of sandy and the hint how to turn the sandbox off, as for every other sandbox failure. Tor can exit
  * with the status of sandy too, so only the status record of sandy, which Tor cannot write, tells a refusal from an
- * exit of Tor. A stand-in for sandy writes the records here as sandy 1.0.0 does.
+ * exit of Tor. A stand-in for sandy writes the records here as sandy 1.2.0 does.
  */
 @Timeout(30)
 class TorServiceStartFailureTest {

@@ -1,4 +1,4 @@
-# The sandbox of the embedded Tor under sandy 1.0.0 on macOS with pluggable transports, for every
+# The sandbox of the embedded Tor under sandy 1.2.0 on macOS with pluggable transports, for every
 # transport: the private network of sandy has no loopback on macOS on which Tor could reach its
 # transports, so Tor and the transports get the network of the host, without the egress broker. Tor
 # may start the programs of the transports, which TorSandboxPolicy adds to read_exec, and sandy ends

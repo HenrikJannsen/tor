@@ -67,6 +67,26 @@ public final class Sandy {
     public static final String SIGNALS_ISOLATED = "signals-isolated";
     public static final String ENDS_WITH_PARENT = "ends-with-parent";
     public static final String CHILD_PROCESSES_CONTAINED = "child-processes-contained";
+    /**
+     * The IDs of the warnings of sandy that Bisq shows: that Tor runs a fallback level, and what can make Tor fail or
+     * weaken its sandbox on this host. Every other warning describes a limit of a platform that the templates accept
+     * (sandy README.md, "Warnings"), so Bisq hides it, also one that a later release of sandy adds. sandy keeps the
+     * IDs stable.
+     */
+    static final List<String> SHOWN_WARNING_IDS = List.of(
+            // run takes a fallback level
+            "fallback-level",
+            // Windows: tor.exe cannot start in session 0 (see windows.toml)
+            "session-zero",
+            // Linux: Tor cannot list a granted directory on eCryptfs
+            "ecryptfs-unlisted",
+            // Windows: Tor cannot open a directory of its policy under the name of a junction
+            "junction-closed",
+            // Linux: the OpenSSL of Tor drops an include that it cannot read and runs with weaker defaults
+            "openssl-include",
+            // A Tor directory in a place where what Tor writes runs outside the sandbox
+            "writable-home",
+            "writable-path-directory");
 
     private static final long CHECK_TIMEOUT_SEC = 30;
     private static final long STOP_TIMEOUT_SEC = 5;
@@ -120,6 +140,7 @@ public final class Sandy {
         command.add("--json");
         command.add("--policy");
         command.add("-");
+        command.addAll(warningOptions());
         command.addAll(parentOptions());
         command.add("--");
         command.add(programPath.toAbsolutePath().toString());
@@ -216,6 +237,7 @@ public final class Sandy {
         command.add(statusRecordPath.toAbsolutePath().normalize().toString());
         command.add("--cwd");
         command.add(policy.workingDirPath().toAbsolutePath().normalize().toString());
+        command.addAll(warningOptions());
         if (level.enforces(ENDS_WITH_PARENT)) {
             command.addAll(parentOptions());
         }
@@ -274,6 +296,16 @@ public final class Sandy {
      */
     public static void removeLoaderVariables(Map<String, String> environment) {
         environment.keySet().removeIf(name -> name.startsWith("LD_") || name.startsWith("DYLD_"));
+    }
+
+    // The warning lines of sandy on standard error, which go to the log of Tor's standard error during a run
+    private static List<String> warningOptions() {
+        List<String> options = new ArrayList<>(List.of("--no-warnings"));
+        SHOWN_WARNING_IDS.forEach(id -> {
+            options.add("--show-warning");
+            options.add(id);
+        });
+        return options;
     }
 
     /**
@@ -341,9 +373,9 @@ public final class Sandy {
                                 item.getString("reason"))
                         .toList();
                 lines.add("level " + name + ": " + (missing.isEmpty() ? "enforceable" : String.join("; ", missing)));
-                level.getStringList("warnings").forEach(warning -> lines.add("  warning: " + warning));
+                shownWarnings(level).forEach(warning -> lines.add("  warning: " + warning));
             }
-            json.getStringList("warnings").forEach(warning -> lines.add("warning: " + warning));
+            shownWarnings(json).forEach(warning -> lines.add("warning: " + warning));
             if (!errors.isBlank()) {
                 lines.add(errors);
             }
@@ -352,6 +384,23 @@ public final class Sandy {
             return new CheckResult(exitCode, Optional.empty(),
                     "Bisq cannot read the answer of sandy check: " + e.getMessage() + "\n" + output + "\n" + errors);
         }
+    }
+
+    // check --json keeps every warning despite --no-warnings, with the ID of each in warning_ids, in the same order.
+    private static List<String> shownWarnings(Config json) {
+        List<String> warnings = json.getStringList("warnings");
+        List<String> ids = json.getStringList("warning_ids");
+        if (ids.size() != warnings.size()) {
+            throw new ConfigException.BadValue("warning_ids", "has " + ids.size() + " IDs for " + warnings.size() +
+                    " warnings");
+        }
+        List<String> shown = new ArrayList<>();
+        for (int i = 0; i < warnings.size(); i++) {
+            if (SHOWN_WARNING_IDS.contains(ids.get(i))) {
+                shown.add("[" + ids.get(i) + "] " + warnings.get(i));
+            }
+        }
+        return shown;
     }
 
     // Returns false if sandy closed its standard input before it read the whole policy.

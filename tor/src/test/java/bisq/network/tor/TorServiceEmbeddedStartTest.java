@@ -163,9 +163,8 @@ class TorServiceEmbeddedStartTest {
         assertThat(torService.getSandboxStatus()).isEqualTo(TorSandboxStatus.DISABLED);
     }
 
-    // The sandbox grants real paths, and on macOS a path spelled through a symbolic link is not found inside the sandbox
-    // of sandy 1.0.0. A Tor directory named through a link therefore reaches Tor by its real path, in the arguments and
-    // in the torrc.
+    // The sandbox grants real paths, so a Tor directory named through a link reaches Tor by its real path, in the
+    // arguments and in the torrc (TorDirectories.withLinksResolved).
     @Test
     void aTorDirectoryNamedThroughALinkReachesTorByItsRealPath() throws Exception {
         Path link = Files.createSymbolicLink(tempDir.resolve("tor-link"), torDir);
