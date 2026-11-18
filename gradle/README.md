@@ -2,25 +2,21 @@
 
 ## Build JDK
 
-`gradle.properties` sets the minimum Java version (`releaseBuild.javaVersion`) and the vendor
-(`releaseBuild.javaVendor`) of the JDK which runs Gradle, the same for every operating system. `verifyBuildEnvironment`
-(part of `check`) accepts every build of the same feature version at or above the minimum: for `21.0.13.0.3`,
-`21.0.13.0.3+1` and `21.0.14` pass, `21.0.13+9` and `25` fail. The minimum holds version numbers only; the build number
-is not compared. The task logs the runtime version and the Zulu build of the JDK.
+`gradle.properties` sets the minimum Java version (`releaseBuild.javaVersion`) and vendor
+(`releaseBuild.javaVendor`) of the JDK which runs Gradle, the same for every operating system.
+The build requires Amazon Corretto 21 at or above `21.0.13.1`, matching Bisq 2. Corretto `21.0.13.1.2` reports
+`21.0.13.1+2-LTS` and vendor `Amazon.com Inc.`. It fixes CVE-2026-114938 (Java4Shell) and retains the removal of the
+compromised emSign roots. See the [release notes](https://github.com/corretto/corretto-21/blob/21.0.13.1.2/CHANGELOG.md).
 
-Azul builds an update more than once, not for every platform at the same time, and an installer may offer only the
-latest build: Zulu `21.54.107` (`21.0.13+9`) and `21.54.109` (`21.0.13.0.3+1`) are both builds of 21.0.13, and the
-Homebrew cask `zulu@21` has only the latest. Pinning one exact build therefore broke builds on some platforms again and
-again. Raise the minimum when a build must not run on a JDK without a fix, as for `21.0.13.0.3`, which removes the
-compromised emSign roots from `cacerts`.
+`verifyBuildEnvironment` (part of `check`) accepts the same vendor and feature version at or above the minimum:
+`21.0.13.1+2` and `21.0.14` pass, while `21.0.13.0.3+1`, `21.0.13+9` and `25` fail. The minimum holds version numbers
+only; the build number is not compared. The task logs the runtime and Corretto distribution versions.
+Raise the minimum when a build must not run on a JDK without a required security fix.
 
-The CI workflows request the feature version of `releaseBuild.javaVersion` (`java-version: '21'`) with
-`check-latest: true`, so setup-java installs the newest Azul build which exists for the platform of each runner. Azul
-does not publish a build for every platform at the same time and removes superseded builds from its index, so a pinned
-build broke CI again and again. `verifyGithubActionsSecurity` requires every `java-version` of a workflow to be that
-feature version, and every `actions/setup-java` step to set `check-latest: true`.
-
-The toolchain URLs in `build-logic/toolchain-resolver` must point to a build at or above `releaseBuild.javaVersion`.
+CI requests `java-version: '21'`, `distribution: 'corretto'` and `check-latest: true` to install the newest Corretto
+build for each platform. `verifyGithubActionsSecurity` requires the feature version and `check-latest: true`.
+The compiler toolchain also requires Corretto. Its resolver provides Corretto `21.0.13.1.2` for Linux x64 and ARM64,
+macOS x64 and ARM64, and Windows x64. Update these URLs whenever `releaseBuild.javaVersion` is raised.
 
 ## Gradle Wrapper Verification
 

@@ -43,7 +43,7 @@ tasks.register("verifyGithubActionsSecurity") {
         val eventExpressionRegex = Regex("""\$\{\{[^}]*\bgithub\.event\b""")
 
         // The workflows request the feature version of the minimum Java version, and check-latest makes setup-java take
-        // the newest Azul build of it which exists for the runner. verifyBuildEnvironment checks the minimum.
+        // the newest Corretto build of it which exists for the runner. verifyBuildEnvironment checks the minimum.
         val expectedJavaFeatureVersion = expectedJavaVersion
             ?.takeIf { it.isNotEmpty() }
             ?.let { runCatching { Runtime.Version.parse(it).feature().toString() }.getOrNull() }

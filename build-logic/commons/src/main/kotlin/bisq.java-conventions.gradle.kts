@@ -16,6 +16,7 @@ val pinnedJavaLanguageVersion = providers.gradleProperty("releaseBuild.javaVersi
 java {
     toolchain {
         languageVersion.set(pinnedJavaLanguageVersion.map { JavaLanguageVersion.of(it) })
+        vendor.set(JvmVendorSpec.AMAZON)
     }
 }
 

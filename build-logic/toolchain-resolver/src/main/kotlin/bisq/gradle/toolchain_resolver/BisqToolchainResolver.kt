@@ -9,8 +9,8 @@ import java.net.URI
 import java.util.*
 
 /**
- * Resolves the Zulu JDK of the requested platform. Azul builds one JDK per architecture, and a JDK of another
- * architecture does not run, so the resolver returns nothing for a platform without a known build. Gradle then
+ * Resolves the Corretto JDK of the requested platform. A JDK of another architecture does not run, so the resolver
+ * returns nothing for a platform without a known build. Gradle then
  * reports that no toolchain can be provisioned, instead of installing a JDK which cannot start.
  *
  * The build requests only the Java feature version of releaseBuild.javaVersion, so only that version is listed. The
@@ -20,6 +20,9 @@ import java.util.*
 @Suppress("UnstableApiUsage")
 abstract class BisqToolchainResolver : JavaToolchainResolver {
     override fun resolve(toolchainRequest: JavaToolchainRequest): Optional<JavaToolchainDownload> {
+        if (!toolchainRequest.javaToolchainSpec.vendor.get().matches("Amazon.com Inc.")) {
+            return Optional.empty()
+        }
         val operatingSystem = toolchainRequest.buildPlatform.operatingSystem
         val architecture = toolchainRequest.buildPlatform.architecture
         val javaVersion = toolchainRequest.javaToolchainSpec.languageVersion.get().asInt()
@@ -40,11 +43,11 @@ abstract class BisqToolchainResolver : JavaToolchainResolver {
     private fun getToolchainUrlForLinux(javaVersion: Int, architecture: Architecture): String? =
             when (architecture) {
                 Architecture.X86_64 -> when (javaVersion) {
-                    21 -> "https://cdn.azul.com/zulu/bin/zulu21.54.109-ca-jdk21.0.13.0.3-linux_x64.zip"
+                    21 -> "https://corretto.aws/downloads/resources/21.0.13.1.2/amazon-corretto-21.0.13.1.2-linux-x64.tar.gz"
                     else -> null
                 }
                 Architecture.AARCH64 -> when (javaVersion) {
-                    21 -> "https://cdn.azul.com/zulu/bin/zulu21.54.109-ca-jdk21.0.13.0.3-linux_aarch64.tar.gz"
+                    21 -> "https://corretto.aws/downloads/resources/21.0.13.1.2/amazon-corretto-21.0.13.1.2-linux-aarch64.tar.gz"
                     else -> null
                 }
                 else -> null
@@ -53,7 +56,7 @@ abstract class BisqToolchainResolver : JavaToolchainResolver {
     private fun getToolchainUrlForMacOs(javaVersion: Int, architecture: Architecture): String? {
         val macOsArchName = getMacOsArchitectureClassifier(architecture) ?: return null
         return when (javaVersion) {
-            21 -> "https://cdn.azul.com/zulu/bin/zulu21.54.109-ca-jdk21.0.13.0.3-macosx_" + macOsArchName + ".tar.gz"
+            21 -> "https://corretto.aws/downloads/resources/21.0.13.1.2/amazon-corretto-21.0.13.1.2-macosx-" + macOsArchName + ".tar.gz"
             else -> null
         }
     }
@@ -61,7 +64,7 @@ abstract class BisqToolchainResolver : JavaToolchainResolver {
     private fun getToolchainUrlForWindows(javaVersion: Int, architecture: Architecture): String? =
             when (architecture) {
                 Architecture.X86_64 -> when (javaVersion) {
-                    21 -> "https://cdn.azul.com/zulu/bin/zulu21.54.109-ca-jdk21.0.13.0.3-win_x64.zip"
+                    21 -> "https://corretto.aws/downloads/resources/21.0.13.1.2/amazon-corretto-21.0.13.1.2-windows-x64-jdk.zip"
                     else -> null
                 }
                 else -> null
