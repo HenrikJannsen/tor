@@ -10,6 +10,15 @@ The Tor build contains the Tor integration of Bisq:
 - `tor-local-network`: a tool which starts a private Tor network for tests.
 - `tor-platform`: the dependency constraints of the Tor build.
 
+## Contributing
+
+Bisq has temporarily paused paid development for new contributors and routine review of their pull requests.
+Before starting work, ask the maintainers about priorities, review capacity, and funding. Compensation requires
+Bisq DAO approval. Read the [announcement on contributions and compensation](https://bisq.network/blog/open-source-development-in-the-age-of-ai/).
+
+Report suspected security issues privately using **Report a vulnerability** on the
+[Bisq Tor Security Advisories page](https://github.com/bisq-network/tor/security/advisories). See the [security policy](SECURITY.md) for what to include.
+
 ## No dependencies on other Bisq modules
 
 This repository was extracted from Bisq 2, where it lived in `network/tor` and then in `tor/`. Its history before the
