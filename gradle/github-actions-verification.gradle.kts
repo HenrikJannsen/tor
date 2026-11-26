@@ -1,12 +1,14 @@
 import org.gradle.api.GradleException
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
+import java.util.HexFormat
 
 val expectedReleaseJavaVersion = providers.gradleProperty("releaseBuild.javaVersion")
 
 tasks.register("verifyGithubActionsSecurity") {
     group = "verification"
     description = "Verifies GitHub Actions workflows use pinned actions, fixed runner labels, the newest JDK of the " +
-        "Java feature version, explicit permissions, no privileged triggers and no event data in scripts."
+        "Java feature version, explicit permissions, reviewed privileged triggers and no event data in scripts."
 
     val workflowFiles = fileTree(".github/workflows") {
         include("*.yml")
@@ -79,8 +81,16 @@ tasks.register("verifyGithubActionsSecurity") {
         }
 
         workflowFiles.files.sortedBy { it.path }.forEach { workflowFile ->
-            val workflowPath = workflowFile.relativeTo(rootDirectory).path
-            val lines = workflowFile.readLines(StandardCharsets.UTF_8)
+            val workflowPath = workflowFile.relativeTo(rootDirectory).invariantSeparatorsPath
+            val workflowText = workflowFile.readText(StandardCharsets.UTF_8).replace("\r\n", "\n")
+            val lines = workflowText.lines()
+
+            // This workflow posts a fixed comment without checking out or running contributor code.
+            // A change to its contents requires reviewing the privileged workflow before updating the pin.
+            val reviewedContributionNotice = workflowPath == ".github/workflows/contribution-notice.yml" &&
+                HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(
+                    workflowText.toByteArray(StandardCharsets.UTF_8)
+                )) == "1844bbadd774e2c9b9edaa537b77f4335033375ece382cc6cd45fa236795b8cf"
 
             if (lines.none { topLevelPermissionsRegex.containsMatchIn(it) }) {
                 violations += "$workflowPath has no top-level permissions block"
@@ -91,7 +101,7 @@ tasks.register("verifyGithubActionsSecurity") {
             lines.forEachIndexed { index, line ->
                 val lineNumber = index + 1
 
-                if (privilegedTriggerRegex.containsMatchIn(withoutComment(line))) {
+                if (!reviewedContributionNotice && privilegedTriggerRegex.containsMatchIn(withoutComment(line))) {
                     violations += "$workflowPath:$lineNumber uses a privileged trigger: ${line.trim()}"
                 }
 
